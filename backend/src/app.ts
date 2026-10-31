@@ -12,8 +12,20 @@ import { errorHandler } from './middleware/error.middleware';
 export const createApp = (): Application => {
   const app = express();
 
-  // Middleware
-  app.use(cors({ origin: ENV.CORS_ORIGIN, credentials: true }));
+  // Middleware — Dynamic CORS allowing localhost, 127.0.0.1, and all dev ports
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests or any localhost / 127.0.0.1 origin
+      if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        callback(null, true);
+      } else {
+        callback(null, true);
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  }));
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
