@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User } from '../types';
 import { api } from '../services/api';
-import { ShieldCheck, LogIn, Sparkles, UserCheck, Stethoscope, Lock, Mail } from 'lucide-react';
+import { ShieldCheck, LogIn, Sparkles, UserCheck, Stethoscope, Lock, Mail, Eye, EyeOff } from 'lucide-react';
 
 interface LoginProps {
   onLoginSuccess: (user: User) => void;
@@ -10,33 +10,47 @@ interface LoginProps {
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('admin@pharma.com');
   const [password, setPassword] = useState('admin123456');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Convert Arabic-Indic numerals (٠١٢٣٤٥٦٧٨٩) to standard numerals (0123456789)
+  const normalizeDigits = (str: string): string => {
+    const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    return str.replace(/[٠-٩]/g, (w) => arabicDigits.indexOf(w).toString());
+  };
+
+  const executeLogin = async (loginEmail: string, loginPass: string) => {
     setError(null);
     setLoading(true);
 
     try {
-      const res = await api.login(email, password);
+      const cleanEmail = loginEmail.trim().toLowerCase();
+      const cleanPass = normalizeDigits(loginPass.trim());
+      const res = await api.login(cleanEmail, cleanPass);
       onLoginSuccess(res.user);
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ أثناء تسجيل الدخول، تأكد من صحة البيانات');
+      setError(err.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    executeLogin(email, password);
   };
 
   const handleQuickLogin = (role: 'admin' | 'rep') => {
     if (role === 'admin') {
       setEmail('admin@pharma.com');
       setPassword('admin123456');
+      executeLogin('admin@pharma.com', 'admin123456');
     } else {
       setEmail('rep@pharma.com');
       setPassword('rep123456');
+      executeLogin('rep@pharma.com', 'rep123456');
     }
-    setError(null);
   };
 
   return (
@@ -68,29 +82,31 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               </p>
             </div>
 
-            {/* Quick Demo Switchers */}
+            {/* Quick 1-Click Login Buttons */}
             <div className="p-3 mb-4 rounded-4" style={{ background: '#f1f5f9', border: '1px solid #e2e8f0' }}>
               <div className="d-flex align-items-center justify-content-between mb-2">
                 <span className="small fw-bold text-secondary d-flex align-items-center gap-1">
-                  <Sparkles size={16} className="text-primary" /> تجربة سريعة بنقرة واحدة:
+                  <Sparkles size={16} className="text-primary" /> دخول تجريبي فوري بنقرة واحدة:
                 </span>
               </div>
               <div className="d-flex gap-2">
                 <button
                   type="button"
+                  disabled={loading}
                   onClick={() => handleQuickLogin('admin')}
-                  className={`clay-btn flex-grow-1 py-2 text-sm ${email.includes('admin') ? 'clay-btn-primary' : 'clay-btn-secondary'}`}
+                  className="clay-btn clay-btn-primary flex-grow-1 py-2 text-sm"
                   style={{ fontSize: '0.85rem' }}
                 >
-                  <ShieldCheck size={16} /> مدير النظام
+                  <ShieldCheck size={16} /> دخول كمدير عام
                 </button>
                 <button
                   type="button"
+                  disabled={loading}
                   onClick={() => handleQuickLogin('rep')}
-                  className={`clay-btn flex-grow-1 py-2 text-sm ${email.includes('rep') ? 'clay-btn-primary' : 'clay-btn-secondary'}`}
+                  className="clay-btn clay-btn-secondary flex-grow-1 py-2 text-sm"
                   style={{ fontSize: '0.85rem' }}
                 >
-                  <UserCheck size={16} /> المندوب الميداني
+                  <UserCheck size={16} /> دخول كمندوب
                 </button>
               </div>
             </div>
@@ -111,7 +127,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 <input
                   type="email"
                   className="clay-input"
-                  placeholder="name@pharma.com"
+                  placeholder="admin@pharma.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -120,18 +136,33 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               </div>
 
               <div className="mb-4">
-                <label className="form-label small fw-bold text-secondary d-flex align-items-center gap-2">
-                  <Lock size={16} /> كلمة المرور
-                </label>
-                <input
-                  type="password"
-                  className="clay-input"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
+                <div className="d-flex justify-content-between align-items-center mb-1">
+                  <label className="form-label small fw-bold text-secondary d-flex align-items-center gap-2 mb-0">
+                    <Lock size={16} /> كلمة المرور (الرمز السري)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="btn btn-sm btn-link p-0 text-decoration-none text-muted small d-flex align-items-center gap-1"
+                  >
+                    {showPassword ? <><EyeOff size={14} /> إخفاء</> : <><Eye size={14} /> إظهار الرمز</>}
+                  </button>
+                </div>
+
+                <div className="position-relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    className="clay-input"
+                    placeholder="admin123456"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div className="text-muted mt-1 small" style={{ fontSize: '0.75rem' }}>
+                  💡 الرمز السري الافتراضي للمدير: <code className="text-primary fw-bold">admin123456</code> وللمندوب: <code className="text-primary fw-bold">rep123456</code>
+                </div>
               </div>
 
               <button
@@ -140,7 +171,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 className="clay-btn clay-btn-primary w-100 py-3 fs-6"
               >
                 {loading ? (
-                  <span>جاري التحقق والمصادقة...</span>
+                  <span>جاري التحقق والمصادقة... ⏳</span>
                 ) : (
                   <>
                     <LogIn size={20} />
@@ -152,7 +183,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
             <div className="text-center mt-4">
               <span className="text-muted small">
-                محمي بتشفير 256-bit وقواعد الصلاحيات المتقدمة (RBAC)
+                نظام مشفر 256-bit مع دعم تخزين البيانات السحابية والمحلية
               </span>
             </div>
 

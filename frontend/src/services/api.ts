@@ -137,24 +137,35 @@ export const api = {
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email: email.trim(), password })
       });
       if (res.ok) {
         const json = await res.json();
-        setToken(json.data.token);
+        const token = json.data.accessToken || json.data.token;
+        setToken(token);
         setCurrentUser(json.data.user);
-        return json.data;
+        return { token, user: json.data.user };
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || errJson.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
       }
-    } catch {
-      // Backend unavailable, fallback to mock demo
+    } catch (err: any) {
+      if (err.message && err.message.includes('غير صحيحة')) {
+        throw err;
+      }
+      // If backend is completely offline / network error, fallback to mock demo
+      console.warn('Backend unavailable, using local mock auth:', err.message);
+      const role: 'admin' | 'rep' = email.includes('admin') ? 'admin' : 'rep';
+      const expectedPass = role === 'admin' ? 'admin123456' : 'rep123456';
+      if (password !== expectedPass && password !== 'admin' && password !== '123456') {
+        throw new Error('البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      }
+      const user = MOCK_USERS[role];
+      const token = 'mock_jwt_' + user.role;
+      setToken(token);
+      setCurrentUser(user);
+      return { token, user };
     }
-    // Demo Mock fallback
-    const role: 'admin' | 'rep' = email.includes('admin') ? 'admin' : 'rep';
-    const user = MOCK_USERS[role];
-    const token = 'mock_jwt_' + user.role;
-    setToken(token);
-    setCurrentUser(user);
-    return { token, user };
   },
 
   async getPharmacies(): Promise<Pharmacy[]> {
