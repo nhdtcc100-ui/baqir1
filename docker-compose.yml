@@ -1,0 +1,87 @@
+name: pharma-sales-supabase
+
+services:
+  # ── 1. Supabase PostgreSQL 15 Database with Extensions ──────────────────────
+  supabase-db:
+    image: supabase/postgres:15.6.1.139
+    container_name: pharma_supabase_db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: pharma_reps_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./backend/migrations/002_seed_data.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - pharma_supabase_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pharma_reps_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pharma_network
+
+  # ── 2. Postgres Meta (Introspection API for Studio) ────────────────────────
+  supabase-meta:
+    image: supabase/postgres-meta:v0.84.2
+    container_name: pharma_supabase_meta
+    restart: unless-stopped
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: supabase-db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: pharma_reps_db
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: postgres
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    networks:
+      - pharma_network
+
+  # ── 3. Supabase Studio (Official Web Management Dashboard) ─────────────────
+  supabase-studio:
+    image: supabase/studio:latest
+    container_name: pharma_supabase_studio
+    restart: unless-stopped
+    ports:
+      - "8000:3000"
+    environment:
+      STUDIO_PG_META_URL: http://supabase-meta:8080
+      POSTGRES_PASSWORD: postgres
+      DEFAULT_ORGANIZATION_NAME: "Pharma Sales HQ"
+      DEFAULT_PROJECT_NAME: "Pharma Sales CRM & OCR"
+      SUPABASE_REST_URL: http://localhost:3001
+    depends_on:
+      - supabase-meta
+    networks:
+      - pharma_network
+
+  # ── 4. PostgREST (Automatic REST API Layer) ────────────────────────────────
+  supabase-rest:
+    image: postgrest/postgrest:v12.0.2
+    container_name: pharma_supabase_rest
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      PGRST_DB_URI: postgres://postgres:postgres@supabase-db:5432/pharma_reps_db
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: postgres
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    networks:
+      - pharma_network
+
+volumes:
+  pharma_supabase_data:
+    driver: local
+
+networks:
+  pharma_network:
+    driver: bridge
