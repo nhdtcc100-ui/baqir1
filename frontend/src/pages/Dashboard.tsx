@@ -64,61 +64,70 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* ── KPI Stats Grid ─────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+      {(() => {
+        const revenue = Number(kpis?.total_sales_amount ?? kpis?.total_revenue ?? 0);
+        const invoicesCount = Number(kpis?.total_invoices ?? 0);
+        const pharmaciesCount = Number(kpis?.total_pharmacies_visited || pharmacies.length || 0);
+        const bonusCount = Number(kpis?.total_bonus_pieces ?? kpis?.total_bonus_given ?? 0);
 
-        <div className="stat-card card-hover">
-          <div className="stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
-            <TrendingUp size={24} />
-          </div>
-          <div className="stat-content">
-            <div className="stat-label">إجمالي المبيعات</div>
-            <div className="stat-value">{kpis.total_revenue.toLocaleString()}</div>
-            <div className="stat-sub">دينار عراقي</div>
-          </div>
-        </div>
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
 
-        <div className="stat-card card-hover">
-          <div className="stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
-            <FileText size={24} />
-          </div>
-          <div className="stat-content">
-            <div className="stat-label">الفواتير المعالجة</div>
-            <div className="stat-value">{kpis.total_invoices}</div>
-            <div className="stat-sub">
-              {pendingInvoices.length > 0 ? (
-                <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>
-                  <Clock size={11} /> {pendingInvoices.length} بانتظار المراجعة
-                </span>
-              ) : (
-                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>كل الفواتير معتمدة ✓</span>
-              )}
+            <div className="stat-card card-hover">
+              <div className="stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
+                <TrendingUp size={24} />
+              </div>
+              <div className="stat-content">
+                <div className="stat-label">إجمالي المبيعات</div>
+                <div className="stat-value">{revenue.toLocaleString()}</div>
+                <div className="stat-sub">دينار عراقي</div>
+              </div>
             </div>
-          </div>
-        </div>
 
-        <div className="stat-card card-hover">
-          <div className="stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
-            <Building2 size={24} />
-          </div>
-          <div className="stat-content">
-            <div className="stat-label">الصيدليات المعتمدة</div>
-            <div className="stat-value">{kpis.total_pharmacies_visited || pharmacies.length}</div>
-            <div className="stat-sub">صيدلية</div>
-          </div>
-        </div>
+            <div className="stat-card card-hover">
+              <div className="stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
+                <FileText size={24} />
+              </div>
+              <div className="stat-content">
+                <div className="stat-label">الفواتير المعالجة</div>
+                <div className="stat-value">{invoicesCount}</div>
+                <div className="stat-sub">
+                  {pendingInvoices.length > 0 ? (
+                    <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>
+                      <Clock size={11} /> {pendingInvoices.length} بانتظار المراجعة
+                    </span>
+                  ) : (
+                    <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>كل الفواتير معتمدة ✓</span>
+                  )}
+                </div>
+              </div>
+            </div>
 
-        <div className="stat-card card-hover">
-          <div className="stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}>
-            <Gift size={24} />
-          </div>
-          <div className="stat-content">
-            <div className="stat-label">قطع البونص الممنوحة</div>
-            <div className="stat-value" style={{ color: 'var(--warning)' }}>{kpis.total_bonus_given}</div>
-            <div className="stat-sub">قطعة مجانية (10+1)</div>
-          </div>
-        </div>
+            <div className="stat-card card-hover">
+              <div className="stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
+                <Building2 size={24} />
+              </div>
+              <div className="stat-content">
+                <div className="stat-label">الصيدليات المعتمدة</div>
+                <div className="stat-value">{pharmaciesCount}</div>
+                <div className="stat-sub">صيدلية مسجلة</div>
+              </div>
+            </div>
 
-      </div>
+            <div className="stat-card card-hover">
+              <div className="stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}>
+                <Gift size={24} />
+              </div>
+              <div className="stat-content">
+                <div className="stat-label">قطع البونص الممنوحة</div>
+                <div className="stat-value" style={{ color: 'var(--warning)' }}>+{bonusCount}</div>
+                <div className="stat-sub">قطعة مجانية (10+1)</div>
+              </div>
+            </div>
+
+          </div>
+        );
+      })()}
 
       {/* ── Mid Section ────────────────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>

@@ -78,8 +78,12 @@ export interface KPISummary {
   total_invoices: number;
   total_pharmacies_visited: number;
   total_pieces_sold: number;
-  total_bonus_given: number;
-  total_revenue: number;
+  total_bonus_given?: number;
+  total_bonus_pieces?: number;
+  total_revenue?: number;
+  total_sales_amount?: number;
+  approved_invoices?: number;
+  pending_invoices?: number;
 }
 
 export interface VisitEvent {

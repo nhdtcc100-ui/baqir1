@@ -59,7 +59,18 @@ export function App() {
       setPharmacies(phList);
       setProducts(prList);
       setInvoices(invList);
-      setKpis(kpiData);
+      const normalizedKpis: KPISummary = {
+        total_invoices: Number(kpiData?.total_invoices || 0),
+        total_pharmacies_visited: Number(kpiData?.total_pharmacies_visited || 0),
+        total_pieces_sold: Number(kpiData?.total_pieces_sold || 0),
+        total_bonus_given: Number(kpiData?.total_bonus_pieces ?? kpiData?.total_bonus_given ?? 0),
+        total_bonus_pieces: Number(kpiData?.total_bonus_pieces ?? kpiData?.total_bonus_given ?? 0),
+        total_revenue: Number(kpiData?.total_sales_amount ?? kpiData?.total_revenue ?? 0),
+        total_sales_amount: Number(kpiData?.total_sales_amount ?? kpiData?.total_revenue ?? 0),
+        approved_invoices: Number(kpiData?.approved_invoices || 0),
+        pending_invoices: Number(kpiData?.pending_invoices || 0)
+      };
+      setKpis(normalizedKpis);
     } catch (e: any) {
       addToast('فشل تحميل البيانات: ' + (e.message || 'خطأ في الاتصال بالخادم'), 'error');
     } finally {
