@@ -68,6 +68,14 @@ export function App() {
   };
 
   useEffect(() => {
+    const onAuthLogout = () => {
+      setCurrentUser(null);
+    };
+    window.addEventListener('auth:logout', onAuthLogout);
+    return () => window.removeEventListener('auth:logout', onAuthLogout);
+  }, []);
+
+  useEffect(() => {
     if (currentUser) loadData();
   }, [currentUser]);
 

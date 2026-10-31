@@ -32,7 +32,7 @@ export const authenticateToken = (req: Request, res: Response, next: NextFunctio
     req.user = decoded;
     next();
   } catch (err: any) {
-    sendError(res, 'رمز المصادقة غير صالح أو منتهي الصلاحية', 403);
+    sendError(res, 'رمز المصادقة غير صالح أو منتهي الصلاحية', 401);
   }
 };
 

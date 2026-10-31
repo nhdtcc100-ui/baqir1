@@ -29,6 +29,12 @@ const authHeadersMultipart = (): HeadersInit => {
 };
 
 async function handleResponse<T>(res: Response): Promise<T> {
+  if (res.status === 401 || res.status === 403) {
+    removeToken();
+    removeCurrentUser();
+    window.dispatchEvent(new Event('auth:logout'));
+    throw new Error('انتهت صلاحية جلسة الدخول، يرجى تسجيل الدخول مجدداً');
+  }
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(json.error || json.message || `خطأ ${res.status}`);
