@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { VisitEvent, Pharmacy } from '../types';
 import { 
   Calendar as CalendarIcon, Clock, MapPin, CheckCircle2, 
-  XCircle, Plus, Sparkles, Building2, UserCheck, ArrowRight
+  XCircle, Plus, Sparkles, Building2, UserCheck, ArrowRight, FilePlus, X
 } from 'lucide-react';
 
 interface VisitsCalendarProps {
@@ -17,7 +17,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
   const [filter, setFilter] = useState<'all' | 'scheduled' | 'completed'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
 
-  // Initial Seeded Visits
+  // Initial visits
   const [visits, setVisits] = useState<VisitEvent[]>([
     {
       id: 'v-1',
@@ -56,7 +56,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
 
   // Form State for new appointment
   const [newPharmacyId, setNewPharmacyId] = useState(pharmacies[0]?.id || '');
-  const [newDate, setNewDate] = useState('2026-11-01');
+  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
   const [newTime, setNewTime] = useState('11:00 ص');
   const [newPurpose, setNewPurpose] = useState<'routine_check' | 'order_delivery' | 'sample_show' | 'collection'>('routine_check');
   const [newNotes, setNewNotes] = useState('');
@@ -91,252 +91,278 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
 
   const getPurposeLabel = (p: string) => {
     switch (p) {
-      case 'routine_check': return { label: 'زيارة متابعة دورية', badge: 'clay-badge-primary' };
-      case 'order_delivery': return { label: 'تسليم شحنة طلبيات', badge: 'clay-badge-success' };
-      case 'sample_show': return { label: 'عرض عينات وبونص', badge: 'clay-badge-purple' };
-      case 'collection': return { label: 'تحصيل ومطابقة مالية', badge: 'clay-badge-warning' };
-      default: return { label: 'زيارة ميدانية', badge: 'clay-badge-primary' };
+      case 'routine_check': return { label: 'زيارة متابعة دورية', badge: 'badge-primary' };
+      case 'order_delivery': return { label: 'تسليم شحنة طلبيات', badge: 'badge-success' };
+      case 'sample_show': return { label: 'عرض عينات وبونص', badge: 'badge-purple' };
+      case 'collection': return { label: 'تحصيل ومطابقة مالية', badge: 'badge-warning' };
+      default: return { label: 'زيارة ميدانية', badge: 'badge-primary' };
     }
   };
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="clay-card mb-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      {/* ── Page Header ──────────────────────────────────────────────────────── */}
+      <div className="page-header">
         <div>
-          <div className="d-flex align-items-center gap-2 mb-1">
-            <span className="clay-badge clay-badge-primary">
-              <CalendarIcon size={14} /> جدول المواعيد والزيارات
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+            <span className="badge badge-primary">
+              <CalendarIcon size={13} /> جدول المواعيد والزيارات
             </span>
-            <span className="text-muted small">المسار اليومي للمندوب الطبي</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>المسار اليومي للمندوب الطبي</span>
           </div>
-          <h2 className="fw-bold mb-1" style={{ color: '#0f172a' }}>
-            جدول زيارات الصيدليات الميدانية
-          </h2>
-          <p className="text-muted mb-0 small">
+          <h1 className="page-title">جدول زيارات الصيدليات الميدانية</h1>
+          <p className="page-subtitle">
             تنظيم مواعيد المندوب، متابعة الصيدليات المجدولة، وتحويل الزيارة مباشرة إلى فاتورة.
           </p>
         </div>
 
-        <button 
-          onClick={() => setShowAddModal(true)} 
-          className="clay-btn clay-btn-primary"
-        >
+        <button onClick={() => setShowAddModal(true)} className="btn-clay btn-primary">
           <Plus size={18} />
           <span>حجز موعد زيارة جديد</span>
         </button>
       </div>
 
-      {/* ── Stats & Filter Bar ────────────────────────────────────────────── */}
-      <div className="row g-3 mb-4">
-        <div className="col-12 col-md-4">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">إجمالي المواعيد المجدولة</span>
-            <h4 className="fw-bold text-primary mt-1 mb-0">{visits.length} مواعيد</h4>
+      {/* ── Stats ──────────────────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">إجمالي المواعيد المجدولة</div>
+            <div className="stat-value" style={{ color: 'var(--primary)' }}>{visits.length}</div>
+            <div className="stat-sub">مواعيد مسجلة</div>
           </div>
         </div>
-        <div className="col-12 col-md-4">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">الزيارات المكتملة</span>
-            <h4 className="fw-bold text-success mt-1 mb-0">
-              {visits.filter(v => v.status === 'completed').length} زيارة منجزة
-            </h4>
+
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">الزيارات المكتملة</div>
+            <div className="stat-value" style={{ color: 'var(--success)' }}>
+              {visits.filter(v => v.status === 'completed').length}
+            </div>
+            <div className="stat-sub">زيارة منجزة</div>
           </div>
         </div>
-        <div className="col-12 col-md-4">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">مواعيد اليوم القادمة</span>
-            <h4 className="fw-bold text-warning mt-1 mb-0">
-              {visits.filter(v => v.status === 'scheduled').length} بانتظار الانطلاق
-            </h4>
+
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">المواعيد القادمة</div>
+            <div className="stat-value" style={{ color: 'var(--warning)' }}>
+              {visits.filter(v => v.status === 'scheduled').length}
+            </div>
+            <div className="stat-sub">بانتظار الانطلاق</div>
           </div>
         </div>
       </div>
 
       {/* Filter Tabs */}
-      <div className="d-flex gap-2 mb-3">
+      <div className="tab-pills" style={{ margin: 0 }}>
         <button
           onClick={() => setFilter('all')}
-          className={`clay-btn py-1 px-3 ${filter === 'all' ? 'clay-btn-primary' : 'clay-btn-secondary'}`}
+          className={`tab-pill ${filter === 'all' ? 'active' : ''}`}
         >
           الكل ({visits.length})
         </button>
         <button
           onClick={() => setFilter('scheduled')}
-          className={`clay-btn py-1 px-3 ${filter === 'scheduled' ? 'clay-btn-primary' : 'clay-btn-secondary'}`}
+          className={`tab-pill ${filter === 'scheduled' ? 'active' : ''}`}
         >
           المجدولة القادمة ({visits.filter(v => v.status === 'scheduled').length})
         </button>
         <button
           onClick={() => setFilter('completed')}
-          className={`clay-btn py-1 px-3 ${filter === 'completed' ? 'clay-btn-primary' : 'clay-btn-secondary'}`}
+          className={`tab-pill ${filter === 'completed' ? 'active' : ''}`}
         >
           المكتملة ({visits.filter(v => v.status === 'completed').length})
         </button>
       </div>
 
-      {/* ── Visits List Cards ─────────────────────────────────────────────── */}
-      <div className="row g-3">
+      {/* ── Visits Cards Grid ─────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
         {filteredVisits.map((v) => {
           const purposeInfo = getPurposeLabel(v.purpose);
           return (
-            <div key={v.id} className="col-12 col-lg-6">
-              <div className="clay-card clay-card-interactive h-100 d-flex flex-column justify-content-between">
-                <div>
-                  <div className="d-flex justify-content-between align-items-start mb-2">
-                    <div>
-                      <span className={`clay-badge ${purposeInfo.badge} mb-2`}>
-                        {purposeInfo.label}
-                      </span>
-                      <h5 className="fw-bold mb-1" style={{ color: '#1e293b' }}>
-                        {v.pharmacy_name}
-                      </h5>
-                    </div>
-
-                    <span className={`clay-badge ${v.status === 'completed' ? 'clay-badge-success' : v.status === 'cancelled' ? 'clay-badge-danger' : 'clay-badge-warning'}`}>
-                      {v.status === 'completed' ? 'مكتملة ✅' : v.status === 'cancelled' ? 'ملغاة' : 'قيد الانتظار ⏳'}
+            <div key={v.id} className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+                  <div>
+                    <span className={`badge ${purposeInfo.badge}`} style={{ marginBottom: '0.4rem', display: 'inline-flex' }}>
+                      {purposeInfo.label}
                     </span>
+                    <h4 style={{ fontWeight: 800, margin: '0.3rem 0 0', color: 'var(--gray-900)' }}>
+                      {v.pharmacy_name}
+                    </h4>
                   </div>
 
-                  <div className="d-flex flex-wrap gap-3 small text-muted my-2">
-                    <span className="d-flex align-items-center gap-1">
-                      <CalendarIcon size={15} className="text-primary" /> {v.visit_date}
-                    </span>
-                    <span className="d-flex align-items-center gap-1">
-                      <Clock size={15} className="text-secondary" /> {v.visit_time}
-                    </span>
-                    <span className="d-flex align-items-center gap-1">
-                      <UserCheck size={15} className="text-success" /> المندوب: {v.rep_name}
-                    </span>
-                  </div>
+                  <span className={`badge ${v.status === 'completed' ? 'badge-success' : v.status === 'cancelled' ? 'badge-danger' : 'badge-warning'}`}>
+                    {v.status === 'completed' ? 'مكتملة ✓' : v.status === 'cancelled' ? 'ملغاة' : 'قيد الانتظار'}
+                  </span>
+                </div>
 
-                  {v.notes && (
-                    <div className="p-2 rounded-3 bg-light text-secondary small mt-2">
-                      📝 {v.notes}
-                    </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', fontSize: '0.82rem', color: 'var(--gray-500)', marginBottom: '0.75rem' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <CalendarIcon size={14} style={{ color: 'var(--primary)' }} /> {v.visit_date}
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <Clock size={14} style={{ color: 'var(--warning)' }} /> {v.visit_time}
+                  </span>
+                </div>
+
+                {v.notes && (
+                  <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', background: 'var(--gray-50)', padding: '0.65rem 0.85rem', borderRadius: 10, margin: '0 0 1rem' }}>
+                    {v.notes}
+                  </p>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', paddingTop: '0.75rem', borderTop: '1px solid var(--gray-100)' }}>
+                <button
+                  onClick={() => onStartInvoiceForPharmacy(v.pharmacy_id)}
+                  className="btn-clay btn-primary btn-sm"
+                  style={{ fontWeight: 700 }}
+                >
+                  <FilePlus size={15} /> إنشاء فاتورة
+                </button>
+
+                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                  {v.status !== 'completed' && (
+                    <button
+                      onClick={() => handleToggleStatus(v.id, 'completed')}
+                      className="btn-clay btn-success btn-sm"
+                      title="تمت الزيارة"
+                    >
+                      <CheckCircle2 size={15} /> تم
+                    </button>
+                  )}
+                  {v.status !== 'cancelled' && (
+                    <button
+                      onClick={() => handleToggleStatus(v.id, 'cancelled')}
+                      className="btn-clay btn-secondary btn-sm"
+                      title="إلغاء الموعد"
+                    >
+                      <XCircle size={15} /> إلغاء
+                    </button>
                   )}
                 </div>
-
-                {/* Card Actions */}
-                <div className="d-flex flex-wrap justify-content-between align-items-center pt-3 mt-3 border-top gap-2">
-                  <div className="d-flex gap-2">
-                    {v.status === 'scheduled' ? (
-                      <button
-                        onClick={() => handleToggleStatus(v.id, 'completed')}
-                        className="clay-btn clay-btn-success py-1 px-2 small"
-                        style={{ fontSize: '0.8rem' }}
-                      >
-                        <CheckCircle2 size={15} /> تم إنجاز الزيارة
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleToggleStatus(v.id, 'scheduled')}
-                        className="clay-btn clay-btn-secondary py-1 px-2 small"
-                        style={{ fontSize: '0.8rem' }}
-                      >
-                        إعادة للجدولة
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Direct Invoice Scan Trigger for this pharmacy */}
-                  <button
-                    onClick={() => onStartInvoiceForPharmacy(v.pharmacy_id)}
-                    className="clay-btn clay-btn-primary py-1 px-3 small"
-                    style={{ fontSize: '0.82rem' }}
-                  >
-                    <span>رفع فاتورة للصيدلية</span>
-                    <ArrowRight size={14} />
-                  </button>
-                </div>
-
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* ── New Appointment Modal ────────────────────────────────────────── */}
+      {/* ── Add Appointment Modal ─────────────────────────────────────────── */}
       {showAddModal && (
-        <div className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
-             style={{ background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(4px)', zIndex: 1050 }}>
-          <div className="clay-card p-4 w-100" style={{ maxWidth: '520px', background: '#ffffff' }}>
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <h5 className="fw-bold mb-0">جدولة زيارة / موعد صيدلية جديد</h5>
-              <button onClick={() => setShowAddModal(false)} className="btn btn-sm btn-light rounded-circle">✕</button>
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.75)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 2000,
+          padding: '1.5rem'
+        }}>
+          <div className="card" style={{ maxWidth: 480, width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <CalendarIcon size={20} style={{ color: 'var(--primary)' }} />
+                حجز موعد زيارة جديد
+              </h4>
+              <button
+                onClick={() => setShowAddModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray-400)' }}
+              >
+                <X size={20} />
+              </button>
             </div>
 
-            <form onSubmit={handleAddVisit}>
-              <div className="mb-3">
-                <label className="form-label small fw-bold">اختر الصيدلية</label>
-                <select 
-                  className="clay-input" 
-                  value={newPharmacyId} 
+            <form onSubmit={handleAddVisit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
+                  الصيدلية المستهدفة *
+                </label>
+                <select
+                  className="clay-input"
+                  value={newPharmacyId}
                   onChange={(e) => setNewPharmacyId(e.target.value)}
                   required
                 >
                   {pharmacies.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} — {p.city}</option>
+                    <option key={p.id} value={p.id}>{p.name} ({p.city})</option>
                   ))}
                 </select>
               </div>
 
-              <div className="row g-2 mb-3">
-                <div className="col-6">
-                  <label className="form-label small fw-bold">التاريخ</label>
-                  <input 
-                    type="date" 
-                    className="clay-input" 
-                    value={newDate} 
-                    onChange={(e) => setNewDate(e.target.value)} 
-                    required 
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
+                    تاريخ الزيارة *
+                  </label>
+                  <input
+                    type="date"
+                    className="clay-input"
+                    value={newDate}
+                    onChange={(e) => setNewDate(e.target.value)}
+                    required
                   />
                 </div>
-                <div className="col-6">
-                  <label className="form-label small fw-bold">الوقت المتوقع</label>
-                  <input 
-                    type="text" 
-                    className="clay-input" 
-                    value={newTime} 
-                    onChange={(e) => setNewTime(e.target.value)} 
-                    placeholder="مثال: 11:30 ص"
-                    required 
+                <div>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
+                    وقت الزيارة *
+                  </label>
+                  <input
+                    type="text"
+                    className="clay-input"
+                    placeholder="10:30 ص"
+                    value={newTime}
+                    onChange={(e) => setNewTime(e.target.value)}
+                    required
                   />
                 </div>
               </div>
 
-              <div className="mb-3">
-                <label className="form-label small fw-bold">غرض الزيارة</label>
-                <select 
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
+                  الغرض من الزيارة *
+                </label>
+                <select
                   className="clay-input"
                   value={newPurpose}
                   onChange={(e) => setNewPurpose(e.target.value as any)}
                 >
                   <option value="routine_check">زيارة متابعة دورية</option>
-                  <option value="order_delivery">تسليم طلبيات وبضاعة</option>
-                  <option value="sample_show">عرض عينات وشرح بونص</option>
-                  <option value="collection">تحصيل ومطابقة فواتير</option>
+                  <option value="order_delivery">تسليم شحنة طلبيات</option>
+                  <option value="sample_show">عرض عينات جديدة وبونص 10+1</option>
+                  <option value="collection">تحصيل ومطابقة مالية</option>
                 </select>
               </div>
 
-              <div className="mb-3">
-                <label className="form-label small fw-bold">ملاحظات إضافية للمندوب</label>
-                <textarea 
-                  className="clay-input" 
-                  rows={3} 
-                  placeholder="أي تفاصيل حول الزيارة أو احتياجات الصيدلية..."
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
+                  ملاحظات الموعد
+                </label>
+                <textarea
+                  className="clay-input"
+                  rows={2}
+                  placeholder="ملاحظات وتفاصيل الزيارة..."
                   value={newNotes}
                   onChange={(e) => setNewNotes(e.target.value)}
-                ></textarea>
+                />
               </div>
 
-              <div className="d-flex justify-content-end gap-2">
-                <button type="button" onClick={() => setShowAddModal(false)} className="clay-btn clay-btn-secondary">
+              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="btn-clay btn-secondary btn-sm"
+                >
                   إلغاء
                 </button>
-                <button type="submit" className="clay-btn clay-btn-primary">
-                  حفظ الموعد في الجدول
+                <button
+                  type="submit"
+                  className="btn-clay btn-primary btn-sm"
+                >
+                  تأكيد حجز الموعد
                 </button>
               </div>
             </form>

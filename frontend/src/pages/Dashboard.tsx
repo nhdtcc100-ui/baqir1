@@ -1,292 +1,222 @@
 import React from 'react';
-import { User, Invoice, KPISummary } from '../types';
-import { 
-  TrendingUp, FileText, Building2, Gift, PlusCircle, Calendar, 
-  Download, CheckCircle2, Clock, AlertCircle, ArrowUpRight, Sparkles 
+import { User, Invoice, KPISummary, Pharmacy } from '../types';
+import {
+  TrendingUp, FileText, Building2, Gift, FilePlus, Calendar,
+  Download, CheckCircle2, Clock, AlertCircle, ArrowUpRight, Sparkles
 } from 'lucide-react';
 
 interface DashboardProps {
   user: User;
   kpis: KPISummary;
   invoices: Invoice[];
+  pharmacies: Pharmacy[];
   onNavigate: (tab: string) => void;
   onApproveInvoice: (id: string) => void;
   onRejectInvoice: (id: string) => void;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
-  user,
-  kpis,
-  invoices,
-  onNavigate,
-  onApproveInvoice,
-  onRejectInvoice
+  user, kpis, invoices, pharmacies, onNavigate, onApproveInvoice, onRejectInvoice
 }) => {
   const pendingInvoices = invoices.filter(i => i.status === 'pending_review');
+  const isRep = user.role === 'medical_rep';
+  const isAdmin = user.role === 'admin';
+
+  const dateStr = new Date().toLocaleDateString('ar-IQ', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
 
   return (
-    <div className="space-y-4 animate-fade-in">
-      
-      {/* ── Welcome Banner ───────────────────────────────────────────────── */}
-      <div className="clay-card mb-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3"
-           style={{ background: 'linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%)' }}>
-        <div>
-          <div className="d-flex align-items-center gap-2 mb-1">
-            <span className="clay-badge clay-badge-primary">
-              <Sparkles size={14} /> {user.role === 'admin' ? 'صلاحيات الإدارة الكاملة' : 'لوحة المندوب الميداني'}
-            </span>
-            <span className="text-muted small">
-              {new Date().toLocaleDateString('ar-IQ', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-            </span>
-          </div>
-          <h2 className="fw-bold mb-1" style={{ color: '#0f172a' }}>
-            أهلاً بك، {user.full_name} 👋
-          </h2>
-          <p className="text-muted mb-0 small">
-            {user.role === 'admin'
-              ? 'متابعة مباشرة لشبكة المبيعات، اعتماد الفواتير، وتحليل البونص على مستوى الصيدليات.'
-              : 'سجل زياراتك اليومية، ارفع فواتير الصيدليات واستخرج الأصناف بالذكاء الاصطناعي لحظياً.'}
-          </p>
-        </div>
+    <div className="animate-in">
 
-        {/* Quick Actions in Header */}
-        <div className="d-flex flex-wrap gap-2">
-          <button 
-            onClick={() => onNavigate('scan')} 
-            className="clay-btn clay-btn-primary"
-          >
-            <PlusCircle size={18} />
-            <span>مسح فاتورة OCR جديدة</span>
-          </button>
-
-          <button 
-            onClick={() => onNavigate('visits')} 
-            className="clay-btn clay-btn-secondary"
-          >
-            <Calendar size={18} />
-            <span>جدول الزيارات</span>
-          </button>
-        </div>
-      </div>
-
-      {/* ── KPI Clay Cards Grid ─────────────────────────────────────────── */}
-      <div className="row g-3 mb-4">
-        
-        {/* Total Sales */}
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card clay-card-interactive h-100">
-            <div className="d-flex justify-content-between align-items-start mb-3">
-              <div>
-                <span className="text-muted small fw-semibold">إجمالي المبيعات المحققة</span>
-                <h3 className="fw-bold mt-1 mb-0" style={{ color: '#1e293b' }}>
-                  {kpis.total_revenue.toLocaleString()} <small className="fs-6 text-muted">د.ع</small>
-                </h3>
-              </div>
-              <div className="clay-stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
-                <TrendingUp size={26} />
-              </div>
-            </div>
-            <div className="d-flex align-items-center gap-1 small text-success">
-              <ArrowUpRight size={16} />
-              <span className="fw-bold">+18.4%</span>
-              <span className="text-muted">مقارنة بالشهر السابق</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Total Invoices */}
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card clay-card-interactive h-100">
-            <div className="d-flex justify-content-between align-items-start mb-3">
-              <div>
-                <span className="text-muted small fw-semibold">الفواتير المعالجة</span>
-                <h3 className="fw-bold mt-1 mb-0" style={{ color: '#1e293b' }}>
-                  {kpis.total_invoices} <small className="fs-6 text-muted">فاتورة</small>
-                </h3>
-              </div>
-              <div className="clay-stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
-                <FileText size={26} />
-              </div>
-            </div>
-            <div className="d-flex align-items-center gap-2 small">
-              <span className="clay-badge clay-badge-warning py-1 px-2">
-                <Clock size={12} /> {pendingInvoices.length} في انتظار المراجعة
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Pharmacies Visited */}
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card clay-card-interactive h-100">
-            <div className="d-flex justify-content-between align-items-start mb-3">
-              <div>
-                <span className="text-muted small fw-semibold">الصيدليات المعتمدة</span>
-                <h3 className="fw-bold mt-1 mb-0" style={{ color: '#1e293b' }}>
-                  {kpis.total_pharmacies_visited} <small className="fs-6 text-muted">صيدلية</small>
-                </h3>
-              </div>
-              <div className="clay-stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
-                <Building2 size={26} />
-              </div>
-            </div>
-            <div className="small text-muted">
-              تغطية جغرافية في بغداد والمحافظات
-            </div>
-          </div>
-        </div>
-
-        {/* Bonus Pieces */}
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card clay-card-interactive h-100">
-            <div className="d-flex justify-content-between align-items-start mb-3">
-              <div>
-                <span className="text-muted small fw-semibold">قطع البونص الممنوحة</span>
-                <h3 className="fw-bold mt-1 mb-0" style={{ color: '#b45309' }}>
-                  {kpis.total_bonus_given} <small className="fs-6 text-muted">قطعة مجانية</small>
-                </h3>
-              </div>
-              <div className="clay-stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}>
-                <Gift size={26} />
-              </div>
-            </div>
-            <div className="small text-muted">
-              حسب محرك شروط 10+1 و 5+1
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* ── Category Breakdown & Dynamic Visuals ─────────────────────────── */}
-      <div className="row g-3 mb-4">
-        
-        {/* Category Breakdown Clay Card */}
-        <div className="col-12 col-lg-7">
-          <div className="clay-card h-100">
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <div>
-                <h5 className="fw-bold mb-0">توزيع المبيعات حسب الصنف الدوائي</h5>
-                <span className="text-muted small">نسبة الإقبال على القطرات، الكريمات، والمراهم</span>
-              </div>
-              <span className="clay-badge clay-badge-purple">تحديث حي</span>
-            </div>
-
-            {/* Visual Bars with Clay styling */}
-            <div className="space-y-3 py-2">
-              <div className="mb-3">
-                <div className="d-flex justify-content-between small fw-bold mb-1">
-                  <span>💧 قطرات العيون والأذن (Drops)</span>
-                  <span>45% — 520 قطعة</span>
-                </div>
-                <div className="progress rounded-pill" style={{ height: '14px', background: '#e2e8f0', boxShadow: 'inset 2px 2px 4px rgba(0,0,0,0.1)' }}>
-                  <div className="progress-bar rounded-pill" style={{ width: '45%', background: 'linear-gradient(90deg, #3b82f6, #60a5fa)' }}></div>
-                </div>
-              </div>
-
-              <div className="mb-3">
-                <div className="d-flex justify-content-between small fw-bold mb-1">
-                  <span>🧴 كريمات العناية والترطيب (Creams)</span>
-                  <span>35% — 410 قطعة</span>
-                </div>
-                <div className="progress rounded-pill" style={{ height: '14px', background: '#e2e8f0', boxShadow: 'inset 2px 2px 4px rgba(0,0,0,0.1)' }}>
-                  <div className="progress-bar rounded-pill" style={{ width: '35%', background: 'linear-gradient(90deg, #10b981, #34d399)' }}></div>
-                </div>
-              </div>
-
-              <div className="mb-3">
-                <div className="d-flex justify-content-between small fw-bold mb-1">
-                  <span>🩹 مراهم ومضادات الالتهاب (Ointments)</span>
-                  <span>20% — 230 قطعة</span>
-                </div>
-                <div className="progress rounded-pill" style={{ height: '14px', background: '#e2e8f0', boxShadow: 'inset 2px 2px 4px rgba(0,0,0,0.1)' }}>
-                  <div className="progress-bar rounded-pill" style={{ width: '20%', background: 'linear-gradient(90deg, #f59e0b, #fbbf24)' }}></div>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-3 mt-3 rounded-4" style={{ background: '#f8fafc', border: '1px dashed #cbd5e1' }}>
-              <div className="d-flex justify-content-between align-items-center">
-                <span className="small text-muted">💡 ملاحظة الذكاء الاصطناعي:</span>
-                <span className="small fw-semibold text-primary">زيادة الطلب على القطرات بنسبة 24% في صيدليات بغداد</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Quick Operations Widget */}
-        <div className="col-12 col-lg-5">
-          <div className="clay-card h-100 d-flex flex-column justify-content-between">
-            <div>
-              <h5 className="fw-bold mb-2">إجراءات سريعة ومختصرات</h5>
-              <p className="text-muted small mb-3">الوصول السريع للمهام اليومية للمندوب والإدارة</p>
-
-              <div className="d-grid gap-2">
-                <button 
-                  onClick={() => onNavigate('scan')}
-                  className="clay-btn clay-btn-secondary justify-content-start py-3 text-start"
-                >
-                  <PlusCircle size={20} className="text-primary" />
-                  <div>
-                    <div className="fw-bold">رفع فاتورة جديدة وتدقيق الـ OCR</div>
-                    <div className="small text-muted" style={{ fontSize: '0.8rem' }}>مطابقة الأصناف وحساب البونص التلقائي</div>
-                  </div>
-                </button>
-
-                <button 
-                  onClick={() => onNavigate('pharmacies')}
-                  className="clay-btn clay-btn-secondary justify-content-start py-3 text-start"
-                >
-                  <Building2 size={20} className="text-success" />
-                  <div>
-                    <div className="fw-bold">دليل الصيدليات والمناطق</div>
-                    <div className="small text-muted" style={{ fontSize: '0.8rem' }}>إدارة العملاء، أرقام التواصل وسجل المعاملات</div>
-                  </div>
-                </button>
-
-                <button 
-                  onClick={() => onNavigate('billing')}
-                  className="clay-btn clay-btn-secondary justify-content-start py-3 text-start"
-                >
-                  <Download size={20} className="text-purple" />
-                  <div>
-                    <div className="fw-bold">سجل الفواتير وتصدير Excel</div>
-                    <div className="small text-muted" style={{ fontSize: '0.8rem' }}>مراجعة الاعتماد وتحميل التقارير الشاملة</div>
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 pt-3 border-top text-center">
-              <span className="small text-muted">حالة الخادم: متصل ومزامن بالكامل ✅</span>
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* ── Invoices Awaiting Review (Workflow) ───────────────────────────── */}
-      <div className="clay-card">
-        <div className="d-flex justify-content-between align-items-center mb-3">
+      {/* ── Welcome Banner ──────────────────────────────────────────────────── */}
+      <div className="card mb-4" style={{ background: 'linear-gradient(135deg, #fff 0%, #f0f7ff 100%)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <h5 className="fw-bold mb-0">الفواتير قيد التدقيق والمراجعة</h5>
-            <span className="text-muted small">الفواتير المستخرجة حديثاً وبحاجة لاعتماد المشرف</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+              <span className="badge badge-primary">
+                <Sparkles size={13} />
+                {isAdmin ? 'صلاحيات الإدارة الكاملة' : isRep ? 'لوحة المندوب الميداني' : 'لوحة المشرف'}
+              </span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>{dateStr}</span>
+            </div>
+            <h2 style={{ fontWeight: 900, color: 'var(--gray-900)', margin: 0, fontSize: '1.4rem' }}>
+              أهلاً بك، {user.full_name} 👋
+            </h2>
+            <p style={{ color: 'var(--gray-500)', margin: '0.4rem 0 0', fontSize: '0.9rem' }}>
+              {isAdmin
+                ? 'متابعة شبكة المبيعات، اعتماد الفواتير، وتحليل البونص على مستوى الصيدليات.'
+                : 'سجل زياراتك اليومية وأضف فواتير الصيدليات بالإدخال اليدوي أو بالذكاء الاصطناعي.'}
+            </p>
           </div>
-          <button onClick={() => onNavigate('billing')} className="clay-btn clay-btn-secondary py-1 px-3 small">
-            عرض كل الفواتير ({invoices.length})
+
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            {isRep && (
+              <button onClick={() => onNavigate('add-invoice')} className="btn-clay btn-primary">
+                <FilePlus size={18} /> إضافة فاتورة جديدة
+              </button>
+            )}
+            <button onClick={() => onNavigate('visits')} className="btn-clay btn-secondary">
+              <Calendar size={18} /> جدول الزيارات
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── KPI Stats Grid ─────────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+
+        <div className="stat-card card-hover">
+          <div className="stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
+            <TrendingUp size={24} />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">إجمالي المبيعات</div>
+            <div className="stat-value">{kpis.total_revenue.toLocaleString()}</div>
+            <div className="stat-sub">دينار عراقي</div>
+          </div>
+        </div>
+
+        <div className="stat-card card-hover">
+          <div className="stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
+            <FileText size={24} />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">الفواتير المعالجة</div>
+            <div className="stat-value">{kpis.total_invoices}</div>
+            <div className="stat-sub">
+              {pendingInvoices.length > 0 ? (
+                <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>
+                  <Clock size={11} /> {pendingInvoices.length} بانتظار المراجعة
+                </span>
+              ) : (
+                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>كل الفواتير معتمدة ✓</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="stat-card card-hover">
+          <div className="stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
+            <Building2 size={24} />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">الصيدليات المعتمدة</div>
+            <div className="stat-value">{kpis.total_pharmacies_visited || pharmacies.length}</div>
+            <div className="stat-sub">صيدلية</div>
+          </div>
+        </div>
+
+        <div className="stat-card card-hover">
+          <div className="stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}>
+            <Gift size={24} />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">قطع البونص الممنوحة</div>
+            <div className="stat-value" style={{ color: 'var(--warning)' }}>{kpis.total_bonus_given}</div>
+            <div className="stat-sub">قطعة مجانية (10+1)</div>
+          </div>
+        </div>
+
+      </div>
+
+      {/* ── Mid Section ────────────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+
+        {/* Sales Breakdown */}
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+            <h5 style={{ fontWeight: 800, margin: 0 }}>توزيع المبيعات</h5>
+            <span className="badge badge-purple">
+              <Sparkles size={12} /> تحديث حي
+            </span>
+          </div>
+
+          {[
+            { label: '💧 قطرات (Drops)', pct: 45, color: 'var(--primary)' },
+            { label: '🧴 كريمات (Creams)', pct: 35, color: 'var(--success)' },
+            { label: '🩹 مراهم (Ointments)', pct: 20, color: 'var(--warning)' }
+          ].map(b => (
+            <div key={b.label} style={{ marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.83rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                <span>{b.label}</span>
+                <span style={{ color: b.color }}>{b.pct}%</span>
+              </div>
+              <div className="progress-bar-bg">
+                <div className="progress-bar-fill" style={{ width: `${b.pct}%`, background: b.color }} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Quick Actions */}
+        <div className="card">
+          <h5 style={{ fontWeight: 800, marginBottom: '1rem' }}>إجراءات سريعة</h5>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+
+            {isRep && (
+              <button
+                onClick={() => onNavigate('add-invoice')}
+                className="btn-clay btn-secondary"
+                style={{ justifyContent: 'flex-start', padding: '0.875rem 1rem', textAlign: 'right' }}
+              >
+                <FilePlus size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>رفع فاتورة جديدة</div>
+                  <div style={{ fontSize: '0.77rem', color: 'var(--gray-400)', marginTop: 2 }}>يدوي، صورة أو PDF مع OCR</div>
+                </div>
+              </button>
+            )}
+
+            <button
+              onClick={() => onNavigate('pharmacies')}
+              className="btn-clay btn-secondary"
+              style={{ justifyContent: 'flex-start', padding: '0.875rem 1rem', textAlign: 'right' }}
+            >
+              <Building2 size={20} style={{ color: 'var(--purple)', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>دليل الصيدليات</div>
+                <div style={{ fontSize: '0.77rem', color: 'var(--gray-400)', marginTop: 2 }}>إدارة العملاء وسجل المعاملات</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => onNavigate('billing')}
+              className="btn-clay btn-secondary"
+              style={{ justifyContent: 'flex-start', padding: '0.875rem 1rem', textAlign: 'right' }}
+            >
+              <Download size={20} style={{ color: 'var(--success)', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>سجل الفواتير والتقارير</div>
+                <div style={{ fontSize: '0.77rem', color: 'var(--gray-400)', marginTop: 2 }}>مراجعة الاعتماد وتصدير Excel</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Pending Invoices Table ─────────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div>
+            <h5 style={{ fontWeight: 800, margin: 0 }}>الفواتير قيد المراجعة</h5>
+            <span style={{ fontSize: '0.82rem', color: 'var(--gray-400)' }}>الفواتير الجديدة بانتظار اعتماد المشرف</span>
+          </div>
+          <button onClick={() => onNavigate('billing')} className="btn-clay btn-secondary btn-sm">
+            عرض الكل ({invoices.length})
           </button>
         </div>
 
         {pendingInvoices.length === 0 ? (
-          <div className="text-center py-4 text-muted">
-            <CheckCircle2 size={36} className="text-success mx-auto mb-2" />
-            <p className="mb-0 fw-semibold">جميع الفواتير معتمدة ولا توجد فواتير معلقة حالياً!</p>
+          <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--gray-400)' }}>
+            <CheckCircle2 size={40} style={{ color: 'var(--success)', display: 'block', margin: '0 auto 0.75rem' }} />
+            <p style={{ fontWeight: 700, margin: 0 }}>لا توجد فواتير معلقة — كل شيء معتمد! ✅</p>
           </div>
         ) : (
-          <div className="table-responsive">
-            <table className="table table-hover align-middle mb-0">
+          <div style={{ overflowX: 'auto' }}>
+            <table className="clay-table">
               <thead>
-                <tr className="text-secondary small">
+                <tr>
                   <th>رقم الفاتورة</th>
                   <th>الصيدلية</th>
                   <th>المندوب</th>
@@ -294,45 +224,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <th>المبلغ</th>
                   <th>البونص</th>
                   <th>الحالة</th>
-                  {user.role === 'admin' && <th className="text-center">إجراء الاعتماد</th>}
+                  {isAdmin && <th style={{ textAlign: 'center' }}>إجراء</th>}
                 </tr>
               </thead>
               <tbody>
-                {pendingInvoices.map((inv) => (
+                {pendingInvoices.map(inv => (
                   <tr key={inv.id}>
-                    <td className="fw-bold">{inv.invoice_number || 'بدون رقم'}</td>
-                    <td>{inv.pharmacy_name}</td>
-                    <td>{inv.rep_name}</td>
-                    <td>{inv.invoice_date}</td>
-                    <td className="fw-bold text-primary">{inv.total_sales_amount.toLocaleString()} د.ع</td>
-                    <td>
-                      <span className="clay-badge clay-badge-warning">
-                        +{inv.total_bonus_count} مجاناً
-                      </span>
-                    </td>
-                    <td>
-                      <span className="clay-badge clay-badge-warning">
-                        قيد المراجعة
-                      </span>
-                    </td>
-                    {user.role === 'admin' && (
-                      <td className="text-center">
-                        <div className="d-flex gap-2 justify-content-center">
-                          <button
-                            onClick={() => onApproveInvoice(inv.id)}
-                            className="clay-btn clay-btn-success py-1 px-2"
-                            style={{ fontSize: '0.8rem' }}
-                            title="اعتماد الفاتورة"
-                          >
-                            <CheckCircle2 size={15} /> اعتماد
+                    <td style={{ fontWeight: 700, color: 'var(--gray-900)' }}>{inv.invoice_number || '—'}</td>
+                    <td style={{ color: 'var(--gray-600)' }}>{inv.pharmacy_name}</td>
+                    <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name}</td>
+                    <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{inv.invoice_date}</td>
+                    <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{inv.total_sales_amount?.toLocaleString()} د.ع</td>
+                    <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
+                    <td><span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span></td>
+                    {isAdmin && (
+                      <td>
+                        <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+                          <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm">
+                            <CheckCircle2 size={14} /> اعتماد
                           </button>
-                          <button
-                            onClick={() => onRejectInvoice(inv.id)}
-                            className="clay-btn clay-btn-danger py-1 px-2"
-                            style={{ fontSize: '0.8rem' }}
-                            title="رفض الفاتورة"
-                          >
-                            <AlertCircle size={15} /> رفض
+                          <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm">
+                            <AlertCircle size={14} /> رفض
                           </button>
                         </div>
                       </td>
@@ -345,6 +257,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
         )}
       </div>
 
+      <style>{`
+        @media (max-width: 768px) {
+          .mid-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
     </div>
   );
 };

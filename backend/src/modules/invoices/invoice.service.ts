@@ -15,7 +15,7 @@ export interface CreateInvoiceInput {
   pharmacy_id: string;
   invoice_number?: string;
   invoice_date?: string;
-  image_url: string;
+  image_url?: string;
   is_synced_offline?: boolean;
   items: InvoiceItemInput[];
 }
@@ -42,7 +42,7 @@ export interface Invoice {
   pharmacy_name?: string;
   rep_id: string;
   rep_name?: string;
-  image_url: string;
+  image_url?: string;
   status: InvoiceStatus;
   total_sales_amount: number;
   total_pieces_count: number;
@@ -54,60 +54,9 @@ export interface Invoice {
   updated_at: Date;
 }
 
-// ─── In-Memory Invoice Store ─────────────────────────────────────────────────
+// ─── In-Memory Invoice Store (Clean - No test data) ──────────────────────────
 const invoices: Invoice[] = [];
 const invoiceItems: InvoiceItem[] = [];
-
-// Seed: two demo approved invoices
-const seedInvoices = async () => {
-  const now = new Date();
-  const inv1: Invoice = {
-    id: 'inv00001-0000-0000-0000-000000000001',
-    invoice_number: 'INV-2026-001',
-    invoice_date: '2026-10-01',
-    pharmacy_id: 'ph000001-0000-0000-0000-000000000001',
-    pharmacy_name: 'صيدلية النور الحديثة',
-    rep_id: 'a0000000-0000-0000-0000-000000000002',
-    rep_name: 'علي حسن',
-    image_url: 'https://placehold.co/800x600?text=Invoice+1',
-    status: 'approved',
-    total_sales_amount: 1300.00,
-    total_pieces_count: 50,
-    total_bonus_count: 5,
-    is_synced_offline: false,
-    created_at: now,
-    updated_at: now
-  };
-  const inv2: Invoice = {
-    id: 'inv00002-0000-0000-0000-000000000002',
-    invoice_number: 'INV-2026-002',
-    invoice_date: '2026-10-15',
-    pharmacy_id: 'ph000002-0000-0000-0000-000000000002',
-    pharmacy_name: 'صيدلية الشفاء',
-    rep_id: 'a0000000-0000-0000-0000-000000000002',
-    rep_name: 'علي حسن',
-    image_url: 'https://placehold.co/800x600?text=Invoice+2',
-    status: 'pending_review',
-    total_sales_amount: 750.00,
-    total_pieces_count: 30,
-    total_bonus_count: 3,
-    is_synced_offline: false,
-    created_at: now,
-    updated_at: now
-  };
-  invoices.push(inv1, inv2);
-
-  const items1: InvoiceItem[] = [
-    { id: crypto.randomUUID(), invoice_id: inv1.id, product_id: 'prod0001-0000-0000-0000-000000000001', product_name_snapshot: 'قطرة عين مرطبة 15ml', product_type_snapshot: 'drop',    sold_quantity: 20, historical_unit_price: 25, bonus_quantity: 2, total_quantity: 22, line_total: 500, ocr_confidence: 0.95 },
-    { id: crypto.randomUUID(), invoice_id: inv1.id, product_id: 'prod0002-0000-0000-0000-000000000002', product_name_snapshot: 'كريم ترطيب مكثف 50g',  product_type_snapshot: 'cream',   sold_quantity: 20, historical_unit_price: 40, bonus_quantity: 2, total_quantity: 22, line_total: 800, ocr_confidence: 0.92 },
-  ];
-  const items2: InvoiceItem[] = [
-    { id: crypto.randomUUID(), invoice_id: inv2.id, product_id: 'prod0003-0000-0000-0000-000000000003', product_name_snapshot: 'مرهم مضاد للالتهاب 30g', product_type_snapshot: 'ointment', sold_quantity: 15, historical_unit_price: 35, bonus_quantity: 1, total_quantity: 16, line_total: 525, ocr_confidence: 0.88 },
-    { id: crypto.randomUUID(), invoice_id: inv2.id, product_id: 'prod0004-0000-0000-0000-000000000004', product_name_snapshot: 'قطرة أذن مضادة للألم',   product_type_snapshot: 'drop',    sold_quantity: 10, historical_unit_price: 18, bonus_quantity: 2, total_quantity: 12, line_total: 180, ocr_confidence: 0.85 },
-  ];
-  invoiceItems.push(...items1, ...items2);
-};
-seedInvoices();
 
 // ── Invoice Service ───────────────────────────────────────────────────────────
 export class InvoiceService {
@@ -222,7 +171,7 @@ export class InvoiceService {
             total_sales_amount,total_pieces_count,total_bonus_count,is_synced_offline,created_at,updated_at)
            VALUES($1,$2,$3,$4,$5,$6,'pending_review',$7,$8,$9,$10,$11,$12)`,
           [invoiceId, input.invoice_number ?? null, invoiceDate,
-           input.pharmacy_id, repId, input.image_url,
+           input.pharmacy_id, repId, input.image_url ?? null,
            totalSales, totalPieces, totalBonus,
            input.is_synced_offline ?? false, now, now]
         );

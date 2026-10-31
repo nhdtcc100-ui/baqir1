@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Pharmacy, Invoice } from '../types';
 import { 
   Building2, Phone, MapPin, UserCheck, Calendar, FileText, 
-  TrendingUp, Gift, Plus, ArrowUpRight, CheckCircle2, Search
+  TrendingUp, Gift, Plus, ArrowUpRight, CheckCircle2, Search, FilePlus
 } from 'lucide-react';
 
 interface PharmacyProfileProps {
@@ -24,165 +24,167 @@ export const PharmacyProfile: React.FC<PharmacyProfileProps> = ({
   const currentPharmacy = pharmacies.find(p => p.id === selectedPharmacyId) || pharmacies[0];
   const pharmacyInvoices = invoices.filter(i => i.pharmacy_id === currentPharmacy?.id);
 
-  const totalSales = pharmacyInvoices.reduce((s, i) => s + i.total_sales_amount, 0);
-  const totalPieces = pharmacyInvoices.reduce((s, i) => s + i.total_pieces_count, 0);
-  const totalBonus = pharmacyInvoices.reduce((s, i) => s + i.total_bonus_count, 0);
+  const totalSales = pharmacyInvoices.reduce((s, i) => s + Number(i.total_sales_amount || 0), 0);
+  const totalPieces = pharmacyInvoices.reduce((s, i) => s + Number(i.total_pieces_count || 0), 0);
+  const totalBonus = pharmacyInvoices.reduce((s, i) => s + Number(i.total_bonus_count || 0), 0);
 
   const filteredPharmacies = pharmacies.filter(p => 
-    p.name.includes(searchQuery) || p.city.includes(searchQuery)
+    p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    p.city.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       
-      {/* ── Pharmacy Selector & Search Header ─────────────────────────────── */}
-      <div className="clay-card mb-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
-        <div>
-          <div className="d-flex align-items-center gap-2 mb-1">
-            <span className="clay-badge clay-badge-primary">
-              <Building2 size={14} /> ملف الصيدلية والعميل 360°
-            </span>
-            <span className="text-muted small">سجل المشتريات، البونص، والموقع</span>
+      {/* ── Pharmacy Header Card ─────────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+              <span className="badge badge-primary">
+                <Building2 size={13} /> ملف الصيدلية 360°
+              </span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>قاعدة بيانات Supabase Docker</span>
+            </div>
+            <h1 className="page-title" style={{ margin: '0 0 0.5rem' }}>
+              {currentPharmacy?.name || 'اختر صيدلية'}
+            </h1>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', fontSize: '0.85rem', color: 'var(--gray-600)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <MapPin size={15} style={{ color: 'var(--primary)' }} /> {currentPharmacy?.city} — {currentPharmacy?.address}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <Phone size={15} style={{ color: 'var(--success)' }} /> {currentPharmacy?.phone || '—'}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <UserCheck size={15} style={{ color: 'var(--purple)' }} /> المندوب المسؤول: {currentPharmacy?.assigned_rep_name || 'مندوب بغداد'}
+              </span>
+            </div>
           </div>
-          <h2 className="fw-bold mb-1" style={{ color: '#0f172a' }}>
-            {currentPharmacy?.name}
-          </h2>
-          <div className="d-flex flex-wrap gap-3 small text-muted">
-            <span className="d-flex align-items-center gap-1">
-              <MapPin size={15} className="text-primary" /> {currentPharmacy?.city} — {currentPharmacy?.address}
-            </span>
-            <span className="d-flex align-items-center gap-1">
-              <Phone size={15} className="text-success" /> {currentPharmacy?.phone}
-            </span>
-            <span className="d-flex align-items-center gap-1">
-              <UserCheck size={15} className="text-purple" /> المندوب المسؤول: {currentPharmacy?.assigned_rep_name || 'غير محدد'}
-            </span>
-          </div>
-        </div>
 
-        {/* Action Buttons */}
-        <div className="d-flex flex-wrap gap-2">
-          <button 
-            onClick={() => onStartInvoiceForPharmacy(currentPharmacy.id)} 
-            className="clay-btn clay-btn-primary"
-          >
-            <Plus size={18} />
-            <span>فاتورة جديدة للصيدلية</span>
-          </button>
-          <button 
-            onClick={() => onScheduleVisit(currentPharmacy.id)} 
-            className="clay-btn clay-btn-secondary"
-          >
-            <Calendar size={18} />
-            <span>حجز زيارة</span>
-          </button>
+          {currentPharmacy && (
+            <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
+              <button 
+                onClick={() => onStartInvoiceForPharmacy(currentPharmacy.id)} 
+                className="btn-clay btn-primary"
+              >
+                <FilePlus size={18} />
+                <span>إضافة فاتورة لهذه الصيدلية</span>
+              </button>
+              <button 
+                onClick={() => onScheduleVisit(currentPharmacy.id)} 
+                className="btn-clay btn-secondary"
+              >
+                <Calendar size={18} />
+                <span>جدولة زيارة</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="row g-4">
+      {/* ── Grid Layout: Directory + Details ──────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '1.25rem' }}>
         
-        {/* ── Left Sidebar: Pharmacy Directory ────────────────────────────── */}
-        <div className="col-12 col-lg-4">
-          <div className="clay-card h-100">
-            <h5 className="fw-bold mb-3 d-flex align-items-center gap-2">
-              <Building2 size={18} className="text-primary" /> قائمة الصيدليات
-            </h5>
+        {/* Left: Pharmacy Directory */}
+        <div className="card" style={{ height: 'fit-content' }}>
+          <h5 style={{ fontWeight: 800, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Building2 size={18} style={{ color: 'var(--primary)' }} />
+            دليل الصيدليات ({pharmacies.length})
+          </h5>
 
-            {/* Search Input */}
-            <div className="mb-3">
-              <div className="position-relative">
-                <input
-                  type="text"
-                  className="clay-input"
-                  placeholder="ابحث بالاسم أو المدينة..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
-            </div>
+          <div style={{ marginBottom: '0.75rem' }}>
+            <input
+              type="text"
+              className="clay-input"
+              placeholder="🔍 ابحث بالاسم أو المدينة..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
 
-            {/* List */}
-            <div className="space-y-2">
-              {filteredPharmacies.map(ph => (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {filteredPharmacies.map(ph => {
+              const isSelected = ph.id === (currentPharmacy?.id);
+              return (
                 <div
                   key={ph.id}
                   onClick={() => setSelectedPharmacyId(ph.id)}
-                  className={`p-3 rounded-4 cursor-pointer transition-all ${ph.id === selectedPharmacyId ? 'bg-primary text-white shadow' : 'bg-light text-dark'}`}
-                  style={{ cursor: 'pointer', transition: 'all 0.2s ease', border: '1px solid rgba(0,0,0,0.05)' }}
+                  style={{
+                    padding: '0.85rem 1rem',
+                    borderRadius: 12,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: isSelected ? 'var(--primary)' : 'var(--gray-50)',
+                    color: isSelected ? '#ffffff' : 'var(--gray-800)',
+                    border: isSelected ? '1px solid var(--primary)' : '1px solid var(--gray-200)'
+                  }}
                 >
-                  <div className="d-flex justify-content-between align-items-start mb-1">
-                    <span className="fw-bold">{ph.name}</span>
-                    <span className={`badge ${ph.id === selectedPharmacyId ? 'bg-white text-primary' : 'bg-secondary-subtle text-secondary'}`}>
-                      {ph.city}
-                    </span>
-                  </div>
-                  <div className={`small ${ph.id === selectedPharmacyId ? 'text-white-50' : 'text-muted'}`}>
-                    📞 {ph.phone}
+                  <div style={{ fontWeight: 800, fontSize: '0.9rem' }}>{ph.name}</div>
+                  <div style={{ fontSize: '0.75rem', opacity: isSelected ? 0.9 : 0.6, marginTop: 2 }}>
+                    📍 {ph.city} {ph.address ? `— ${ph.address.substring(0, 24)}...` : ''}
                   </div>
                 </div>
-              ))}
-            </div>
-
+              );
+            })}
           </div>
         </div>
 
-        {/* ── Right Content: Pharmacy Analytics & Ledger ─────────────────── */}
-        <div className="col-12 col-lg-8">
+        {/* Right: Pharmacy Stats & Invoice History */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           
-          {/* Pharmacy Mini-KPIs */}
-          <div className="row g-3 mb-4">
-            <div className="col-12 col-sm-4">
-              <div className="clay-card text-center p-3">
-                <span className="text-muted small">إجمالي المشتريات</span>
-                <h4 className="fw-bold text-primary mt-1 mb-0">
-                  {totalSales.toLocaleString()} <small className="fs-6">د.ع</small>
-                </h4>
+          {/* Stats */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
+            <div className="stat-card">
+              <div className="stat-content">
+                <div className="stat-label">إجمالي المسحوبات</div>
+                <div className="stat-value" style={{ color: 'var(--primary)' }}>{totalSales.toLocaleString()}</div>
+                <div className="stat-sub">دينار عراقي</div>
               </div>
             </div>
-            <div className="col-12 col-sm-4">
-              <div className="clay-card text-center p-3">
-                <span className="text-muted small">عدد الفواتير الصادرة</span>
-                <h4 className="fw-bold text-success mt-1 mb-0">
-                  {pharmacyInvoices.length} فواتير
-                </h4>
+
+            <div className="stat-card">
+              <div className="stat-content">
+                <div className="stat-label">إجمالي القطع المشتراة</div>
+                <div className="stat-value" style={{ color: 'var(--success)' }}>{totalPieces}</div>
+                <div className="stat-sub">عبوة دوائية</div>
               </div>
             </div>
-            <div className="col-12 col-sm-4">
-              <div className="clay-card text-center p-3">
-                <span className="text-muted small">مجموع البونص الممنوح</span>
-                <h4 className="fw-bold text-warning mt-1 mb-0">
-                  +{totalBonus} قطعة مجاناً
-                </h4>
+
+            <div className="stat-card">
+              <div className="stat-content">
+                <div className="stat-label">البونص المكتسب</div>
+                <div className="stat-value" style={{ color: 'var(--purple)' }}>+{totalBonus}</div>
+                <div className="stat-sub">قطعة مجانية (10+1)</div>
               </div>
             </div>
           </div>
 
           {/* Invoices History Table */}
-          <div className="clay-card">
-            <div className="d-flex justify-content-between align-items-center mb-3">
-              <h5 className="fw-bold mb-0">سجل فواتير ومعاملات {currentPharmacy?.name}</h5>
-              <span className="text-muted small">{pharmacyInvoices.length} معاملة</span>
-            </div>
+          <div className="card">
+            <h5 style={{ fontWeight: 800, marginBottom: '1rem' }}>
+              سجل فواتير الصيدلية ({pharmacyInvoices.length})
+            </h5>
 
             {pharmacyInvoices.length === 0 ? (
-              <div className="text-center py-5 text-muted">
-                <FileText size={36} className="text-secondary mx-auto mb-2 opacity-50" />
-                <p className="mb-0">لم تسجل أي فواتير لهذه الصيدلية بعد.</p>
-                <button 
-                  onClick={() => onStartInvoiceForPharmacy(currentPharmacy.id)}
-                  className="clay-btn clay-btn-primary mt-3 py-1 px-3 small"
+              <div style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--gray-400)' }}>
+                <FileText size={40} style={{ color: 'var(--gray-300)', display: 'block', margin: '0 auto 0.75rem' }} />
+                <p style={{ fontWeight: 700, margin: 0 }}>لا توجد فواتير سابقة لهذه الصيدلية حتى الآن</p>
+                <button
+                  onClick={() => currentPharmacy && onStartInvoiceForPharmacy(currentPharmacy.id)}
+                  className="btn-clay btn-primary btn-sm"
+                  style={{ marginTop: '0.85rem' }}
                 >
-                  رفع أول فاتورة للصيدلية
+                  <FilePlus size={15} /> إضافة الفاتورة الأولى
                 </button>
               </div>
             ) : (
-              <div className="table-responsive">
-                <table className="table table-hover align-middle mb-0">
+              <div style={{ overflowX: 'auto' }}>
+                <table className="clay-table">
                   <thead>
-                    <tr className="small text-secondary">
+                    <tr>
                       <th>رقم الفاتورة</th>
                       <th>تاريخ الفاتورة</th>
-                      <th>المندوب</th>
                       <th>المبلغ</th>
                       <th>القطع</th>
                       <th>البونص</th>
@@ -192,19 +194,14 @@ export const PharmacyProfile: React.FC<PharmacyProfileProps> = ({
                   <tbody>
                     {pharmacyInvoices.map(inv => (
                       <tr key={inv.id}>
-                        <td className="fw-bold">{inv.invoice_number || 'بدون رقم'}</td>
+                        <td style={{ fontWeight: 800 }}>{inv.invoice_number || '—'}</td>
                         <td>{inv.invoice_date}</td>
-                        <td>{inv.rep_name}</td>
-                        <td className="fw-bold text-primary">{inv.total_sales_amount.toLocaleString()} د.ع</td>
-                        <td>{inv.total_pieces_count} قطعة</td>
+                        <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{Number(inv.total_sales_amount).toLocaleString()} د.ع</td>
+                        <td>{inv.total_pieces_count}</td>
+                        <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
                         <td>
-                          <span className="clay-badge clay-badge-warning py-1 px-2">
-                            +{inv.total_bonus_count} مجاناً
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`clay-badge ${inv.status === 'approved' ? 'clay-badge-success' : inv.status === 'rejected' ? 'clay-badge-danger' : 'clay-badge-warning'}`}>
-                            {inv.status === 'approved' ? 'معتمدة ✅' : inv.status === 'rejected' ? 'مرفوضة ❌' : 'قيد المراجعة ⏳'}
+                          <span className={`badge ${inv.status === 'approved' ? 'badge-success' : inv.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                            {inv.status === 'approved' ? 'معتمدة' : inv.status === 'rejected' ? 'مرفوضة' : 'قيد المراجعة'}
                           </span>
                         </td>
                       </tr>
@@ -213,7 +210,6 @@ export const PharmacyProfile: React.FC<PharmacyProfileProps> = ({
                 </table>
               </div>
             )}
-
           </div>
 
         </div>

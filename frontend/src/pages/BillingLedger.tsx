@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { User, Invoice, Pharmacy } from '../types';
 import { 
-  FileText, Download, CheckCircle2, XCircle, AlertCircle, 
-  Eye, Filter, Calendar, Building2, Gift, DollarSign, Search
+  FileText, Download, CheckCircle2, AlertCircle, 
+  Eye, Filter, Calendar, Building2, Gift, Search, X, Check, Clock
 } from 'lucide-react';
 
 interface BillingLedgerProps {
@@ -38,13 +38,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     return true;
   });
 
-  const totalSales = filteredInvoices.reduce((s, i) => s + i.total_sales_amount, 0);
-  const approvedSales = filteredInvoices.filter(i => i.status === 'approved').reduce((s, i) => s + i.total_sales_amount, 0);
-  const pendingSales = filteredInvoices.filter(i => i.status === 'pending_review').reduce((s, i) => s + i.total_sales_amount, 0);
-  const totalBonusPieces = filteredInvoices.reduce((s, i) => s + i.total_bonus_count, 0);
+  const totalSales = filteredInvoices.reduce((s, i) => s + Number(i.total_sales_amount || 0), 0);
+  const approvedSales = filteredInvoices.filter(i => i.status === 'approved').reduce((s, i) => s + Number(i.total_sales_amount || 0), 0);
+  const pendingSales = filteredInvoices.filter(i => i.status === 'pending_review').reduce((s, i) => s + Number(i.total_sales_amount || 0), 0);
+  const totalBonusPieces = filteredInvoices.reduce((s, i) => s + Number(i.total_bonus_count || 0), 0);
 
   const handleExportCSV = () => {
-    // Generate CSV client-side with UTF-8 BOM for Arabic compatibility in Excel
     const headers = ['رقم الفاتورة', 'الصيدلية', 'المندوب', 'التاريخ', 'المبلغ (د.ع)', 'القطع', 'البونص', 'الحالة', 'سبب الرفض'];
     const rows = filteredInvoices.map(i => [
       i.invoice_number || '',
@@ -80,79 +79,71 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setRejectionReason('');
   };
 
+  const isAdmin = user.role === 'admin' || user.role === 'supervisor';
+
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
       
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="clay-card mb-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+      {/* ── Page Header ──────────────────────────────────────────────────────── */}
+      <div className="page-header">
         <div>
-          <div className="d-flex align-items-center gap-2 mb-1">
-            <span className="clay-badge clay-badge-primary">
-              <FileText size={14} /> السجل المالي والفواتير (Billing Ledger)
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+            <span className="badge badge-primary">
+              <FileText size={13} /> السجل المالي للفواتير
             </span>
-            <span className="text-muted small">المطابقة، التدقيق وتصدير التقارير</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>قاعدة بيانات Supabase Docker</span>
           </div>
-          <h2 className="fw-bold mb-1" style={{ color: '#0f172a' }}>
-            سجل فواتير المبيعات والاعتماد
-          </h2>
-          <p className="text-muted mb-0 small">
-            استعراض كافة الفواتير، تدقيق نسب البونص المستخرجة بالـ OCR، واعتماد الصرف أو الرفض.
+          <h1 className="page-title">سجل فواتير المبيعات والاعتماد</h1>
+          <p className="page-subtitle">
+            استعراض وتدقيق الفواتير المرفوعة بواسطة المندوبين، مراجعة بونص الأصناف (10+1)، واعتماد الصرف أو الرفض.
           </p>
         </div>
 
-        <button 
-          onClick={handleExportCSV} 
-          className="clay-btn clay-btn-success"
-        >
+        <button onClick={handleExportCSV} className="btn-clay btn-secondary">
           <Download size={18} />
-          <span>تصدير إلى Excel / CSV</span>
+          <span>تصدير تقرير Excel (CSV)</span>
         </button>
       </div>
 
-      {/* ── Financial Summary Cards ───────────────────────────────────────── */}
-      <div className="row g-3 mb-4">
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">إجمالي مبالغ الفواتير المعروضة</span>
-            <h4 className="fw-bold text-primary mt-1 mb-0">
-              {totalSales.toLocaleString()} <small className="fs-6">د.ع</small>
-            </h4>
+      {/* ── Stat Summary Cards ─────────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">إجمالي الفواتير المعروضة</div>
+            <div className="stat-value" style={{ color: 'var(--primary)' }}>{totalSales.toLocaleString()}</div>
+            <div className="stat-sub">دينار عراقي</div>
           </div>
         </div>
 
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">المبالغ المعتمدة رسمياً</span>
-            <h4 className="fw-bold text-success mt-1 mb-0">
-              {approvedSales.toLocaleString()} <small className="fs-6">د.ع</small>
-            </h4>
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">المبالغ المعتمدة رسمياً</div>
+            <div className="stat-value" style={{ color: 'var(--success)' }}>{approvedSales.toLocaleString()}</div>
+            <div className="stat-sub">دينار عراقي</div>
           </div>
         </div>
 
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">فواتير قيد التدقيق</span>
-            <h4 className="fw-bold text-warning mt-1 mb-0">
-              {pendingSales.toLocaleString()} <small className="fs-6">د.ع</small>
-            </h4>
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">مبالغ قيد المراجعة</div>
+            <div className="stat-value" style={{ color: 'var(--warning)' }}>{pendingSales.toLocaleString()}</div>
+            <div className="stat-sub">دينار عراقي</div>
           </div>
         </div>
 
-        <div className="col-12 col-sm-6 col-xl-3">
-          <div className="clay-card text-center p-3">
-            <span className="text-muted small">إجمالي بونص الأصناف</span>
-            <h4 className="fw-bold text-purple mt-1 mb-0">
-              +{totalBonusPieces} <small className="fs-6">قطعة مجانية</small>
-            </h4>
+        <div className="stat-card">
+          <div className="stat-content">
+            <div className="stat-label">إجمالي بونص الأصناف</div>
+            <div className="stat-value" style={{ color: 'var(--purple)' }}>+{totalBonusPieces}</div>
+            <div className="stat-sub">قطعة مجانية ممنوحة</div>
           </div>
         </div>
       </div>
 
-      {/* ── Filter Bar ────────────────────────────────────────────────────── */}
-      <div className="clay-card mb-4 p-3">
-        <div className="row g-2 align-items-center">
-          
-          <div className="col-12 col-md-4">
+      {/* ── Filter Bar ──────────────────────────────────────────────────────── */}
+      <div className="card" style={{ padding: '1rem 1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', alignItems: 'center' }}>
+          <div>
             <input 
               type="text" 
               className="clay-input" 
@@ -162,7 +153,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             />
           </div>
 
-          <div className="col-6 col-md-4">
+          <div>
             <select 
               className="clay-input"
               value={statusFilter}
@@ -175,7 +166,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             </select>
           </div>
 
-          <div className="col-6 col-md-4">
+          <div>
             <select 
               className="clay-input"
               value={pharmacyFilter}
@@ -183,98 +174,108 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             >
               <option value="all">كل الصيدليات</option>
               {pharmacies.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
+                <option key={p.id} value={p.id}>{p.name} ({p.city})</option>
               ))}
             </select>
           </div>
-
         </div>
       </div>
 
-      {/* ── Invoices Ledger Table ─────────────────────────────────────────── */}
-      <div className="clay-card">
-        <div className="d-flex justify-content-between align-items-center mb-3">
-          <h5 className="fw-bold mb-0">قائمة الفواتير الموثقة ({filteredInvoices.length})</h5>
-          <span className="text-muted small">مرتبة تنازلياً حسب تاريخ الإصدار</span>
+      {/* ── Table Card ──────────────────────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <h5 style={{ fontWeight: 800, margin: 0 }}>
+            قائمة الفواتير الموثقة ({filteredInvoices.length})
+          </h5>
+          <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>
+            مخزنة في PostgreSQL عبر سوبا بيس
+          </span>
         </div>
 
         {filteredInvoices.length === 0 ? (
-          <div className="text-center py-5 text-muted">
-            <FileText size={40} className="text-secondary mx-auto mb-2 opacity-50" />
-            <p className="mb-0">لا توجد فواتير مطابقة لمعايير البحث الحالية.</p>
+          <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--gray-400)' }}>
+            <FileText size={48} style={{ color: 'var(--gray-300)', display: 'block', margin: '0 auto 1rem' }} />
+            <h4 style={{ fontWeight: 800, color: 'var(--gray-700)', marginBottom: '0.5rem' }}>لا توجد فواتير مسجلة حالياً</h4>
+            <p style={{ fontSize: '0.88rem', maxWidth: 400, margin: '0 auto' }}>
+              تم تنظيف بيانات الاختبار بالكامل. يمكن للمندوب إضافة الفواتير الجديدة يدوياً أو عبر رفع صورة أو ملف PDF.
+            </p>
           </div>
         ) : (
-          <div className="table-responsive">
-            <table className="table table-hover align-middle mb-0">
+          <div style={{ overflowX: 'auto' }}>
+            <table className="clay-table">
               <thead>
-                <tr className="small text-secondary">
+                <tr>
                   <th>رقم الفاتورة</th>
                   <th>الصيدلية</th>
                   <th>المندوب</th>
                   <th>تاريخ الفاتورة</th>
-                  <th>المبلغ</th>
+                  <th>المبلغ الإجمالي</th>
                   <th>القطع</th>
                   <th>البونص</th>
                   <th>الحالة</th>
-                  <th>معاينة الأصل</th>
-                  {user.role === 'admin' && <th className="text-center">إجراء الاعتماد</th>}
+                  <th>مستند الفاتورة</th>
+                  {isAdmin && <th style={{ textAlign: 'center' }}>إجراء الاعتماد</th>}
                 </tr>
               </thead>
               <tbody>
-                {filteredInvoices.map((inv) => (
+                {filteredInvoices.map(inv => (
                   <tr key={inv.id}>
-                    <td className="fw-bold">{inv.invoice_number || 'بدون رقم'}</td>
-                    <td>{inv.pharmacy_name}</td>
-                    <td>{inv.rep_name}</td>
-                    <td>{inv.invoice_date}</td>
-                    <td className="fw-bold text-primary">{inv.total_sales_amount.toLocaleString()} د.ع</td>
+                    <td style={{ fontWeight: 800, color: 'var(--gray-900)' }}>{inv.invoice_number || '—'}</td>
+                    <td style={{ fontWeight: 600 }}>{inv.pharmacy_name || 'صيدلية معتمدة'}</td>
+                    <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name || 'مندوب ميداني'}</td>
+                    <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{inv.invoice_date}</td>
+                    <td style={{ fontWeight: 800, color: 'var(--primary)' }}>
+                      {Number(inv.total_sales_amount).toLocaleString()} د.ع
+                    </td>
                     <td>{inv.total_pieces_count} قطعة</td>
                     <td>
-                      <span className="clay-badge clay-badge-warning py-1 px-2">
-                        +{inv.total_bonus_count} مجاناً
+                      <span className={`badge ${inv.total_bonus_count > 0 ? 'badge-warning' : 'badge-gray'}`}>
+                        +{inv.total_bonus_count} 🎁
                       </span>
                     </td>
                     <td>
-                      <span className={`clay-badge ${inv.status === 'approved' ? 'clay-badge-success' : inv.status === 'rejected' ? 'clay-badge-danger' : 'clay-badge-warning'}`}>
-                        {inv.status === 'approved' ? 'معتمدة ✅' : inv.status === 'rejected' ? 'مرفوضة ❌' : 'قيد التدقيق ⏳'}
-                      </span>
-                      {inv.rejection_reason && (
-                        <div className="small text-danger mt-1" style={{ fontSize: '0.75rem' }}>
-                          السبب: {inv.rejection_reason}
-                        </div>
+                      {inv.status === 'approved' ? (
+                        <span className="badge badge-success"><CheckCircle2 size={12} /> معتمدة</span>
+                      ) : inv.status === 'rejected' ? (
+                        <span className="badge badge-danger" title={inv.rejection_reason}><AlertCircle size={12} /> مرفوضة</span>
+                      ) : (
+                        <span className="badge badge-warning"><Clock size={12} /> قيد التدقيق</span>
                       )}
                     </td>
                     <td>
-                      <button
-                        onClick={() => setPreviewImageUrl(inv.image_url)}
-                        className="btn btn-sm btn-light border py-1 px-2 text-primary"
-                        title="معاينة صورة الفاتورة"
-                      >
-                        <Eye size={15} />
-                      </button>
+                      {inv.image_url ? (
+                        <button
+                          onClick={() => setPreviewImageUrl(inv.image_url)}
+                          className="btn-clay btn-secondary btn-sm"
+                          style={{ padding: '0.35rem 0.65rem' }}
+                        >
+                          <Eye size={14} /> معاينة
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>إدخال يدوي</span>
+                      )}
                     </td>
-
-                    {user.role === 'admin' && (
-                      <td className="text-center">
+                    {isAdmin && (
+                      <td>
                         {inv.status === 'pending_review' ? (
-                          <div className="d-flex gap-2 justify-content-center">
+                          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
                             <button
                               onClick={() => onApproveInvoice(inv.id)}
-                              className="clay-btn clay-btn-success py-1 px-2"
-                              style={{ fontSize: '0.8rem' }}
+                              className="btn-clay btn-success btn-sm"
                             >
                               <CheckCircle2 size={14} /> اعتماد
                             </button>
                             <button
                               onClick={() => setRejectingInvoiceId(inv.id)}
-                              className="clay-btn clay-btn-danger py-1 px-2"
-                              style={{ fontSize: '0.8rem' }}
+                              className="btn-clay btn-danger btn-sm"
                             >
-                              <XCircle size={14} /> رفض
+                              <AlertCircle size={14} /> رفض
                             </button>
                           </div>
                         ) : (
-                          <span className="text-muted small">تم اتخاذ القرار</span>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)', textAlign: 'center', display: 'block' }}>
+                            مكتملة
+                          </span>
                         )}
                       </td>
                     )}
@@ -286,61 +287,72 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
         )}
       </div>
 
-      {/* ── Image Preview Modal ───────────────────────────────────────────── */}
+      {/* ── Image Preview Modal ────────────────────────────────────────────── */}
       {previewImageUrl && (
-        <div 
-          className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
-          style={{ background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(5px)', zIndex: 1060 }}
-          onClick={() => setPreviewImageUrl(null)}
-        >
-          <div className="clay-card p-3 text-center" style={{ maxWidth: '600px', background: '#ffffff' }} onClick={e => e.stopPropagation()}>
-            <div className="d-flex justify-content-between align-items-center mb-2">
-              <span className="fw-bold">معاينة صورة الفاتورة الأصلية (OCR Input)</span>
-              <button onClick={() => setPreviewImageUrl(null)} className="btn btn-sm btn-light rounded-circle">✕</button>
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.8)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 2000,
+          padding: '1.5rem'
+        }}>
+          <div className="card" style={{ maxWidth: 700, width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h5 style={{ fontWeight: 800, margin: 0 }}>مستند الفاتورة الأصلي</h5>
+              <button
+                onClick={() => setPreviewImageUrl(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray-500)' }}
+              >
+                <X size={20} />
+              </button>
             </div>
-            <img 
-              src={previewImageUrl} 
-              alt="صورة الفاتورة" 
-              className="img-fluid rounded-3" 
-              style={{ maxHeight: '75vh', objectFit: 'contain' }}
-            />
+            <div style={{ overflow: 'auto', textAlign: 'center' }}>
+              <img src={previewImageUrl} alt="أصل الفاتورة" style={{ maxWidth: '100%', borderRadius: 12 }} />
+            </div>
           </div>
         </div>
       )}
 
-      {/* ── Rejection Reason Modal ────────────────────────────────────────── */}
+      {/* ── Reject Reason Modal ────────────────────────────────────────────── */}
       {rejectingInvoiceId && (
-        <div 
-          className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3"
-          style={{ background: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(5px)', zIndex: 1060 }}
-        >
-          <div className="clay-card p-4" style={{ maxWidth: '480px', background: '#ffffff' }}>
-            <h5 className="fw-bold mb-2 text-danger d-flex align-items-center gap-2">
-              <AlertCircle size={20} /> سبب رفض الفاتورة
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.8)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 2000,
+          padding: '1.5rem'
+        }}>
+          <div className="card" style={{ maxWidth: 450, width: '100%' }}>
+            <h5 style={{ fontWeight: 800, marginBottom: '0.75rem', color: 'var(--danger)' }}>
+              تأكيد رفض الفاتورة
             </h5>
-            <p className="text-muted small mb-3">
-              يرجى توضيح سبب الرفض ليتم إشعار المندوب لتصحيح الفاتورة أو إعادة المسح الضوئي.
+            <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: '1rem' }}>
+              يرجى كتابة سبب الرفض ليظهر للمندوب ويتمكن من تصحيح الفاتورة أو إعادة رفعها:
             </p>
-
             <textarea
-              className="clay-input mb-3"
+              className="clay-input"
               rows={3}
-              placeholder="مثال: ختم الصيدلية غير واضح، أو وجود اختلاف في كميات القطرات..."
+              placeholder="مثال: الصورة غير واضحة، أو الكمية غير متطابقة مع الختم"
               value={rejectionReason}
-              onChange={(e) => setRejectionReason(e.target.value)}
-              required
-            ></textarea>
-
-            <div className="d-flex justify-content-end gap-2">
-              <button 
-                onClick={() => { setRejectingInvoiceId(null); setRejectionReason(''); }} 
-                className="clay-btn clay-btn-secondary"
+              onChange={e => setRejectionReason(e.target.value)}
+              style={{ width: '100%', marginBottom: '1rem' }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setRejectingInvoiceId(null); setRejectionReason(''); }}
+                className="btn-clay btn-secondary btn-sm"
               >
                 إلغاء
               </button>
-              <button 
-                onClick={handleConfirmReject} 
-                className="clay-btn clay-btn-danger"
+              <button
+                onClick={handleConfirmReject}
+                className="btn-clay btn-danger btn-sm"
               >
                 تأكيد الرفض
               </button>

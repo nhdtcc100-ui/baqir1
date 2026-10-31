@@ -1,5 +1,6 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
+import path from 'path';
 import { ENV } from './config/env';
 import authRoutes      from './modules/auth/auth.routes';
 import pharmacyRoutes  from './modules/pharmacies/pharmacy.routes';
@@ -13,8 +14,11 @@ export const createApp = (): Application => {
 
   // Middleware
   app.use(cors({ origin: ENV.CORS_ORIGIN, credentials: true }));
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+  // Static uploads directory
+  app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
   // Health check
   app.get('/health', (req: Request, res: Response) => {

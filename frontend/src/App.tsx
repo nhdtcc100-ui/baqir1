@@ -4,41 +4,51 @@ import { api, getCurrentUser, removeToken, removeCurrentUser } from './services/
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { VisitsCalendar } from './pages/VisitsCalendar';
-import { InvoiceScanner } from './pages/InvoiceScanner';
+import { AddInvoicePage } from './pages/AddInvoicePage';
 import { PharmacyProfile } from './pages/PharmacyProfile';
 import { BillingLedger } from './pages/BillingLedger';
-import { 
-  LayoutDashboard, Calendar, ScanLine, Building2, 
-  FileText, LogOut, Stethoscope, Sparkles, CheckCircle2, Menu, X
+import {
+  LayoutDashboard, Calendar, FilePlus, Building2,
+  FileText, LogOut, Pill, Menu, X, CheckCircle, AlertCircle
 } from 'lucide-react';
+
+type Tab = 'dashboard' | 'visits' | 'add-invoice' | 'pharmacies' | 'billing';
+
+interface Toast {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
 
 export function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(getCurrentUser());
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'visits' | 'scan' | 'pharmacies' | 'billing'>('dashboard');
-  
-  // Data stores
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+
   const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [kpis, setKpis] = useState<KPISummary>({
+  const [products, setProducts]     = useState<Product[]>([]);
+  const [invoices, setInvoices]     = useState<Invoice[]>([]);
+  const [kpis, setKpis]             = useState<KPISummary>({
     total_invoices: 0,
     total_pharmacies_visited: 0,
     total_pieces_sold: 0,
     total_bonus_given: 0,
     total_revenue: 0
   });
+  const [loading, setLoading]       = useState(false);
+  const [toasts, setToasts]         = useState<Toast[]>([]);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [preselectedPharmacyId, setPreselectedPharmacyId] = useState<string | undefined>();
 
-  // Selected pharmacy when navigating from calendar or profile to scanner
-  const [preselectedPharmacyId, setPreselectedPharmacyId] = useState<string | undefined>(undefined);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+  // ── Toast helpers ──────────────────────────────────────────────────────────
+  const addToast = (message: string, type: Toast['type'] = 'success') => {
+    const id = Date.now().toString();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
 
+  // ── Data loading ───────────────────────────────────────────────────────────
   const loadData = async () => {
+    setLoading(true);
     try {
       const [phList, prList, invList, kpiData] = await Promise.all([
         api.getPharmacies(),
@@ -50,17 +60,18 @@ export function App() {
       setProducts(prList);
       setInvoices(invList);
       setKpis(kpiData);
-    } catch (e) {
-      console.error('Failed to load initial data:', e);
+    } catch (e: any) {
+      addToast('فشل تحميل البيانات: ' + (e.message || 'خطأ في الاتصال بالخادم'), 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (currentUser) {
-      loadData();
-    }
+    if (currentUser) loadData();
   }, [currentUser]);
 
+  // ── Handlers ───────────────────────────────────────────────────────────────
   const handleLogout = () => {
     removeToken();
     removeCurrentUser();
@@ -70,183 +81,169 @@ export function App() {
   const handleApproveInvoice = async (id: string) => {
     try {
       await api.reviewInvoice(id, 'approved');
-      showToast('تم اعتماد الفاتورة بنجاح وتحديث الحسابات 🌟');
+      addToast('تم اعتماد الفاتورة بنجاح ✅');
       loadData();
-    } catch (err: any) {
-      showToast('حدث خطأ في الاعتماد: ' + err.message);
+    } catch (e: any) {
+      addToast('خطأ في الاعتماد: ' + e.message, 'error');
     }
   };
 
   const handleRejectInvoice = async (id: string, reason: string) => {
     try {
       await api.reviewInvoice(id, 'rejected', reason);
-      showToast('تم رفض الفاتورة وإشعار المندوب بالسبب ⚠️');
+      addToast('تم رفض الفاتورة مع إشعار المندوب ⚠️', 'info');
       loadData();
-    } catch (err: any) {
-      showToast('حدث خطأ: ' + err.message);
+    } catch (e: any) {
+      addToast('خطأ: ' + e.message, 'error');
     }
   };
 
   const handleInvoiceCreated = (invoice: Invoice) => {
-    showToast(`تم حفظ الفاتورة (${invoice.invoice_number}) وحساب البونص التلقائي بنجاح! 🎉`);
+    addToast(`تم حفظ الفاتورة ${invoice.invoice_number} وإرسالها للاعتماد 🎉`);
     setActiveTab('billing');
     loadData();
   };
 
   const handleStartInvoiceForPharmacy = (pharmacyId: string) => {
     setPreselectedPharmacyId(pharmacyId);
-    setActiveTab('scan');
+    setActiveTab('add-invoice');
   };
 
-  // If not logged in, render Screen 1: Login
+  const navigate = (tab: Tab) => {
+    setActiveTab(tab);
+    setMobileOpen(false);
+  };
+
+  // ── Nav Items ──────────────────────────────────────────────────────────────
+  const navItems = [
+    { id: 'dashboard',    label: 'لوحة القيادة', icon: <LayoutDashboard size={18} /> },
+    { id: 'visits',       label: 'جدول الزيارات', icon: <Calendar size={18} /> },
+    ...(currentUser?.role === 'medical_rep' ? [
+      { id: 'add-invoice', label: 'إضافة فاتورة', icon: <FilePlus size={18} /> }
+    ] : []),
+    { id: 'pharmacies',  label: 'الصيدليات',     icon: <Building2 size={18} /> },
+    { id: 'billing',     label: 'الفواتير والتقارير', icon: <FileText size={18} /> }
+  ] as { id: Tab; label: string; icon: React.ReactNode }[];
+
+  const roleLabel = currentUser?.role === 'admin' ? 'مدير عام'
+    : currentUser?.role === 'supervisor' ? 'مشرف مبيعات'
+    : 'مندوب علمي';
+
+  const avatarColor = currentUser?.role === 'admin' ? '#2563eb'
+    : currentUser?.role === 'supervisor' ? '#7c3aed'
+    : '#059669';
+
+  // ── Login Screen ───────────────────────────────────────────────────────────
   if (!currentUser) {
-    return <Login onLoginSuccess={(u) => setCurrentUser(u)} />;
+    return <Login onLoginSuccess={u => setCurrentUser(u)} />;
   }
 
   return (
-    <div className="container-fluid py-3 px-md-4 min-vh-100" style={{ maxWidth: '1440px' }}>
-      
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div 
-          className="position-fixed top-0 start-50 translate-middle-x mt-3 z-3 animate-fade-in"
-          style={{ zIndex: 1100 }}
-        >
-          <div className="clay-card py-2 px-4 shadow-lg text-primary fw-bold d-flex align-items-center gap-2"
-               style={{ background: '#ffffff', borderRadius: '999px', border: '2px solid #93c5fd' }}>
-            <Sparkles size={18} className="text-warning" />
-            <span>{toastMessage}</span>
+    <div className="app-wrapper">
+
+      {/* ── Toasts ─────────────────────────────────────────────────────────── */}
+      <div className="toast-bar">
+        {toasts.map(t => (
+          <div key={t.id} className={`alert-${t.type === 'success' ? 'success' : t.type === 'error' ? 'danger' : 'info'} mb-2`}>
+            {t.type === 'success' ? <CheckCircle size={18} /> : <AlertCircle size={18} />}
+            <span>{t.message}</span>
           </div>
+        ))}
+      </div>
+
+      {/* ── Top Navigation Bar ─────────────────────────────────────────────── */}
+      <header className="topbar">
+
+        {/* Brand */}
+        <a href="#" className="topbar-brand" onClick={e => { e.preventDefault(); navigate('dashboard'); }}>
+          <div className="topbar-brand-icon">
+            <Pill size={20} />
+          </div>
+          <div className="topbar-brand-text">
+            <span className="topbar-brand-name">PharmaSales</span>
+            <span className="topbar-brand-sub">نظام إدارة المبيعات الدوائية</span>
+          </div>
+        </a>
+
+        {/* Desktop Nav Links */}
+        <nav className="topbar-nav">
+          {navItems.map(item => {
+            const isHighlight = item.id === 'add-invoice';
+            return (
+              <button
+                key={item.id}
+                onClick={() => navigate(item.id)}
+                className={`topbar-nav-item ${activeTab === item.id ? 'active' : ''} ${isHighlight ? 'topbar-highlight-btn' : ''}`}
+                style={isHighlight ? { color: '#ffffff' } : undefined}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Right: User + Logout */}
+        <div className="topbar-actions">
+          {loading && (
+            <div style={{ width: 20, height: 20, border: '2px solid #e2e8f0', borderTopColor: '#3b82f6', borderRadius: '50%' }}
+              className="animate-spin" />
+          )}
+
+          <button className="topbar-user-pill" title={currentUser.email}>
+            <div className="topbar-user-avatar" style={{ background: avatarColor }}>
+              {currentUser.full_name.charAt(0)}
+            </div>
+            <div className="topbar-user-info">
+              <span className="topbar-user-name">{currentUser.full_name.split(' ')[0]}</span>
+              <span className="topbar-user-role">{roleLabel}</span>
+            </div>
+          </button>
+
+          <button className="topbar-logout-btn" onClick={handleLogout} title="تسجيل الخروج">
+            <LogOut size={18} />
+          </button>
+
+          <button className="topbar-mobile-toggle" onClick={() => setMobileOpen(!mobileOpen)}>
+            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+        </div>
+      </header>
+
+      {/* ── Mobile Drawer ──────────────────────────────────────────────────── */}
+      {mobileOpen && (
+        <div className="mobile-nav-drawer">
+          {navItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => navigate(item.id)}
+              className={`mobile-nav-item ${activeTab === item.id ? 'active' : ''}`}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+          <div className="divider" />
+          <button className="mobile-nav-item" onClick={handleLogout} style={{ color: '#dc2626' }}>
+            <LogOut size={18} />
+            <span>تسجيل الخروج</span>
+          </button>
         </div>
       )}
 
-      {/* Mobile Top Header */}
-      <div className="d-md-none d-flex justify-content-between align-items-center mb-3 p-3 clay-card">
-        <div className="d-flex align-items-center gap-2">
-          <div className="clay-stat-icon" style={{ width: '40px', height: '40px', background: '#3b82f6', color: '#fff' }}>
-            <Stethoscope size={20} />
-          </div>
-          <span className="fw-bold">PharmaSales CRM</span>
-        </div>
-        <button 
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="btn btn-light rounded-3 p-2"
-        >
-          {mobileMenuOpen ? <X size={22} /> : <Menu size={22} />}
-        </button>
-      </div>
+      {/* ── Main Content ───────────────────────────────────────────────────── */}
+      <main className="app-main">
+        <div className="app-content animate-in">
 
-      <div className="row g-4">
-        
-        {/* ── Claymorphism Navigation Sidebar ─────────────────────────────── */}
-        <div className={`col-12 col-md-3 col-xl-2-5 ${mobileMenuOpen ? 'd-block' : 'd-none d-md-block'}`}>
-          <div className="clay-sidebar h-100 d-flex flex-column justify-content-between position-sticky" style={{ top: '1rem' }}>
-            
-            <div>
-              {/* Brand Logo Header */}
-              <div className="d-flex align-items-center gap-3 mb-4 px-2">
-                <div 
-                  className="clay-stat-icon" 
-                  style={{ 
-                    background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)', 
-                    color: '#ffffff', 
-                    width: '48px', 
-                    height: '48px', 
-                    borderRadius: '16px' 
-                  }}
-                >
-                  <Stethoscope size={26} />
-                </div>
-                <div>
-                  <h6 className="fw-bold mb-0 text-dark">PharmaSales</h6>
-                  <span className="text-muted small" style={{ fontSize: '0.75rem' }}>منظومة إدارة المبيعات والـ OCR</span>
-                </div>
-              </div>
-
-              {/* Navigation Tabs */}
-              <nav className="space-y-1">
-                <button
-                  onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }}
-                  className={`clay-nav-item w-100 border-0 ${activeTab === 'dashboard' ? 'active' : ''}`}
-                >
-                  <LayoutDashboard size={20} />
-                  <span>لوحة القيادة</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveTab('visits'); setMobileMenuOpen(false); }}
-                  className={`clay-nav-item w-100 border-0 ${activeTab === 'visits' ? 'active' : ''}`}
-                >
-                  <Calendar size={20} />
-                  <span>جدول الزيارات</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveTab('scan'); setMobileMenuOpen(false); }}
-                  className={`clay-nav-item w-100 border-0 ${activeTab === 'scan' ? 'active' : ''}`}
-                >
-                  <ScanLine size={20} />
-                  <span>مسح وتدقيق OCR</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveTab('pharmacies'); setMobileMenuOpen(false); }}
-                  className={`clay-nav-item w-100 border-0 ${activeTab === 'pharmacies' ? 'active' : ''}`}
-                >
-                  <Building2 size={20} />
-                  <span>دليل الصيدليات</span>
-                </button>
-
-                <button
-                  onClick={() => { setActiveTab('billing'); setMobileMenuOpen(false); }}
-                  className={`clay-nav-item w-100 border-0 ${activeTab === 'billing' ? 'active' : ''}`}
-                >
-                  <FileText size={20} />
-                  <span>السجل والتقارير</span>
-                </button>
-              </nav>
-            </div>
-
-            {/* User Profile & Logout Section */}
-            <div className="pt-4 border-top mt-4 px-2">
-              <div className="d-flex align-items-center gap-2 mb-3">
-                <div 
-                  className="rounded-circle d-flex align-items-center justify-content-center fw-bold text-white shadow-sm"
-                  style={{ width: '40px', height: '40px', background: currentUser.role === 'admin' ? '#2563eb' : '#059669' }}
-                >
-                  {currentUser.full_name.slice(0, 1)}
-                </div>
-                <div className="overflow-hidden">
-                  <div className="fw-bold small text-truncate">{currentUser.full_name}</div>
-                  <span className={`clay-badge ${currentUser.role === 'admin' ? 'clay-badge-primary' : 'clay-badge-success'} py-0 px-2`} style={{ fontSize: '0.72rem' }}>
-                    {currentUser.role === 'admin' ? 'مدير عام' : 'مندوب علمي'}
-                  </span>
-                </div>
-              </div>
-
-              <button 
-                onClick={handleLogout}
-                className="clay-btn clay-btn-secondary w-100 py-2 small"
-                style={{ fontSize: '0.85rem' }}
-              >
-                <LogOut size={16} />
-                <span>تسجيل الخروج</span>
-              </button>
-            </div>
-
-          </div>
-        </div>
-
-        {/* ── Main Dynamic Content Area ───────────────────────────────────── */}
-        <div className="col-12 col-md-9 col-xl-9-5">
           {activeTab === 'dashboard' && (
             <Dashboard
               user={currentUser}
               kpis={kpis}
               invoices={invoices}
-              onNavigate={(tab) => setActiveTab(tab as any)}
+              pharmacies={pharmacies}
+              onNavigate={tab => navigate(tab as Tab)}
               onApproveInvoice={handleApproveInvoice}
-              onRejectInvoice={(id) => handleRejectInvoice(id, 'عدم وضوح الختم أو البنود')}
+              onRejectInvoice={id => handleRejectInvoice(id, 'مرفوض من قِبَل المدير')}
             />
           )}
 
@@ -257,13 +254,13 @@ export function App() {
             />
           )}
 
-          {activeTab === 'scan' && (
-            <InvoiceScanner
+          {activeTab === 'add-invoice' && (
+            <AddInvoicePage
               pharmacies={pharmacies}
               products={products}
               initialPharmacyId={preselectedPharmacyId}
               onInvoiceCreated={handleInvoiceCreated}
-              onCancel={() => setActiveTab('dashboard')}
+              onCancel={() => navigate('billing')}
             />
           )}
 
@@ -272,7 +269,7 @@ export function App() {
               pharmacies={pharmacies}
               invoices={invoices}
               onStartInvoiceForPharmacy={handleStartInvoiceForPharmacy}
-              onScheduleVisit={() => setActiveTab('visits')}
+              onScheduleVisit={() => navigate('visits')}
             />
           )}
 
@@ -285,9 +282,9 @@ export function App() {
               onRejectInvoice={handleRejectInvoice}
             />
           )}
-        </div>
 
-      </div>
+        </div>
+      </main>
 
     </div>
   );
