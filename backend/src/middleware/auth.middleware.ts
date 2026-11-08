@@ -8,6 +8,9 @@ export interface AuthUser {
   email: string;
   role: 'admin' | 'supervisor' | 'medical_rep';
   fullName: string;
+  geminiApiKey?: string;
+  sheetId?: string;
+  webhookUrl?: string;
 }
 
 declare global {

@@ -34,3 +34,12 @@ Thumbs.db
 scratch/
 .system_generated/
 .oxlintrc.json
+
+# Large OCR trained data files
+*.traineddata
+
+# User uploads & cached logs
+uploads/
+*/uploads/
+!*/uploads/.gitkeep
+

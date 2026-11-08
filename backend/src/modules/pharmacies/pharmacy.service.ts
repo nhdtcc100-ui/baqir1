@@ -2,37 +2,8 @@ import crypto from 'crypto';
 import { pool, isUsingPostgres, inMemoryStore } from '../../database/db';
 import { PharmacyEntity, CreatePharmacyInput, UpdatePharmacyInput } from './pharmacy.types';
 
-// ─── In-Memory Pharmacy Store ────────────────────────────────────────────────
-const pharmacies: PharmacyEntity[] = [
-  {
-    id: 'ph000001-0000-0000-0000-000000000001',
-    name: 'صيدلية النور الحديثة',
-    city: 'بغداد',
-    address: 'شارع الرشيد، المنصور',
-    phone: '+9647800100001',
-    assigned_rep_id: 'a0000000-0000-0000-0000-000000000002',
-    assigned_rep_name: 'علي حسن',
-    created_at: new Date('2026-01-15')
-  },
-  {
-    id: 'ph000002-0000-0000-0000-000000000002',
-    name: 'صيدلية الشفاء',
-    city: 'البصرة',
-    address: 'شارع العشار الرئيسي',
-    phone: '+9647800100002',
-    assigned_rep_id: 'a0000000-0000-0000-0000-000000000002',
-    assigned_rep_name: 'علي حسن',
-    created_at: new Date('2026-02-01')
-  },
-  {
-    id: 'ph000003-0000-0000-0000-000000000003',
-    name: 'صيدلية الأمل المركزية',
-    city: 'النجف',
-    address: 'شارع الإمام علي، قرب المسجد',
-    phone: '+9647800100003',
-    created_at: new Date('2026-03-10')
-  }
-];
+// ─── In-Memory Pharmacy Store (Empty — Clean start, pharmacies are added dynamically) ───
+export const pharmacies: PharmacyEntity[] = [];
 
 export class PharmacyService {
   // ── 1. جلب كل الصيدليات مع دعم التصفية ────────────────────────────────
@@ -84,16 +55,33 @@ export class PharmacyService {
     return ph;
   }
 
+  // ── 2b. البحث عن صيدلية بالاسم ────────────────────────────────────────
+  static async findByName(name: string): Promise<PharmacyEntity | null> {
+    if (!name) return null;
+    const clean = name.toLowerCase().replace(/^(صيدلية|صيدليه|ص)\s*/i, '').trim();
+    if (clean.length < 2) return null;
+    if (isUsingPostgres()) {
+      const res = await pool.query('SELECT * FROM pharmacies WHERE name ILIKE $1 LIMIT 1', [`%${clean}%`]);
+      return res.rows[0] || null;
+    }
+    return pharmacies.find(p => {
+      const pClean = p.name.toLowerCase().replace(/^(صيدلية|صيدليه|ص)\s*/i, '').trim();
+      return pClean.length >= 2 && (pClean.includes(clean) || clean.includes(pClean));
+    }) || null;
+  }
+
   // ── 3. إنشاء صيدلية جديدة ───────────────────────────────────────────────
   static async create(input: CreatePharmacyInput): Promise<PharmacyEntity> {
-    // التحقق من عدم تكرار الاسم في نفس المدينة
+    const clean = (input.name || '').toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/i, '').trim();
+    if (clean.length < 2) {
+      throw { statusCode: 400, message: 'اسم الصيدلية غير مكتمل أو عام جداً. يرجى إدخال اسم مميز للصيدلية.' };
+    }
     if (isUsingPostgres()) {
       const dup = await pool.query(
-        'SELECT id FROM pharmacies WHERE LOWER(name) = LOWER($1) AND LOWER(city) = LOWER($2)',
-        [input.name, input.city]
+        'SELECT id FROM pharmacies WHERE LOWER(name) = LOWER($1)',
+        [input.name]
       );
-      if (dup.rows.length > 0)
-        throw { statusCode: 409, message: 'يوجد صيدلية بنفس الاسم في هذه المدينة مسبقاً' };
+      if (dup.rows.length > 0) return dup.rows[0];
 
       const id = crypto.randomUUID();
       const now = new Date();
@@ -108,10 +96,9 @@ export class PharmacyService {
     }
 
     const dup = pharmacies.find(
-      p => p.name.toLowerCase() === input.name.toLowerCase() &&
-           p.city.toLowerCase() === input.city.toLowerCase()
+      p => p.name.toLowerCase().trim() === input.name.toLowerCase().trim()
     );
-    if (dup) throw { statusCode: 409, message: 'يوجد صيدلية بنفس الاسم في هذه المدينة مسبقاً' };
+    if (dup) return dup;
 
     // جلب اسم المندوب إذا وُجد
     let repName: string | undefined;

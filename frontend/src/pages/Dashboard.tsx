@@ -71,7 +71,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         const bonusCount = Number(kpis?.total_bonus_pieces ?? kpis?.total_bonus_given ?? 0);
 
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
 
             <div className="stat-card card-hover">
               <div className="stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
@@ -130,7 +130,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       })()}
 
       {/* ── Mid Section ────────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+      <div className="dashboard-mid-grid">
 
         {/* Sales Breakdown */}
         <div className="card">
@@ -237,29 +237,41 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {pendingInvoices.map(inv => (
-                  <tr key={inv.id}>
-                    <td style={{ fontWeight: 700, color: 'var(--gray-900)' }}>{inv.invoice_number || '—'}</td>
-                    <td style={{ color: 'var(--gray-600)' }}>{inv.pharmacy_name}</td>
-                    <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name}</td>
-                    <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{inv.invoice_date}</td>
-                    <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{inv.total_sales_amount?.toLocaleString()} د.ع</td>
-                    <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
-                    <td><span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span></td>
-                    {isAdmin && (
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
-                          <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm">
-                            <CheckCircle2 size={14} /> اعتماد
-                          </button>
-                          <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm">
-                            <AlertCircle size={14} /> رفض
-                          </button>
-                        </div>
+                {pendingInvoices.map(inv => {
+                  const cleanDate = (inv.invoice_date || '').split('T')[0];
+                  return (
+                    <tr key={inv.id}>
+                      <td style={{ fontWeight: 700, color: 'var(--gray-900)' }}>
+                        <button
+                          onClick={() => onNavigate('billing')}
+                          className="btn-link"
+                          style={{ fontWeight: 800, color: 'var(--primary)', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                          title="عرض تفاصيل الفاتورة في السجل"
+                        >
+                          {inv.invoice_number || '—'}
+                        </button>
                       </td>
-                    )}
-                  </tr>
-                ))}
+                      <td style={{ color: 'var(--gray-600)' }}>{inv.pharmacy_name}</td>
+                      <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name}</td>
+                      <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{cleanDate}</td>
+                      <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{Number(inv.total_sales_amount || 0).toLocaleString()} د.ع</td>
+                      <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
+                      <td><span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span></td>
+                      {isAdmin && (
+                        <td>
+                          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+                            <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm">
+                              <CheckCircle2 size={14} /> اعتماد
+                            </button>
+                            <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm">
+                              <AlertCircle size={14} /> رفض
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

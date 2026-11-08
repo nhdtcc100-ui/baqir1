@@ -14,6 +14,7 @@ export const runMigrations = async () => {
   const sql = fs.readFileSync(migrationPath, 'utf8');
 
   try {
+    
     const client = await pool.connect();
     console.log('📦 Executing 001_initial_schema.sql...');
     await client.query(sql);

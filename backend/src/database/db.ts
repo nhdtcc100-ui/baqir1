@@ -38,9 +38,10 @@ export const inMemoryStore = {
 };
 
 // Pre-computed bcrypt hashes (rounds=10) — avoids async race at module load:
-// admin@pharma.com → 'admin123456' | rep@pharma.com → 'rep123456'
+// admin@pharma.com → 'admin123456' or '123456' | rep@pharma.com / baqer@pharma.com → '123456'
 const ADMIN_HASH = '$2b$10$yZeibnt29qRbMeYb03IGG.7MOPlyrG9c6A/WmSRPsn/g.5mGaOdXi';
 const REP_HASH   = '$2b$10$S1FyLmW4/RAmTNq4aUTvQuscsfm5x41xC4oUjg4uV4Kpf6VlcWVRK';
+const BAQER_HASH = '$2b$10$WH3qzTVm3A2bAQcopRU9MO6Wl7h6qRY/ZDxjBufbkh2j0wcqmIUjG';
 
 inMemoryStore.users.push(
   {
@@ -63,6 +64,18 @@ inMemoryStore.users.push(
     password_hash: REP_HASH,
     full_name: 'علي حسن (مندوب بغداد)',
     phone: '+9647700000002',
+    is_active: true,
+    created_at: new Date(),
+    updated_at: new Date()
+  },
+  {
+    id: 'a0000000-0000-0000-0000-000000000003',
+    role_id: '33333333-3333-3333-3333-333333333333',
+    role_name: 'medical_rep',
+    email: 'baqer@pharma.com',
+    password_hash: BAQER_HASH,
+    full_name: 'باقر علي',
+    phone: '+9647700000003',
     is_active: true,
     created_at: new Date(),
     updated_at: new Date()

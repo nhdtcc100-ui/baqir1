@@ -8,12 +8,17 @@ export interface User {
   full_name: string;
   role: UserRole;
   phone?: string;
+  is_active?: boolean;
+  gemini_api_key?: string;
+  sheet_id?: string;
+  webhook_url?: string;
 }
 
 export interface Pharmacy {
   id: string;
   name: string;
   city: string;
+  area?: string;
   address: string;
   phone: string;
   assigned_rep_id?: string;
@@ -46,6 +51,7 @@ export interface InvoiceItem {
   product_id: string;
   product_name_snapshot?: string;
   product_type_snapshot?: string;
+  dosage_form?: string;
   sold_quantity: number;
   historical_unit_price: number;
   bonus_quantity: number;
@@ -62,9 +68,11 @@ export interface Invoice {
   invoice_date: string;
   pharmacy_id: string;
   pharmacy_name?: string;
+  pharmacy_city?: string;
+  pharmacy_area?: string;
   rep_id: string;
   rep_name?: string;
-  image_url: string;
+  image_url?: string | null;
   status: InvoiceStatus;
   total_sales_amount: number;
   total_pieces_count: number;

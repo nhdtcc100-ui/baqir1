@@ -84,7 +84,7 @@ export const PharmacyProfile: React.FC<PharmacyProfileProps> = ({
       </div>
 
       {/* ── Grid Layout: Directory + Details ──────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '1.25rem' }}>
+      <div className="pharmacy-profile-grid">
         
         {/* Left: Pharmacy Directory */}
         <div className="card" style={{ height: 'fit-content' }}>

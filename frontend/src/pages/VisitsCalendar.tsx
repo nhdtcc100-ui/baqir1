@@ -177,7 +177,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
       </div>
 
       {/* ── Visits Cards Grid ─────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: '1rem' }}>
         {filteredVisits.map((v) => {
           const purposeInfo = getPurposeLabel(v.purpose);
           return (
@@ -252,19 +252,10 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
 
       {/* ── Add Appointment Modal ─────────────────────────────────────────── */}
       {showAddModal && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(15, 23, 42, 0.75)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 2000,
-          padding: '1.5rem'
-        }}>
-          <div className="card" style={{ maxWidth: 480, width: '100%' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-              <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) setShowAddModal(false); }}>
+          <div className="modal-card-floating" style={{ maxWidth: 500 }}>
+            <div className="modal-header">
+              <h4 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <CalendarIcon size={20} style={{ color: 'var(--primary)' }} />
                 حجز موعد زيارة جديد
               </h4>
@@ -276,7 +267,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleAddVisit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <form onSubmit={handleAddVisit} className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
                   الصيدلية المستهدفة *
@@ -350,7 +341,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+              <div className="modal-footer">
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}

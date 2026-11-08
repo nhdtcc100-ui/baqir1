@@ -7,12 +7,14 @@ import { VisitsCalendar } from './pages/VisitsCalendar';
 import { AddInvoicePage } from './pages/AddInvoicePage';
 import { PharmacyProfile } from './pages/PharmacyProfile';
 import { BillingLedger } from './pages/BillingLedger';
+import { GoogleSheetsSync } from './pages/GoogleSheetsSync';
+import { UsersManagement } from './pages/UsersManagement';
 import {
   LayoutDashboard, Calendar, FilePlus, Building2,
-  FileText, LogOut, Pill, Menu, X, CheckCircle, AlertCircle
+  FileText, LogOut, Pill, Menu, X, CheckCircle, AlertCircle, FileSpreadsheet, Users
 } from 'lucide-react';
 
-type Tab = 'dashboard' | 'visits' | 'add-invoice' | 'pharmacies' | 'billing';
+type Tab = 'dashboard' | 'visits' | 'add-invoice' | 'pharmacies' | 'billing' | 'sheets' | 'users';
 
 interface Toast {
   id: string;
@@ -25,19 +27,20 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
 
   const [pharmacies, setPharmacies] = useState<Pharmacy[]>([]);
-  const [products, setProducts]     = useState<Product[]>([]);
-  const [invoices, setInvoices]     = useState<Invoice[]>([]);
-  const [kpis, setKpis]             = useState<KPISummary>({
+  const [products, setProducts] = useState<Product[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [kpis, setKpis] = useState<KPISummary>({
     total_invoices: 0,
     total_pharmacies_visited: 0,
     total_pieces_sold: 0,
     total_bonus_given: 0,
     total_revenue: 0
   });
-  const [loading, setLoading]       = useState(false);
-  const [toasts, setToasts]         = useState<Toast[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [preselectedPharmacyId, setPreselectedPharmacyId] = useState<string | undefined>();
+  const [invoicePageKey, setInvoicePageKey] = useState(0); // increment to force full remount of AddInvoicePage
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const addToast = (message: string, type: Toast['type'] = 'success') => {
@@ -117,7 +120,20 @@ export function App() {
     }
   };
 
+  const handleDeleteInvoice = async (id: string) => {
+    // Optimistically remove from local state; BillingLedger already called api.deleteInvoice
+    setInvoices(prev => prev.filter(i => i.id !== id));
+    addToast('تم حذف الفاتورة بنجاح 🗑️', 'info');
+  };
+
+  const handleUpdateInvoice = (updated: Invoice) => {
+    setInvoices(prev => prev.map(inv => inv.id === updated.id ? updated : inv));
+    addToast(`تم تعديل الفاتورة ${updated.invoice_number} بنجاح ✏️`, 'success');
+  };
+
   const handleInvoiceCreated = (invoice: Invoice) => {
+    setPreselectedPharmacyId(undefined); // Wipe out any preselected pharmacy so next invoice starts blank!
+    setInvoicePageKey(k => k + 1); // Force AddInvoicePage to fully remount with 100% fresh state
     addToast(`تم حفظ الفاتورة ${invoice.invoice_number} وإرسالها للاعتماد 🎉`);
     setActiveTab('billing');
     loadData();
@@ -125,32 +141,39 @@ export function App() {
 
   const handleStartInvoiceForPharmacy = (pharmacyId: string) => {
     setPreselectedPharmacyId(pharmacyId);
+    setInvoicePageKey(k => k + 1); // Fresh page every time
     setActiveTab('add-invoice');
   };
 
   const navigate = (tab: Tab) => {
+    if (tab === 'add-invoice') {
+      setPreselectedPharmacyId(undefined); // Clear old pharmacy so user starts with a clean slate
+      setInvoicePageKey(k => k + 1);
+    }
     setActiveTab(tab);
     setMobileOpen(false);
   };
 
   // ── Nav Items ──────────────────────────────────────────────────────────────
   const navItems = [
-    { id: 'dashboard',    label: 'لوحة القيادة', icon: <LayoutDashboard size={18} /> },
-    { id: 'visits',       label: 'جدول الزيارات', icon: <Calendar size={18} /> },
-    ...(currentUser?.role === 'medical_rep' ? [
-      { id: 'add-invoice', label: 'إضافة فاتورة', icon: <FilePlus size={18} /> }
-    ] : []),
-    { id: 'pharmacies',  label: 'الصيدليات',     icon: <Building2 size={18} /> },
-    { id: 'billing',     label: 'الفواتير والتقارير', icon: <FileText size={18} /> }
+    { id: 'dashboard', label: 'الرئيسية', icon: <LayoutDashboard size={19} /> },
+    { id: 'visits', label: 'الزيارات', icon: <Calendar size={19} /> },
+    { id: 'add-invoice', label: 'إضافة فاتورة', icon: <FilePlus size={20} /> },
+    { id: 'pharmacies', label: 'الصيدليات', icon: <Building2 size={19} /> },
+    { id: 'billing', label: 'الفواتير', icon: <FileText size={19} /> },
+    { id: 'sheets', label: 'كوكل شيت', icon: <FileSpreadsheet size={19} /> },
+    ...(currentUser?.role === 'admin' || currentUser?.role === 'supervisor' ? [
+      { id: 'users' as Tab, label: 'المستخدمون', icon: <Users size={19} /> }
+    ] : [])
   ] as { id: Tab; label: string; icon: React.ReactNode }[];
 
   const roleLabel = currentUser?.role === 'admin' ? 'مدير عام'
     : currentUser?.role === 'supervisor' ? 'مشرف مبيعات'
-    : 'مندوب علمي';
+      : 'مندوب علمي';
 
   const avatarColor = currentUser?.role === 'admin' ? '#2563eb'
     : currentUser?.role === 'supervisor' ? '#7c3aed'
-    : '#059669';
+      : '#059669';
 
   // ── Login Screen ───────────────────────────────────────────────────────────
   if (!currentUser) {
@@ -229,9 +252,27 @@ export function App() {
         </div>
       </header>
 
+      {/* ── Mobile Drawer Backdrop ─────────────────────────────────────────── */}
+      {mobileOpen && (
+        <div
+          className="mobile-drawer-backdrop"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
       {/* ── Mobile Drawer ──────────────────────────────────────────────────── */}
       {mobileOpen && (
         <div className="mobile-nav-drawer">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.5rem 0.85rem', borderBottom: '1px solid var(--gray-200)', marginBottom: '0.5rem' }}>
+            <div className="topbar-user-avatar" style={{ background: avatarColor, width: 38, height: 38, fontSize: '0.95rem' }}>
+              {currentUser.full_name.charAt(0)}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--gray-900)' }}>{currentUser.full_name}</span>
+              <span style={{ fontSize: '0.75rem', color: 'var(--gray-500)', fontWeight: 600 }}>{roleLabel} • {currentUser.email}</span>
+            </div>
+          </div>
+
           {navItems.map(item => (
             <button
               key={item.id}
@@ -275,8 +316,10 @@ export function App() {
 
           {activeTab === 'add-invoice' && (
             <AddInvoicePage
+              key={invoicePageKey}
               pharmacies={pharmacies}
               products={products}
+              invoices={invoices}
               initialPharmacyId={preselectedPharmacyId}
               onInvoiceCreated={handleInvoiceCreated}
               onCancel={() => navigate('billing')}
@@ -299,11 +342,41 @@ export function App() {
               pharmacies={pharmacies}
               onApproveInvoice={handleApproveInvoice}
               onRejectInvoice={handleRejectInvoice}
+              onDeleteInvoice={handleDeleteInvoice}
+              onUpdateInvoice={handleUpdateInvoice}
             />
+          )}
+
+          {activeTab === 'sheets' && (
+            <GoogleSheetsSync />
+          )}
+
+          {activeTab === 'users' && (
+            <UsersManagement />
           )}
 
         </div>
       </main>
+
+      {/* ── Mobile Bottom Navigation Bar (شريط التنقل السفلي للهواتف والتابلت) ── */}
+      <nav className="mobile-bottom-nav">
+        {navItems.map(item => {
+          const isHighlight = item.id === 'add-invoice';
+          const isActive = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={() => navigate(item.id)}
+              className={`mobile-bottom-nav-item ${isActive ? 'active' : ''} ${isHighlight ? 'highlight' : ''}`}
+            >
+              <div className="bottom-nav-icon">
+                {item.icon}
+              </div>
+              <span className="bottom-nav-label">{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
     </div>
   );

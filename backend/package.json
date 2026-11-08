@@ -21,6 +21,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
@@ -28,6 +29,8 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.5.0",
     "pg": "^8.13.3",
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

@@ -7,6 +7,8 @@ import pharmacyRoutes  from './modules/pharmacies/pharmacy.routes';
 import catalogRoutes   from './modules/products/product.routes';
 import invoiceRoutes   from './modules/invoices/invoice.routes';
 import analyticsRoutes from './modules/analytics/analytics.routes';
+import sheetsRoutes    from './modules/google-sheets/googleSheets.routes';
+import userRoutes      from './modules/users/users.routes';
 import { errorHandler } from './middleware/error.middleware';
 
 export const createApp = (): Application => {
@@ -47,6 +49,8 @@ export const createApp = (): Application => {
   app.use('/api/v1/catalog',   catalogRoutes);
   app.use('/api/v1/invoices',  invoiceRoutes);
   app.use('/api/v1/analytics', analyticsRoutes);
+  app.use('/api/v1/sheets',    sheetsRoutes);
+  app.use('/api/v1/users',     userRoutes);
 
   // 404 Handler
   app.use((req: Request, res: Response) => {
