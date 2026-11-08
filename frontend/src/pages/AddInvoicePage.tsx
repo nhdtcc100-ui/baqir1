@@ -804,7 +804,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       for (const item of updatedBatch) {
         const distinct = item.pharmacyName.replace(/^(صيدلية|صيدليه|مذخر|ص)\b/gi, '').trim();
         if (!item.pharmacyId && distinct.length < 2) {
-          setError(`يرجى تحديد أو كتابة اسم صيدلية صحيح ومميز للفاتورة (${item.invoiceNumber || item.fileName})`);
+          setError(`يرجى تحديد أو كتابة اسم صيدلية صحيح ومميز للفاتورة (${item.invoiceNumber || item.file?.name || 'بدون رقم'})`);
           setBatchSubmitting(false);
           return;
         }

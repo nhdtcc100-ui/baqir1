@@ -1,6 +1,82 @@
 import { User, Pharmacy, Product, Invoice, KPISummary } from '../types';
 
-const API_BASE = 'http://localhost:5000/api/v1';
+const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
+
+// ── Mock Fallback Data (لتجربة المنصة أونلاين على GitHub Pages في حال عدم تشغيل السيرفر المحلي) ──
+const MOCK_PHARMACIES: Pharmacy[] = [
+  { id: 'ph-1', name: 'صيدلية دواء / شارع فلسطين', city: 'بغداد', area: 'شارع فلسطين', address: 'بغداد - شارع فلسطين مقابل ساحة بيروت', phone: '07701234567', total_invoices: 18, total_sales: 3450000 },
+  { id: 'ph-2', name: 'صيدلية المطرقة', city: 'بغداد', area: 'الزعفرانية', address: 'بغداد - الزعفرانية السوق العام', phone: '07801234568', total_invoices: 12, total_sales: 2180000 },
+  { id: 'ph-3', name: 'صيدلية النور الحديثة', city: 'بغداد', area: 'الكرادة', address: 'بغداد - الكرادة خارج', phone: '07901234569', total_invoices: 9, total_sales: 1950000 },
+  { id: 'ph-4', name: 'صيدلية الشفاء التخصصية', city: 'بغداد', area: 'المنصور', address: 'بغداد - المنصور شارع 14 رمضان', phone: '07709876543', total_invoices: 15, total_sales: 4200000 }
+];
+
+const MOCK_PRODUCTS: Product[] = [
+  { id: 'pr-1', name: 'Elica Cream 30g Jamjoom', product_type: 'cream', base_price: 4828, is_active: true },
+  { id: 'pr-2', name: 'Hyfresh Drop 10ml', product_type: 'drop', base_price: 5267, is_active: true },
+  { id: 'pr-3', name: 'Fucidin Ointment 20g', product_type: 'ointment', base_price: 3750, is_active: true },
+  { id: 'pr-4', name: 'Panadol Extra Tablets', product_type: 'other', base_price: 2500, is_active: true }
+];
+
+const MOCK_INVOICES: Invoice[] = [
+  {
+    id: 'inv-1',
+    invoice_number: '691659',
+    invoice_date: '2026-10-27',
+    pharmacy_id: 'ph-1',
+    pharmacy_name: 'صيدلية دواء / شارع فلسطين',
+    pharmacy_city: 'بغداد',
+    pharmacy_area: 'شارع فلسطين',
+    rep_id: 'rep-1',
+    rep_name: 'علي حسن (مندوب بغداد)',
+    status: 'approved',
+    total_sales_amount: 144840,
+    total_pieces_count: 30,
+    total_bonus_count: 3,
+    created_at: new Date().toISOString(),
+    items: [
+      { product_id: 'pr-1', product_name_snapshot: 'Elica Cream 30g Jamjoom', dosage_form: 'كريم', sold_quantity: 30, historical_unit_price: 4828, bonus_quantity: 3, total_quantity: 33, line_total: 144840 }
+    ]
+  },
+  {
+    id: 'inv-2',
+    invoice_number: '1035986',
+    invoice_date: '2026-10-25',
+    pharmacy_id: 'ph-1',
+    pharmacy_name: 'صيدلية دواء / شارع فلسطين',
+    pharmacy_city: 'بغداد',
+    pharmacy_area: 'شارع فلسطين',
+    rep_id: 'rep-1',
+    rep_name: 'علي حسن (مندوب بغداد)',
+    status: 'approved',
+    total_sales_amount: 52670,
+    total_pieces_count: 10,
+    total_bonus_count: 1,
+    created_at: new Date().toISOString(),
+    items: [
+      { product_id: 'pr-2', product_name_snapshot: 'Hyfresh Drop 10ml', dosage_form: 'قطرة', sold_quantity: 10, historical_unit_price: 5267, bonus_quantity: 1, total_quantity: 11, line_total: 52670 }
+    ]
+  },
+  {
+    id: 'inv-3',
+    invoice_number: '21084',
+    invoice_date: '2026-11-04',
+    pharmacy_id: 'ph-2',
+    pharmacy_name: 'صيدلية المطرقة',
+    pharmacy_city: 'بغداد',
+    pharmacy_area: 'الزعفرانية',
+    rep_id: 'rep-1',
+    rep_name: 'علي حسن (مندوب بغداد)',
+    status: 'pending_review',
+    total_sales_amount: 1065500,
+    total_pieces_count: 8,
+    total_bonus_count: 0,
+    created_at: new Date().toISOString(),
+    items: [
+      { product_id: 'pr-2', product_name_snapshot: 'قطرة أذن مضادة للألم', dosage_form: 'قطرة', sold_quantity: 3, historical_unit_price: 4100, bonus_quantity: 0, total_quantity: 3, line_total: 12300 },
+      { product_id: 'pr-2', product_name_snapshot: 'قطرة أذن مضادة للألم', dosage_form: 'قطرة', sold_quantity: 5, historical_unit_price: 210640, bonus_quantity: 0, total_quantity: 5, line_total: 1053200 }
+    ]
+  }
+];
 
 // ── Token & Session helpers ──────────────────────────────────────────────────
 export const getToken = (): string | null => localStorage.getItem('pharma_token');
@@ -47,47 +123,98 @@ export const api = {
 
   // ── Auth ──
   async login(email: string, password: string): Promise<{ token: string; user: User }> {
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.trim(), password })
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(json.error || json.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || json.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      }
+      const token = json.data?.accessToken || json.data?.token;
+      const user: User = json.data?.user;
+      setToken(token);
+      setCurrentUser(user);
+      return { token, user };
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.name === 'TypeError') {
+        console.warn('⚠️ Server offline or unreachable, entering Preview Demo mode');
+        const isRep = email.includes('rep');
+        const demoUser: User = {
+          id: isRep ? 'rep-1' : 'admin-1',
+          full_name: isRep ? 'علي حسن (مندوب بغداد)' : 'د. باقر (مدير النظام)',
+          email: email || (isRep ? 'rep@pharma.com' : 'admin@pharma.com'),
+          role: isRep ? 'medical_rep' : 'admin'
+        };
+        const token = 'demo-preview-jwt-' + Date.now();
+        setToken(token);
+        setCurrentUser(demoUser);
+        return { token, user: demoUser };
+      }
+      throw err;
     }
-    const token = json.data?.accessToken || json.data?.token;
-    const user: User = json.data?.user;
-    setToken(token);
-    setCurrentUser(user);
-    return { token, user };
   },
 
   // ── Pharmacies ──
   async getPharmacies(): Promise<Pharmacy[]> {
-    const res = await fetch(`${API_BASE}/pharmacies`, { headers: authHeaders() });
-    return handleResponse<Pharmacy[]>(res);
+    try {
+      const res = await fetch(`${API_BASE}/pharmacies`, { headers: authHeaders() });
+      return await handleResponse<Pharmacy[]>(res);
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.name === 'TypeError') return MOCK_PHARMACIES;
+      throw err;
+    }
   },
 
   async createPharmacy(data: Partial<Pharmacy>): Promise<Pharmacy> {
-    const res = await fetch(`${API_BASE}/pharmacies`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify(data)
-    });
-    return handleResponse<Pharmacy>(res);
+    try {
+      const res = await fetch(`${API_BASE}/pharmacies`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify(data)
+      });
+      return await handleResponse<Pharmacy>(res);
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.name === 'TypeError') {
+        const newPh: Pharmacy = {
+          id: 'ph-' + Date.now(),
+          name: data.name || 'صيدلية تجريبية',
+          city: data.city || 'بغداد',
+          area: data.area || 'مركز المدينة',
+          address: data.address || 'بغداد',
+          phone: data.phone || '07700000000',
+          total_invoices: 0,
+          total_sales: 0
+        };
+        MOCK_PHARMACIES.unshift(newPh);
+        return newPh;
+      }
+      throw err;
+    }
   },
 
   // ── Products ──
   async getProducts(): Promise<Product[]> {
-    const res = await fetch(`${API_BASE}/catalog/products`, { headers: authHeaders() });
-    return handleResponse<Product[]>(res);
+    try {
+      const res = await fetch(`${API_BASE}/catalog/products`, { headers: authHeaders() });
+      return await handleResponse<Product[]>(res);
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.name === 'TypeError') return MOCK_PRODUCTS;
+      throw err;
+    }
   },
 
   // ── Invoices ──
   async getInvoices(): Promise<Invoice[]> {
-    const res = await fetch(`${API_BASE}/invoices`, { headers: authHeaders() });
-    return handleResponse<Invoice[]>(res);
+    try {
+      const res = await fetch(`${API_BASE}/invoices`, { headers: authHeaders() });
+      return await handleResponse<Invoice[]>(res);
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.name === 'TypeError') return MOCK_INVOICES;
+      throw err;
+    }
   },
 
   async createInvoice(payload: {
@@ -163,6 +290,7 @@ export const api = {
     invoice_date?: string;
     pharmacy_id?: string;
     pharmacy_name?: string;
+    pharmacy_area?: string;
     image_url?: string;
     confidence: number;
     raw_text?: string;
@@ -327,8 +455,25 @@ export const api = {
 
   // ── Analytics ──
   async getKPIs(): Promise<KPISummary> {
-    const res = await fetch(`${API_BASE}/analytics/kpis`, { headers: authHeaders() });
-    return handleResponse<KPISummary>(res);
+    try {
+      const res = await fetch(`${API_BASE}/analytics/kpis`, { headers: authHeaders() });
+      return await handleResponse<KPISummary>(res);
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.name === 'TypeError') {
+        return {
+          total_invoices: MOCK_INVOICES.length,
+          total_pharmacies_visited: MOCK_PHARMACIES.length,
+          total_pieces_sold: 48,
+          total_bonus_given: 4,
+          total_bonus_pieces: 4,
+          total_revenue: 1263010,
+          total_sales_amount: 1263010,
+          approved_invoices: 2,
+          pending_invoices: 1
+        };
+      }
+      throw err;
+    }
   },
 
   async getRepKPIs(repId: string): Promise<KPISummary> {
