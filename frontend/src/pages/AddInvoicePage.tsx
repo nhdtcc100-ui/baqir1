@@ -801,7 +801,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   }
 
   return (
-    <div className="animate-in">
+    <div className="animate-in add-invoice-mobile-page">
 
       {/* ── Page Header ──────────────────────────────────────────────────────── */}
       <div className="page-header" style={{ marginBottom: '1rem' }}>
@@ -1231,7 +1231,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             </div>
 
             {/* Basic Info */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: '1rem' }}>
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
                   الصيدلية المستهدفة *
@@ -1655,7 +1655,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   type="submit"
                   disabled={submitting || ocrLoading || batchSubmitting}
                   className="btn-clay btn-primary flex-1"
-                  style={{ padding: '0.875rem 1.25rem', fontSize: '0.96rem', fontWeight: 800, minWidth: 200 }}
+                  style={{ padding: '0.875rem 1.25rem', fontSize: '0.96rem', fontWeight: 800, minWidth: 'min(100%, 200px)' }}
                 >
                   {submitting ? (
                     <><Loader size={18} className="animate-spin" /> جاري حفظ الفاتورة...</>

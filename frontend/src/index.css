@@ -85,6 +85,10 @@
 
 html {
   scroll-behavior: smooth;
+  max-width: 100%;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
 }
 
 body {
@@ -92,10 +96,12 @@ body {
   background-color: var(--bg);
   color: var(--gray-800);
   min-height: 100vh;
-  overflow-x: hidden;
+  max-width: 100%;
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
   direction: rtl;
   text-align: right;
+  touch-action: manipulation;
 }
 
 /* ── App Layout ───────────────────────────────────────────────────────────── */
@@ -103,17 +109,23 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 .app-main {
   padding-top: var(--topbar-h);
   flex: 1;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .app-content {
   max-width: 1400px;
+  width: 100%;
   margin: 0 auto;
   padding: 1.5rem 1.25rem;
+  min-width: 0;
 }
 
 /* ── Top Navigation Bar ───────────────────────────────────────────────────── */
@@ -1398,6 +1410,56 @@ body {
 
 /* ── Mobile Tablets & Phones (<= 768px): Zero Horizontal Scroll Layouts ─────── */
 @media (max-width: 768px) {
+  .app-main.app-main-fullpage {
+    padding-bottom: 1.5rem !important;
+  }
+
+  /* Prevent iPhone Safari auto-zoom-in when focusing any input/select */
+  .clay-input,
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  input[type="email"],
+  input[type="url"],
+  input[type="date"],
+  select,
+  textarea {
+    font-size: 16px !important;
+    max-width: 100%;
+  }
+
+  /* Prevent wide buttons/badges from pushing viewport into zoom-out */
+  .btn-clay {
+    white-space: normal !important;
+    text-align: center;
+    line-height: 1.35;
+    max-width: 100%;
+  }
+
+  .badge {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .card {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .add-invoice-mobile-page {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .add-invoice-mobile-page .card {
+    padding: 1rem 0.9rem;
+    border-radius: 16px;
+  }
+
   .invoice-items-scroll {
     overflow-x: visible !important;
     padding-bottom: 0 !important;

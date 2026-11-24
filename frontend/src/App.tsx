@@ -164,6 +164,7 @@ export function App() {
     }
     setActiveTab(tab);
     setMobileOpen(false);
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   };
 
   // ── Nav Items ──────────────────────────────────────────────────────────────
@@ -244,15 +245,17 @@ export function App() {
               className="animate-spin" />
           )}
 
-          {/* Direct Mobile + Add Invoice Button */}
-          <button
-            className="topbar-mobile-add-btn"
-            onClick={() => navigate('add-invoice')}
-            title="إضافة فاتورة جديدة"
-          >
-            <FilePlus size={15} />
-            <span>+ فاتورة</span>
-          </button>
+          {/* Direct Mobile + Add Invoice Button (hidden when already on add-invoice page) */}
+          {activeTab !== 'add-invoice' && (
+            <button
+              className="topbar-mobile-add-btn"
+              onClick={() => navigate('add-invoice')}
+              title="إضافة فاتورة جديدة"
+            >
+              <FilePlus size={15} />
+              <span>+ فاتورة</span>
+            </button>
+          )}
 
           <button className="topbar-user-pill" title={currentUser.email}>
             <div className="topbar-user-avatar" style={{ background: avatarColor }}>
@@ -407,7 +410,7 @@ export function App() {
       )}
 
       {/* ── Main Content ───────────────────────────────────────────────────── */}
-      <main className="app-main">
+      <main className={`app-main ${activeTab === 'add-invoice' ? 'app-main-fullpage' : ''}`}>
         <div className="app-content animate-in">
 
           {activeTab === 'dashboard' && (
@@ -487,54 +490,56 @@ export function App() {
         </button>
       )}
 
-      {/* ── Mobile Bottom Navigation Bar (شريط التنقل السفلي للهواتف والتابلت) ── */}
-      <nav className="mobile-bottom-nav">
-        <button
-          type="button"
-          onClick={() => navigate('dashboard')}
-          className={`mobile-bottom-nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
-        >
-          <div className="bottom-nav-icon"><LayoutDashboard size={20} /></div>
-          <span className="bottom-nav-label">الرئيسية</span>
-        </button>
+      {/* ── Mobile Bottom Navigation Bar (hidden on Add Invoice full mobile page) ── */}
+      {activeTab !== 'add-invoice' && (
+        <nav className="mobile-bottom-nav">
+          <button
+            type="button"
+            onClick={() => navigate('dashboard')}
+            className={`mobile-bottom-nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
+          >
+            <div className="bottom-nav-icon"><LayoutDashboard size={20} /></div>
+            <span className="bottom-nav-label">الرئيسية</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => navigate('billing')}
-          className={`mobile-bottom-nav-item ${activeTab === 'billing' ? 'active' : ''}`}
-        >
-          <div className="bottom-nav-icon"><FileText size={20} /></div>
-          <span className="bottom-nav-label">الفواتير</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => navigate('billing')}
+            className={`mobile-bottom-nav-item ${activeTab === 'billing' ? 'active' : ''}`}
+          >
+            <div className="bottom-nav-icon"><FileText size={20} /></div>
+            <span className="bottom-nav-label">الفواتير</span>
+          </button>
 
-        {/* Central Elevated Add Invoice Button */}
-        <button
-          type="button"
-          onClick={() => navigate('add-invoice')}
-          className={`mobile-bottom-nav-item highlight ${activeTab === 'add-invoice' ? 'active' : ''}`}
-        >
-          <div className="bottom-nav-icon"><FilePlus size={24} /></div>
-          <span className="bottom-nav-label">+ فاتورة</span>
-        </button>
+          {/* Central Elevated Add Invoice Button */}
+          <button
+            type="button"
+            onClick={() => navigate('add-invoice')}
+            className="mobile-bottom-nav-item highlight"
+          >
+            <div className="bottom-nav-icon"><FilePlus size={24} /></div>
+            <span className="bottom-nav-label">+ فاتورة</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => navigate('pharmacies')}
-          className={`mobile-bottom-nav-item ${activeTab === 'pharmacies' ? 'active' : ''}`}
-        >
-          <div className="bottom-nav-icon"><Building2 size={20} /></div>
-          <span className="bottom-nav-label">الصيدليات</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => navigate('pharmacies')}
+            className={`mobile-bottom-nav-item ${activeTab === 'pharmacies' ? 'active' : ''}`}
+          >
+            <div className="bottom-nav-icon"><Building2 size={20} /></div>
+            <span className="bottom-nav-label">الصيدليات</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setMobileOpen(true)}
-          className={`mobile-bottom-nav-item ${mobileOpen ? 'active' : ''}`}
-        >
-          <div className="bottom-nav-icon"><Menu size={20} /></div>
-          <span className="bottom-nav-label">المزيد</span>
-        </button>
-      </nav>
+          <button
+            type="button"
+            onClick={() => setMobileOpen(true)}
+            className={`mobile-bottom-nav-item ${mobileOpen ? 'active' : ''}`}
+          >
+            <div className="bottom-nav-icon"><Menu size={20} /></div>
+            <span className="bottom-nav-label">المزيد</span>
+          </button>
+        </nav>
+      )}
 
     </div>
   );
