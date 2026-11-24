@@ -8,6 +8,7 @@ export interface User {
   full_name: string;
   role: UserRole;
   phone?: string;
+  area?: string;
   is_active?: boolean;
   gemini_api_key?: string;
   sheet_id?: string;

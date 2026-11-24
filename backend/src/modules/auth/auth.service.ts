@@ -94,7 +94,7 @@ export class AuthService {
     const rawTarget = input.email.trim();
     const emailLower = rawTarget.toLowerCase();
 
-    // دالة مساعدة للمطابقة المرنة والدقيقة: تفصل تماماً بين حساب الأدمن وحساب المندوب
+    // دالة مساعدة للمطابقة المرنة والدقيقة للحسابات الأربعة
     const matchesUser = (uEmail: string, uName?: string, uRole?: string) => {
       const e = (uEmail || '').toLowerCase().trim();
       const n = (uName || '').toLowerCase().trim();
@@ -106,19 +106,28 @@ export class AuthService {
       // 2. التطابق التام بالاسم الكامل
       if (n === target) return true;
 
-      // 3. إذا كان الإدخال موجهاً للإدارة (admin / مدير)
-      const isAdminInput = target.includes('admin') || target.includes('مدير');
+      // 3. مطابقة حساب المشرف (supervisor)
+      if (target.includes('super') || target.includes('مشرف')) {
+        return e.includes('supervisor') || n.includes('مشرف') || uRole === 'supervisor';
+      }
+
+      // 4. مطابقة مندوب الكرخ (karkh)
+      if (target.includes('karkh') || target.includes('كرخ') || target.includes('احمد') || target.includes('أحمد')) {
+        return e.includes('karkh') || n.includes('الكرخ') || n.includes('أحمد');
+      }
+
+      // 5. مطابقة مندوب الرصافة (rusafa)
+      if (target.includes('rusafa') || target.includes('رصافة') || target.includes('علي')) {
+        return e.includes('rusafa') || e.includes('rep') || n.includes('الرصافة') || n.includes('علي حسن');
+      }
+
+      // 6. إذا كان الإدخال موجهاً للإدارة (admin / مدير / baqer)
+      const isAdminInput = target.includes('admin') || target.includes('مدير') || target === 'baqer' || target === 'باقر';
       if (isAdminInput) {
         return e.includes('admin') || n.includes('مدير') || uRole === 'admin';
       }
 
-      // 4. إذا كان الإدخال موجهاً للمندوب باقر علي (باقر / باقر علي / baqer)
-      const isBaqerRepInput = target.includes('باقر علي') || target === 'baqer' || target === 'باقر';
-      if (isBaqerRepInput) {
-        return (e === 'baqer@pharma.com' || n === 'باقر علي' || (e.includes('baqer') && !e.includes('admin')));
-      }
-
-      // 5. مطابقة جزئية في الاسم (دون الخلط مع الأدمن)
+      // 7. مطابقة جزئية في الاسم (دون الخلط مع الأدمن)
       if (n.includes(target) && !n.includes('مدير')) return true;
 
       return false;

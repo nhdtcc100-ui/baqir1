@@ -37,7 +37,8 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const ok = file.mimetype.startsWith('image/') ||
                 file.mimetype === 'application/pdf' ||
-                /\.(jpg|jpeg|png|webp|jfif|bmp|gif|pdf)$/i.test(file.originalname);
+                file.mimetype === 'application/octet-stream' ||
+                /\.(jpg|jpeg|png|webp|jfif|bmp|gif|pdf|heic|heif)$/i.test(file.originalname);
     ok ? cb(null, true) : cb(new Error('صيغة الملف غير مدعومة. يُرجى رفع صورة أو PDF'));
   }
 });

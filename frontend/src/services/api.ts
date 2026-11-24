@@ -131,7 +131,7 @@ export const api = {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(json.error || json.message || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+        throw new Error(json.error || json.message || 'البريد الإلكتروني أو رمز المرور غير صحيح');
       }
       const token = json.data?.accessToken || json.data?.token;
       const user: User = json.data?.user;
@@ -141,17 +141,88 @@ export const api = {
     } catch (err: any) {
       if (err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.name === 'TypeError') {
         console.warn('⚠️ Server offline or unreachable, entering Preview Demo mode');
-        const isRep = email.includes('rep');
-        const demoUser: User = {
-          id: isRep ? 'rep-1' : 'admin-1',
-          full_name: isRep ? 'علي حسن (مندوب بغداد)' : 'د. باقر (مدير النظام)',
-          email: email || (isRep ? 'rep@pharma.com' : 'admin@pharma.com'),
-          role: isRep ? 'medical_rep' : 'admin'
-        };
+        const low = email.toLowerCase().trim();
+        let demoUser: User;
+
+        if (low.includes('super') || low.includes('مشرف')) {
+          demoUser = {
+            id: 'sup-1',
+            full_name: 'مشرف المبيعات العام',
+            email: 'supervisor@pharma.com',
+            role: 'supervisor'
+          };
+        } else if (low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) {
+          demoUser = {
+            id: 'rep-karkh',
+            full_name: 'أحمد خليل (مندوب الكرخ)',
+            email: 'karkh@pharma.com',
+            role: 'medical_rep',
+            area: 'الكرخ'
+          };
+        } else if (low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) {
+          demoUser = {
+            id: 'rep-rusafa',
+            full_name: 'علي حسن (مندوب الرصافة)',
+            email: 'rusafa@pharma.com',
+            role: 'medical_rep',
+            area: 'الرصافة'
+          };
+        } else {
+          // admin / baqer
+          demoUser = {
+            id: 'admin-baqer',
+            full_name: 'د. باقر (مدير عام)',
+            email: 'admin@pharma.com',
+            role: 'admin'
+          };
+        }
+
         const token = 'demo-preview-jwt-' + Date.now();
         setToken(token);
         setCurrentUser(demoUser);
         return { token, user: demoUser };
+      }
+      throw err;
+    }
+  },
+
+  async register(data: { fullName: string; username: string; pin: string; area?: string; sheetUrl?: string }): Promise<{ token: string; user: User }> {
+    if (data.sheetUrl) {
+      localStorage.setItem('pharma_google_sheet_url', data.sheetUrl.trim());
+    }
+    try {
+      const email = data.username.includes('@') ? data.username.trim().toLowerCase() : `${data.username.trim().toLowerCase()}@pharma.com`;
+      const res = await fetch(`${API_BASE}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fullName: data.fullName.trim(),
+          email,
+          password: data.pin,
+          roleName: 'medical_rep'
+        })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || json.message || 'فشل تسجيل الحساب');
+      const token = json.data?.accessToken || json.data?.token;
+      const user: User = json.data?.user;
+      setToken(token);
+      setCurrentUser(user);
+      return { token, user };
+    } catch (err: any) {
+      if (err.message?.includes('fetch') || err.message?.includes('NetworkError') || err.name === 'TypeError') {
+        const email = data.username.includes('@') ? data.username.trim().toLowerCase() : `${data.username.trim().toLowerCase()}@pharma.com`;
+        const newUser: User = {
+          id: 'user-' + Date.now(),
+          full_name: data.fullName.trim(),
+          email,
+          role: 'medical_rep',
+          area: data.area || 'بغداد'
+        };
+        const token = 'demo-reg-jwt-' + Date.now();
+        setToken(token);
+        setCurrentUser(newUser);
+        return { token, user: newUser };
       }
       throw err;
     }

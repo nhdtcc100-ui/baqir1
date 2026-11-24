@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { Pharmacy, Product, Invoice } from '../types';
 import { api } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
+import { compressAndNormalizeImage } from '../utils/imageCompressor';
 import {
   FilePlus, Upload, Edit3, FileImage, FileText as FilePdfIcon,
   Plus, Trash2, Calculator, CheckCircle2, AlertCircle, Sparkles,
@@ -170,6 +171,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   const [ocrConfidence, setOcrConfidence] = useState(0);
   const [ocrSummary, setOcrSummary]       = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const switchToBatchItem = (index: number) => {
     if (index < 0 || index >= batchInvoices.length) return;
@@ -544,18 +546,26 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   // ── Handle file selection / drop with IMMEDIATE OCR reading ──────────────
   const handleFileDrop = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const allFiles = Array.from(files).filter(f =>
+    const rawFiles = Array.from(files).filter(f =>
       f.type.startsWith('image/') ||
       f.type === 'application/pdf' ||
-      /\.(jpg|jpeg|png|webp|jfif|bmp|gif|pdf)$/i.test(f.name)
+      /\.(jpg|jpeg|png|webp|jfif|bmp|gif|pdf|heic|heif)$/i.test(f.name)
     );
 
-    if (allFiles.length === 0) {
-      setError('نوع الملف غير مدعوم. يرجى رفع صورة فاتورة (JPG, PNG, WebP) أو ملف مستند PDF.');
+    if (rawFiles.length === 0) {
+      setError('نوع الملف غير مدعوم. يرجى رفع صورة فاتورة (JPG, PNG, WebP, HEIC) أو ملف مستند PDF.');
       return;
     }
 
     setError(null);
+
+    // ضغط وتطبيع صور الموبايل (iPhone & Android) لتحويل HEIC والصور الضخمة إلى JPEG فائق السرعة
+    const allFiles = await Promise.all(
+      rawFiles.map(f => compressAndNormalizeImage(f).catch(err => {
+        console.warn('Compression error for', f.name, err);
+        return f;
+      }))
+    );
 
     // إذا تم اختيار أكثر من ملف أو كانت هناك دفعة مسبقة
     if (allFiles.length > 1 || batchInvoices.length > 0) {
@@ -1169,9 +1179,18 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
+                  style={{ display: 'none' }}
+                />
+                <input
                   ref={fileInputRef}
                   type="file"
-                  multiple accept="image/*,application/pdf"
+                  multiple
+                  accept="image/*,application/pdf,.heic,.heif"
                   onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
                   style={{ display: 'none' }}
                 />
@@ -1231,26 +1250,45 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     )}
                   </div>
                 ) : (
-                  <div style={{ padding: '2rem 1rem', textAlign: 'center' }}>
+                  <div style={{ padding: '1.5rem 1rem', textAlign: 'center' }}>
                     <div style={{
-                      width: 64,
-                      height: 64,
+                      width: 58,
+                      height: 58,
                       borderRadius: '50%',
                       background: 'rgba(37, 99, 235, 0.1)',
                       color: 'var(--primary)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      margin: '0 auto 1rem'
+                      margin: '0 auto 0.75rem'
                     }}>
-                      <Upload size={32} />
+                      <Upload size={28} />
                     </div>
-                    <p style={{ fontWeight: 800, color: 'var(--gray-800)', fontSize: '1rem', marginBottom: 6 }}>
-                      اسحب صورة أو عدة صور فواتير دفعة واحدة (يدعم حتى 20 صورة)
+                    <p style={{ fontWeight: 800, color: 'var(--gray-800)', fontSize: '0.98rem', marginBottom: 4 }}>
+                      اسحب صورة الفاتورة أو اضغط لاختيارها مباشرة
                     </p>
-                    <p style={{ fontSize: '0.82rem', color: 'var(--gray-400)', maxWidth: 360, margin: '0 auto' }}>
-                      يدعم صور الكاميرا والمستندات (JPG، PNG، WebP، PDF) — يتم تحليلها وقراءة بياناتها فورياً
+                    <p style={{ fontSize: '0.8rem', color: 'var(--gray-500)', maxWidth: 360, margin: '0 auto 1rem' }}>
+                      يدعم كاميرا الموبايل، صور الآيفون والسامسونج، ومستندات PDF
                     </p>
+
+                    <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); cameraInputRef.current?.click(); }}
+                        className="btn-clay btn-primary"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', fontWeight: 800, padding: '0.6rem 1rem', background: '#059669', borderColor: '#047857' }}
+                      >
+                        <Camera size={17} /> التقاط بالكاميرا مباشرة
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                        className="btn-clay btn-secondary"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', fontWeight: 800, padding: '0.6rem 1rem' }}
+                      >
+                        <Images size={17} style={{ color: 'var(--primary)' }} /> اختيار من الألبوم أو PDF
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

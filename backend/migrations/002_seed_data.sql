@@ -17,30 +17,54 @@ BEGIN
     SELECT id INTO admin_role_id FROM roles WHERE name = 'admin';
     SELECT id INTO rep_role_id FROM roles WHERE name = 'medical_rep';
 
-    -- 1. Insert Default Users
-    -- admin@pharma.com / admin123456
+    -- 1. Insert 4 Default Users (Admin, Supervisor, Rep Rusafa, Rep Karkh)
+    -- 1) Admin: admin@pharma.com / baqer (Password: 123456 / admin123456)
     INSERT INTO users (id, role_id, email, password_hash, full_name, phone, is_active)
     VALUES (
-        admin_user_id,
+        'a0000000-0000-0000-0000-000000000001',
         admin_role_id,
         'admin@pharma.com',
         '$2b$10$yZeibnt29qRbMeYb03IGG.7MOPlyrG9c6A/WmSRPsn/g.5mGaOdXi',
-        'د. باقر (مدير النظام)',
+        'د. باقر (مدير عام)',
         '+9647700000001',
         TRUE
-    ) ON CONFLICT (email) DO NOTHING;
+    ) ON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name;
 
-    -- rep@pharma.com / rep123456
+    -- 2) Supervisor: supervisor@pharma.com (Password: 123456)
     INSERT INTO users (id, role_id, email, password_hash, full_name, phone, is_active)
     VALUES (
-        rep_user_id,
-        rep_role_id,
-        'rep@pharma.com',
+        'a0000000-0000-0000-0000-000000000002',
+        (SELECT id FROM roles WHERE name = 'supervisor'),
+        'supervisor@pharma.com',
         '$2b$10$S1FyLmW4/RAmTNq4aUTvQuscsfm5x41xC4oUjg4uV4Kpf6VlcWVRK',
-        'علي حسن (مندوب بغداد)',
+        'مشرف المبيعات',
         '+9647700000002',
         TRUE
-    ) ON CONFLICT (email) DO NOTHING;
+    ) ON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name;
+
+    -- 3) Medical Rep Rusafa: rusafa@pharma.com / rep@pharma.com (Password: 123456)
+    INSERT INTO users (id, role_id, email, password_hash, full_name, phone, is_active)
+    VALUES (
+        'a0000000-0000-0000-0000-000000000003',
+        rep_role_id,
+        'rusafa@pharma.com',
+        '$2b$10$S1FyLmW4/RAmTNq4aUTvQuscsfm5x41xC4oUjg4uV4Kpf6VlcWVRK',
+        'علي حسن (مندوب الرصافة)',
+        '+9647700000003',
+        TRUE
+    ) ON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name;
+
+    -- 4) Medical Rep Karkh: karkh@pharma.com (Password: 123456)
+    INSERT INTO users (id, role_id, email, password_hash, full_name, phone, is_active)
+    VALUES (
+        'a0000000-0000-0000-0000-000000000004',
+        rep_role_id,
+        'karkh@pharma.com',
+        '$2b$10$S1FyLmW4/RAmTNq4aUTvQuscsfm5x41xC4oUjg4uV4Kpf6VlcWVRK',
+        'أحمد خليل (مندوب الكرخ)',
+        '+9647700000004',
+        TRUE
+    ) ON CONFLICT (email) DO UPDATE SET full_name = EXCLUDED.full_name;
 
     -- 2. Insert Default Pharmacies
     INSERT INTO pharmacies (id, name, city, address, phone, assigned_rep_id) VALUES

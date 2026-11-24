@@ -499,192 +499,360 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             </p>
           </div>
         ) : (
-          <div className="table-responsive">
-            <table className="clay-table">
-              <thead>
-                <tr>
-                  <th>رقم الفاتورة</th>
-                  <th>الصيدلية</th>
-                  <th>المنطقة / المكان</th>
-                  <th>المندوب</th>
-                  <th>تاريخ الفاتورة</th>
-                  <th>المبلغ الإجمالي</th>
-                  <th>القطع</th>
-                  <th>البونص</th>
-                  <th>الحالة</th>
-                  <th>تفاصيل الأصناف</th>
-                  <th>مستند الفاتورة</th>
-                  {isAdmin && <th style={{ textAlign: 'center' }}>إجراء الاعتماد</th>}
-                  <th style={{ textAlign: 'center' }}>تعديل</th>
-                  <th style={{ textAlign: 'center' }}>حذف</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredInvoices.map(inv => {
-                  const cleanDate = (inv.invoice_date || '').split('T')[0];
-                  const dupInfo = duplicateInfoMap.get(inv.id);
-                  const isDup = dupInfo?.isDuplicate;
-                  const isOriginal = dupInfo?.isOriginal;
+          <>
+            {/* ── Desktop Table View ────────────────────────────── */}
+            <div className="table-responsive desktop-table-view">
+              <table className="clay-table">
+                <thead>
+                  <tr>
+                    <th>رقم الفاتورة</th>
+                    <th>الصيدلية</th>
+                    <th>المنطقة / المكان</th>
+                    <th>المندوب</th>
+                    <th>تاريخ الفاتورة</th>
+                    <th>المبلغ الإجمالي</th>
+                    <th>القطع</th>
+                    <th>البونص</th>
+                    <th>الحالة</th>
+                    <th>تفاصيل الأصناف</th>
+                    <th>مستند الفاتورة</th>
+                    {isAdmin && <th style={{ textAlign: 'center' }}>إجراء الاعتماد</th>}
+                    <th style={{ textAlign: 'center' }}>تعديل</th>
+                    <th style={{ textAlign: 'center' }}>حذف</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredInvoices.map(inv => {
+                    const cleanDate = (inv.invoice_date || '').split('T')[0];
+                    const dupInfo = duplicateInfoMap.get(inv.id);
+                    const isDup = dupInfo?.isDuplicate;
+                    const isOriginal = dupInfo?.isOriginal;
 
-                  return (
-                    <tr
-                      key={inv.id}
-                      style={{
-                        background: isDup
-                          ? (isOriginal ? '#fffbeb' : '#fef2f2')
-                          : undefined,
-                        transition: 'background-color 0.4s ease'
-                      }}
-                    >
-                      <td style={{ fontWeight: 800, color: isDup && !isOriginal ? '#b91c1c' : 'var(--gray-900)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    return (
+                      <tr
+                        key={inv.id}
+                        style={{
+                          background: isDup
+                            ? (isOriginal ? '#fffbeb' : '#fef2f2')
+                            : undefined,
+                          transition: 'background-color 0.4s ease'
+                        }}
+                      >
+                        <td style={{ fontWeight: 800, color: isDup && !isOriginal ? '#b91c1c' : 'var(--gray-900)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                            <button
+                              onClick={() => setSelectedInvoice(inv)}
+                              className="btn-link"
+                              style={{
+                                fontWeight: 800,
+                                color: isDup && !isOriginal ? '#b91c1c' : 'var(--primary)',
+                                textDecoration: 'underline',
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: 0
+                              }}
+                              title="انقر لقراءة تفاصيل الفاتورة"
+                            >
+                              {inv.invoice_number || '—'}
+                            </button>
+                            {isDup && (
+                              <span
+                                className="badge"
+                                style={{
+                                  fontSize: '0.68rem',
+                                  padding: '2px 6px',
+                                  background: isOriginal ? '#f59e0b' : '#ef4444',
+                                  color: 'white',
+                                  fontWeight: 800
+                                }}
+                                title={dupInfo?.reason}
+                              >
+                                {isOriginal ? '⚠️ أصلية' : '⚠️ مكررة'}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ fontWeight: 600 }}>{inv.pharmacy_name || 'صيدلية معتمدة'}</td>
+                        <td>
+                          <span className="badge" style={{ background: '#f0f9ff', color: '#0369a1', border: '1px solid #bae6fd', fontSize: '0.78rem', fontWeight: 700 }}>
+                            {inv.pharmacy_area || (inv as any).area || '—'}
+                          </span>
+                        </td>
+                        <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name || 'مندوب ميداني'}</td>
+                        <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{cleanDate}</td>
+                        <td style={{ fontWeight: 800, color: 'var(--primary)' }}>
+                          {Number(inv.total_sales_amount).toLocaleString()} د.ع
+                        </td>
+                        <td>{inv.total_pieces_count} قطعة</td>
+                        <td>
+                          <span className={`badge ${inv.total_bonus_count > 0 ? 'badge-warning' : 'badge-gray'}`}>
+                            +{inv.total_bonus_count} 🎁
+                          </span>
+                        </td>
+                        <td>
+                          {inv.status === 'approved' ? (
+                            <span className="badge badge-success"><CheckCircle2 size={12} /> معتمدة</span>
+                          ) : inv.status === 'rejected' ? (
+                            <span className="badge badge-danger" title={inv.rejection_reason}><AlertCircle size={12} /> مرفوضة</span>
+                          ) : (
+                            <span className="badge badge-warning"><Clock size={12} /> قيد التدقيق</span>
+                          )}
+                        </td>
+                        <td>
                           <button
                             onClick={() => setSelectedInvoice(inv)}
-                            className="btn-link"
-                            style={{
-                              fontWeight: 800,
-                              color: isDup && !isOriginal ? '#b91c1c' : 'var(--primary)',
-                              textDecoration: 'underline',
-                              background: 'none',
-                              border: 'none',
-                              cursor: 'pointer',
-                              padding: 0
-                            }}
-                            title="انقر لقراءة تفاصيل الفاتورة"
+                            className="btn-clay btn-primary btn-sm"
+                            style={{ padding: '0.35rem 0.65rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                            title="قراءة وتدقيق بنود الفاتورة"
                           >
-                            {inv.invoice_number || '—'}
+                            <FileText size={14} /> تفاصيل ({inv.items?.length || 0})
                           </button>
-                          {isDup && (
-                            <span
-                              className="badge"
-                              style={{
-                                fontSize: '0.68rem',
-                                padding: '2px 6px',
-                                background: isOriginal ? '#f59e0b' : '#ef4444',
-                                color: 'white',
-                                fontWeight: 800
-                              }}
-                              title={dupInfo?.reason}
+                        </td>
+                        <td>
+                          {inv.image_url ? (
+                            <button
+                              onClick={() => setPreviewImageUrl(inv.image_url || null)}
+                              className="btn-clay btn-secondary btn-sm"
+                              style={{ padding: '0.35rem 0.65rem' }}
                             >
-                              {isOriginal ? '⚠️ أصلية' : '⚠️ مكررة'}
-                            </span>
+                              <Eye size={14} /> معاينة
+                            </button>
+                          ) : (
+                            <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>إدخال يدوي</span>
                           )}
-                        </div>
-                      </td>
-                      <td style={{ fontWeight: 600 }}>{inv.pharmacy_name || 'صيدلية معتمدة'}</td>
-                      <td>
-                        <span className="badge" style={{ background: '#f0f9ff', color: '#0369a1', border: '1px solid #bae6fd', fontSize: '0.78rem', fontWeight: 700 }}>
-                          {inv.pharmacy_area || (inv as any).area || '—'}
-                        </span>
-                      </td>
-                      <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name || 'مندوب ميداني'}</td>
-                      <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{cleanDate}</td>
-                      <td style={{ fontWeight: 800, color: 'var(--primary)' }}>
-                        {Number(inv.total_sales_amount).toLocaleString()} د.ع
-                      </td>
-                      <td>{inv.total_pieces_count} قطعة</td>
-                      <td>
-                        <span className={`badge ${inv.total_bonus_count > 0 ? 'badge-warning' : 'badge-gray'}`}>
-                          +{inv.total_bonus_count} 🎁
-                        </span>
-                      </td>
-                      <td>
+                        </td>
+                        {isAdmin && (
+                          <td>
+                            {inv.status === 'pending_review' ? (
+                              <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+                                <button
+                                  onClick={() => onApproveInvoice(inv.id)}
+                                  className="btn-clay btn-success btn-sm"
+                                >
+                                  <CheckCircle2 size={14} /> اعتماد
+                                </button>
+                                <button
+                                  onClick={() => setRejectingInvoiceId(inv.id)}
+                                  className="btn-clay btn-danger btn-sm"
+                                >
+                                  <AlertCircle size={14} /> رفض
+                                </button>
+                              </div>
+                            ) : (
+                              <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)', textAlign: 'center', display: 'block' }}>
+                                مكتملة
+                              </span>
+                            )}
+                          </td>
+                        )}
+                        {/* Edit button — visible to admin always, to rep only if still pending */}
+                        {(isAdmin || (inv.rep_id === user.id && inv.status === 'pending_review')) && (
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              onClick={() => handleOpenEdit(inv)}
+                              className="btn-clay btn-secondary btn-sm"
+                              style={{ padding: '0.3rem 0.5rem' }}
+                              title="تعديل بيانات الفاتورة"
+                            >
+                              <Edit3 size={14} style={{ color: 'var(--primary)' }} />
+                            </button>
+                          </td>
+                        )}
+                        {/* Delete button — visible to admin always, to rep only if still pending */}
+                        {(isAdmin || (inv.rep_id === user.id && inv.status === 'pending_review')) && (
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              onClick={() => setDeletingId(inv.id)}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{
+                                padding: isDup && !isOriginal ? '0.3rem 0.65rem' : '0.3rem 0.5rem',
+                                background: isDup && !isOriginal ? '#dc2626' : undefined,
+                                color: isDup && !isOriginal ? 'white' : undefined,
+                                fontWeight: isDup && !isOriginal ? 800 : 600,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4
+                              }}
+                              title={isDup && !isOriginal ? 'إزالة هذه النسخة المكررة من السجل' : 'حذف الفاتورة'}
+                            >
+                              <Trash2 size={14} />
+                              {isDup && !isOriginal && <span>إزالة المكررة</span>}
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* ── Mobile Cards View ─────────────────────────────── */}
+            <div className="mobile-cards-view">
+              {filteredInvoices.map(inv => {
+                const cleanDate = (inv.invoice_date || '').split('T')[0];
+                const dupInfo = duplicateInfoMap.get(inv.id);
+                const isDup = dupInfo?.isDuplicate;
+                const isOriginal = dupInfo?.isOriginal;
+                const canModify = isAdmin || (inv.rep_id === user.id && inv.status === 'pending_review');
+
+                return (
+                  <div
+                    key={inv.id}
+                    className="mobile-invoice-card"
+                    style={{
+                      borderLeft: isDup ? (isOriginal ? '4px solid #f59e0b' : '4px solid #ef4444') : '4px solid var(--primary)',
+                      background: isDup ? (isOriginal ? '#fffbeb' : '#fef2f2') : '#ffffff'
+                    }}
+                  >
+                    {/* Header Row: Invoice Number, Duplicate Badge, Status Badge */}
+                    <div className="mobile-card-header">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedInvoice(inv)}
+                          className="mobile-invoice-number-btn"
+                          title="انقر لتفاصيل الفاتورة"
+                        >
+                          فاتورة #{inv.invoice_number || '—'}
+                        </button>
+                        {isDup && (
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: '0.68rem',
+                              padding: '2px 6px',
+                              background: isOriginal ? '#f59e0b' : '#ef4444',
+                              color: 'white',
+                              fontWeight: 800
+                            }}
+                          >
+                            {isOriginal ? '⚠️ أصلية' : '⚠️ مكررة'}
+                          </span>
+                        )}
+                      </div>
+                      <div>
                         {inv.status === 'approved' ? (
                           <span className="badge badge-success"><CheckCircle2 size={12} /> معتمدة</span>
                         ) : inv.status === 'rejected' ? (
-                          <span className="badge badge-danger" title={inv.rejection_reason}><AlertCircle size={12} /> مرفوضة</span>
+                          <span className="badge badge-danger"><AlertCircle size={12} /> مرفوضة</span>
                         ) : (
                           <span className="badge badge-warning"><Clock size={12} /> قيد التدقيق</span>
                         )}
-                      </td>
-                      <td>
-                        <button
-                          onClick={() => setSelectedInvoice(inv)}
-                          className="btn-clay btn-primary btn-sm"
-                          style={{ padding: '0.35rem 0.65rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                          title="قراءة وتدقيق بنود الفاتورة"
-                        >
-                          <FileText size={14} /> تفاصيل ({inv.items?.length || 0})
-                        </button>
-                      </td>
-                      <td>
-                        {inv.image_url ? (
-                          <button
-                            onClick={() => setPreviewImageUrl(inv.image_url || null)}
-                            className="btn-clay btn-secondary btn-sm"
-                            style={{ padding: '0.35rem 0.65rem' }}
-                          >
-                            <Eye size={14} /> معاينة
-                          </button>
-                        ) : (
-                          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>إدخال يدوي</span>
+                      </div>
+                    </div>
+
+                    {/* Pharmacy & Area info */}
+                    <div className="mobile-card-body">
+                      <div style={{ fontWeight: 800, fontSize: '0.96rem', color: 'var(--gray-900)', marginBottom: '0.25rem' }}>
+                        🏥 {inv.pharmacy_name || 'صيدلية معتمدة'}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: '0.5rem' }}>
+                        {inv.pharmacy_area && (
+                          <span className="badge" style={{ background: '#f0f9ff', color: '#0369a1', border: '1px solid #bae6fd', fontSize: '0.74rem', fontWeight: 700 }}>
+                            📍 {inv.pharmacy_area}
+                          </span>
                         )}
-                      </td>
-                      {isAdmin && (
-                        <td>
-                          {inv.status === 'pending_review' ? (
-                            <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
-                              <button
-                                onClick={() => onApproveInvoice(inv.id)}
-                                className="btn-clay btn-success btn-sm"
-                              >
-                                <CheckCircle2 size={14} /> اعتماد
-                              </button>
-                              <button
-                                onClick={() => setRejectingInvoiceId(inv.id)}
-                                className="btn-clay btn-danger btn-sm"
-                              >
-                                <AlertCircle size={14} /> رفض
-                              </button>
-                            </div>
-                          ) : (
-                            <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)', textAlign: 'center', display: 'block' }}>
-                              مكتملة
-                            </span>
-                          )}
-                        </td>
+                        <span>👤 {inv.rep_name || 'مندوب ميداني'}</span>
+                        <span>📅 {cleanDate}</span>
+                      </div>
+
+                      {/* Amounts & Quantities Mini-Bar */}
+                      <div className="mobile-card-metrics">
+                        <div className="mobile-metric">
+                          <span className="mobile-metric-label">المبلغ الصافي:</span>
+                          <span className="mobile-metric-val" style={{ color: 'var(--primary)', fontWeight: 900 }}>
+                            {Number(inv.total_sales_amount).toLocaleString()} د.ع
+                          </span>
+                        </div>
+                        <div className="mobile-metric">
+                          <span className="mobile-metric-label">الكمية:</span>
+                          <span className="mobile-metric-val">{inv.total_pieces_count} قطعة</span>
+                        </div>
+                        <div className="mobile-metric">
+                          <span className="mobile-metric-label">البونص:</span>
+                          <span className={`badge ${inv.total_bonus_count > 0 ? 'badge-warning' : 'badge-gray'}`} style={{ fontSize: '0.72rem' }}>
+                            +{inv.total_bonus_count} 🎁
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actions Bar */}
+                    <div className="mobile-card-actions">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedInvoice(inv)}
+                        className="btn-clay btn-secondary btn-sm"
+                        style={{ flex: 1, justifyContent: 'center' }}
+                      >
+                        <FileText size={14} /> تفاصيل ({inv.items?.length || 0})
+                      </button>
+
+                      {inv.image_url && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewImageUrl(inv.image_url || null)}
+                          className="btn-clay btn-secondary btn-sm"
+                          style={{ padding: '0.35rem 0.65rem' }}
+                          title="معاينة المستند"
+                        >
+                          <Eye size={14} /> صورة
+                        </button>
                       )}
-                      {/* Edit button — visible to admin always, to rep only if still pending */}
-                      {(isAdmin || (inv.rep_id === user.id && inv.status === 'pending_review')) && (
-                        <td style={{ textAlign: 'center' }}>
+
+                      {isAdmin && inv.status === 'pending_review' && (
+                        <>
                           <button
+                            type="button"
+                            onClick={() => onApproveInvoice(inv.id)}
+                            className="btn-clay btn-success btn-sm"
+                            style={{ padding: '0.35rem 0.65rem' }}
+                            title="اعتماد الفاتورة"
+                          >
+                            <CheckCircle2 size={14} /> اعتماد
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRejectingInvoiceId(inv.id)}
+                            className="btn-clay btn-danger btn-sm"
+                            style={{ padding: '0.35rem 0.65rem' }}
+                            title="رفض الفاتورة"
+                          >
+                            <AlertCircle size={14} /> رفض
+                          </button>
+                        </>
+                      )}
+
+                      {canModify && (
+                        <>
+                          <button
+                            type="button"
                             onClick={() => handleOpenEdit(inv)}
                             className="btn-clay btn-secondary btn-sm"
-                            style={{ padding: '0.3rem 0.5rem' }}
-                            title="تعديل بيانات الفاتورة"
+                            style={{ padding: '0.35rem 0.6rem' }}
+                            title="تعديل الفاتورة"
                           >
                             <Edit3 size={14} style={{ color: 'var(--primary)' }} />
                           </button>
-                        </td>
-                      )}
-                      {/* Delete button — visible to admin always, to rep only if still pending */}
-                      {(isAdmin || (inv.rep_id === user.id && inv.status === 'pending_review')) && (
-                        <td style={{ textAlign: 'center' }}>
                           <button
+                            type="button"
                             onClick={() => setDeletingId(inv.id)}
                             className="btn-clay btn-danger btn-sm"
-                            style={{
-                              padding: isDup && !isOriginal ? '0.3rem 0.65rem' : '0.3rem 0.5rem',
-                              background: isDup && !isOriginal ? '#dc2626' : undefined,
-                              color: isDup && !isOriginal ? 'white' : undefined,
-                              fontWeight: isDup && !isOriginal ? 800 : 600,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4
-                            }}
-                            title={isDup && !isOriginal ? 'إزالة هذه النسخة المكررة من السجل' : 'حذف الفاتورة'}
+                            style={{ padding: '0.35rem 0.6rem' }}
+                            title="حذف الفاتورة"
                           >
                             <Trash2 size={14} />
-                            {isDup && !isOriginal && <span>إزالة المكررة</span>}
                           </button>
-                        </td>
+                        </>
                       )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 
