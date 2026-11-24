@@ -173,7 +173,7 @@ export async function extractInvoiceWithGemini(imagePath: string, customApiKey?:
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-1.5-flash'];
+    const candidateModels = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-2.5-flash'];
 
     const imageBuffer = fs.readFileSync(imagePath);
     const base64Image = imageBuffer.toString('base64');

@@ -1196,7 +1196,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       type={showGeminiKeyText ? 'text' : 'password'}
                       className="clay-input"
                       style={{ flex: '1 1 180px', padding: '0.48rem 0.65rem', fontSize: '0.85rem', direction: 'ltr', textAlign: 'left' }}
-                      placeholder="AIzaSy..."
+                      placeholder="AQ.Ab8RN6... أو AIzaSy..."
                       value={geminiKeyInput}
                       onChange={e => {
                         setGeminiKeyInput(e.target.value);

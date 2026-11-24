@@ -396,10 +396,12 @@ function fileToBase64DataUrl(file: File, knownMimeType?: string): Promise<{ data
 }
 
 const GEMINI_CANDIDATE_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
+  'gemini-flash-lite-latest',
   'gemini-flash-latest',
-  'gemini-1.5-flash'
+  'gemini-2.5-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash'
 ];
 
 const IRAQI_PHARMA_OCR_PROMPT = `أنت نظام ذكاء اصطناعي خبير متخصص في قراءة فواتير أدوية المذاخر والمستودعات في العراق.
@@ -431,11 +433,14 @@ const IRAQI_PHARMA_OCR_PROMPT = `أنت نظام ذكاء اصطناعي خبي�
 
 function formatGeminiErrorArabic(status: number, apiMessage: string): string {
   const low = (apiMessage || '').toLowerCase();
+  if (low.includes('free tier is not available') || low.includes('set up billing')) {
+    return 'الباقة المجانية لـ Gemini متوقفة حالياً على هذا المشروع (403) — فعّل الفوترة في Google AI Studio أو أنشئ مفتاحاً من مشروع/حساب جديد.';
+  }
   if (status === 400 && (low.includes('api key') || low.includes('api_key_invalid'))) {
-    return 'مفتاح Gemini API غير صالح (تأكد من نسخه كاملاً ويبدأ عادةً بـ AIzaSy).';
+    return 'مفتاح Gemini API غير صالح (تأكد من نسخه كاملاً دون مسافات سواء بدأ بـ AQ. أو AIzaSy).';
   }
   if (status === 401 || status === 403) {
-    return `تم رفض مفتاح Gemini (${status}): تحقق من تفعيل Generative Language API وصلاحيات المفتاح.`;
+    return `تم رفض الطلب من Gemini (${status}): ${apiMessage || 'تحقق من تفعيل Generative Language API وصلاحيات المفتاح.'}`;
   }
   if (status === 429) {
     return 'تم تجاوز حد الطلبات المجاني لمفتاح Gemini مؤقتاً (429). انتظر ثوانٍ وحاول مجدداً.';
@@ -489,8 +494,8 @@ async function runBrowserGeminiOcr(
           if (res.status === 400 && apiMsg.toLowerCase().includes('api_key_invalid')) {
             throw Object.assign(new Error(msg), { fatalAuth: true });
           }
-          // 404 نموذج غير متاح -> انتقل للنموذج التالي فوراً
-          if (res.status === 404) {
+          // 403 / 404 على نموذج معين -> انتقل للنموذج التالي فوراً دون إعادة المحاولة
+          if (res.status === 404 || res.status === 403) {
             lastError = new Error(msg);
             break;
           }
@@ -1075,8 +1080,9 @@ export const api = {
           return { valid: true, model, message: `تم التحقق! المفتاح يعمل بنجاح على (${model}) ✅` };
         }
         const errJson = await res.json().catch(() => ({}));
-        lastMsg = formatGeminiErrorArabic(res.status, errJson?.error?.message || res.statusText || '');
-        if (res.status === 400 || res.status === 401 || res.status === 403) {
+        const rawErrMsg = errJson?.error?.message || res.statusText || '';
+        lastMsg = formatGeminiErrorArabic(res.status, rawErrMsg);
+        if (res.status === 400 && rawErrMsg.toLowerCase().includes('api_key_invalid')) {
           return { valid: false, message: lastMsg };
         }
       } catch (e: any) {
