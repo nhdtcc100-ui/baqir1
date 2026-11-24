@@ -488,7 +488,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                       )}
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', fontSize: '0.82rem' }}>
+                    <div className="batch-header-fields" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', fontSize: '0.82rem' }}>
                       {/* تعديل رقم الفاتورة */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                         <span style={{ color: 'var(--gray-500)', fontWeight: 700 }}>رقم الفاتورة:</span>
@@ -601,7 +601,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
               {/* جدول بنود ومواد الفاتورة القابل للتعديل */}
               {!isCollapsed && (
                 <div style={{ padding: '0.75rem 1rem' }}>
-                  <div className="table-responsive">
+                  <div className="table-responsive desktop-table-view">
                     <table className="clay-table" style={{ width: '100%', fontSize: '0.82rem', marginBottom: 0 }}>
                       <thead>
                         <tr style={{ background: '#f8fafc' }}>
@@ -743,6 +743,100 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                         ))}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* Mobile Editable Cards View (Zero Horizontal Scroll!) */}
+                  <div className="mobile-cards-view" style={{ gap: '0.75rem' }}>
+                    {inv.items.map((it, itIdx) => (
+                      <div key={it.id} style={{
+                        background: '#f8fafc',
+                        border: '1.5px solid var(--gray-200)',
+                        borderRadius: 12,
+                        padding: '0.75rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.55rem'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.4rem' }}>
+                          <span style={{ fontWeight: 800, fontSize: '0.8rem', color: 'var(--gray-500)' }}>صنف #{itIdx + 1}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveItem(inv.id, it.id)}
+                            className="btn-clay btn-danger btn-sm"
+                            style={{ padding: '0.25rem 0.55rem', fontSize: '0.74rem' }}
+                          >
+                            <Trash2 size={13} /> حذف
+                          </button>
+                        </div>
+
+                        <input
+                          type="text"
+                          className="clay-input"
+                          style={{ padding: '0.45rem 0.65rem', fontSize: '0.85rem', fontWeight: 700 }}
+                          value={it.product_name}
+                          onChange={e => updateItem(inv.id, it.id, 'product_name', e.target.value)}
+                          placeholder="اسم المستحضر..."
+                        />
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                          <div>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--gray-500)', display: 'block' }}>نوع المادة</span>
+                            <select
+                              className="clay-input"
+                              style={{ padding: '0.4rem', fontSize: '0.8rem', fontWeight: 700 }}
+                              value={it.dosage_form || 'حبوب'}
+                              onChange={e => updateItem(inv.id, it.id, 'dosage_form', e.target.value)}
+                            >
+                              <option value="قطرة">قطرة</option>
+                              <option value="كريم">كريم</option>
+                              <option value="مرهم">مرهم</option>
+                              <option value="حبوب">حبوب</option>
+                            </select>
+                          </div>
+                          <div>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--gray-500)', display: 'block' }}>الكمية</span>
+                            <input
+                              type="number"
+                              min={1}
+                              className="clay-input"
+                              style={{ padding: '0.4rem', textAlign: 'center', fontWeight: 800 }}
+                              value={it.quantity}
+                              onChange={e => updateItem(inv.id, it.id, 'quantity', e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--gray-500)', display: 'block' }}>سعر المفرد</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step={250}
+                              className="clay-input"
+                              style={{ padding: '0.4rem', textAlign: 'center', fontWeight: 700 }}
+                              value={it.unit_price}
+                              onChange={e => updateItem(inv.id, it.id, 'unit_price', e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <span style={{ fontSize: '0.68rem', color: 'var(--gray-500)', display: 'block' }}>البونص</span>
+                            <input
+                              type="number"
+                              min={0}
+                              className="clay-input"
+                              style={{ padding: '0.4rem', textAlign: 'center', fontWeight: 800, color: it.bonus_quantity > 0 ? '#b45309' : undefined }}
+                              value={it.bonus_quantity}
+                              onChange={e => updateItem(inv.id, it.id, 'bonus_quantity', e.target.value)}
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#eff6ff', padding: '0.4rem 0.65rem', borderRadius: 8 }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--gray-600)' }}>المجموع الصافي:</span>
+                          <span style={{ fontWeight: 900, color: 'var(--primary)', fontSize: '0.88rem' }}>
+                            {(it.line_total || it.quantity * it.unit_price).toLocaleString()} د.ع
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* إضافة صنف جديد وملخص البطاقة */}

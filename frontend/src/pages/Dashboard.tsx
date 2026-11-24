@@ -51,11 +51,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-            {isRep && (
-              <button onClick={() => onNavigate('add-invoice')} className="btn-clay btn-primary">
-                <FilePlus size={18} /> إضافة فاتورة جديدة
-              </button>
-            )}
+            <button onClick={() => onNavigate('add-invoice')} className="btn-clay btn-primary" style={{ background: '#059669', borderColor: '#047857' }}>
+              <FilePlus size={18} /> إضافة فاتورة جديدة
+            </button>
             <button onClick={() => onNavigate('visits')} className="btn-clay btn-secondary">
               <Calendar size={18} /> جدول الزيارات
             </button>
@@ -163,19 +161,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <h5 style={{ fontWeight: 800, marginBottom: '1rem' }}>إجراءات سريعة</h5>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
 
-            {isRep && (
-              <button
-                onClick={() => onNavigate('add-invoice')}
-                className="btn-clay btn-secondary"
-                style={{ justifyContent: 'flex-start', padding: '0.875rem 1rem', textAlign: 'right' }}
-              >
-                <FilePlus size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>رفع فاتورة جديدة</div>
-                  <div style={{ fontSize: '0.77rem', color: 'var(--gray-400)', marginTop: 2 }}>يدوي، صورة أو PDF مع OCR</div>
-                </div>
-              </button>
-            )}
+            <button
+              onClick={() => onNavigate('add-invoice')}
+              className="btn-clay btn-secondary"
+              style={{ justifyContent: 'flex-start', padding: '0.875rem 1rem', textAlign: 'right', borderColor: '#a7f3d0', background: '#ecfdf5' }}
+            >
+              <FilePlus size={20} style={{ color: '#059669', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#065f46' }}>رفع / إضافة فاتورة جديدة</div>
+                <div style={{ fontSize: '0.77rem', color: '#047857', marginTop: 2 }}>كاميرا الموبايل، صورة أو PDF أو إدخال يدوي</div>
+              </div>
+            </button>
 
             <button
               onClick={() => onNavigate('pharmacies')}
@@ -222,59 +218,110 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <p style={{ fontWeight: 700, margin: 0 }}>لا توجد فواتير معلقة — كل شيء معتمد! ✅</p>
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="clay-table">
-              <thead>
-                <tr>
-                  <th>رقم الفاتورة</th>
-                  <th>الصيدلية</th>
-                  <th>المندوب</th>
-                  <th>التاريخ</th>
-                  <th>المبلغ</th>
-                  <th>البونص</th>
-                  <th>الحالة</th>
-                  {isAdmin && <th style={{ textAlign: 'center' }}>إجراء</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {pendingInvoices.map(inv => {
-                  const cleanDate = (inv.invoice_date || '').split('T')[0];
-                  return (
-                    <tr key={inv.id}>
-                      <td style={{ fontWeight: 700, color: 'var(--gray-900)' }}>
-                        <button
-                          onClick={() => onNavigate('billing')}
-                          className="btn-link"
-                          style={{ fontWeight: 800, color: 'var(--primary)', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                          title="عرض تفاصيل الفاتورة في السجل"
-                        >
-                          {inv.invoice_number || '—'}
-                        </button>
-                      </td>
-                      <td style={{ color: 'var(--gray-600)' }}>{inv.pharmacy_name}</td>
-                      <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name}</td>
-                      <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{cleanDate}</td>
-                      <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{Number(inv.total_sales_amount || 0).toLocaleString()} د.ع</td>
-                      <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
-                      <td><span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span></td>
-                      {isAdmin && (
-                        <td>
-                          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
-                            <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm">
-                              <CheckCircle2 size={14} /> اعتماد
-                            </button>
-                            <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm">
-                              <AlertCircle size={14} /> رفض
-                            </button>
-                          </div>
+          <>
+            <div className="desktop-table-view" style={{ overflowX: 'auto' }}>
+              <table className="clay-table">
+                <thead>
+                  <tr>
+                    <th>رقم الفاتورة</th>
+                    <th>الصيدلية</th>
+                    <th>المندوب</th>
+                    <th>التاريخ</th>
+                    <th>المبلغ</th>
+                    <th>البونص</th>
+                    <th>الحالة</th>
+                    {isAdmin && <th style={{ textAlign: 'center' }}>إجراء</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingInvoices.map(inv => {
+                    const cleanDate = (inv.invoice_date || '').split('T')[0];
+                    return (
+                      <tr key={inv.id}>
+                        <td style={{ fontWeight: 700, color: 'var(--gray-900)' }}>
+                          <button
+                            onClick={() => onNavigate('billing')}
+                            className="btn-link"
+                            style={{ fontWeight: 800, color: 'var(--primary)', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                            title="عرض تفاصيل الفاتورة في السجل"
+                          >
+                            {inv.invoice_number || '—'}
+                          </button>
                         </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                        <td style={{ color: 'var(--gray-600)' }}>{inv.pharmacy_name}</td>
+                        <td style={{ color: 'var(--gray-600)' }}>{inv.rep_name}</td>
+                        <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{cleanDate}</td>
+                        <td style={{ fontWeight: 800, color: 'var(--primary)' }}>{Number(inv.total_sales_amount || 0).toLocaleString()} د.ع</td>
+                        <td><span className="badge badge-warning">+{inv.total_bonus_count} 🎁</span></td>
+                        <td><span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span></td>
+                        {isAdmin && (
+                          <td>
+                            <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+                              <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm">
+                                <CheckCircle2 size={14} /> اعتماد
+                              </button>
+                              <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm">
+                                <AlertCircle size={14} /> رفض
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mobile-cards-view">
+              {pendingInvoices.map(inv => {
+                const cleanDate = (inv.invoice_date || '').split('T')[0];
+                return (
+                  <div key={inv.id} className="mobile-invoice-card" style={{ borderRight: '4px solid var(--warning)' }}>
+                    <div className="mobile-card-header">
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('billing')}
+                        className="mobile-invoice-number-btn"
+                      >
+                        فاتورة #{inv.invoice_number || '—'}
+                      </button>
+                      <span className="badge badge-warning"><Clock size={12} /> قيد المراجعة</span>
+                    </div>
+                    <div style={{ fontWeight: 800, fontSize: '0.94rem', color: 'var(--gray-900)' }}>
+                      🏥 {inv.pharmacy_name}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: 'var(--gray-600)' }}>
+                      <span>👤 {inv.rep_name}</span>
+                      <span>📅 {cleanDate}</span>
+                    </div>
+                    <div className="mobile-card-metrics" style={{ gridTemplateColumns: '1.2fr 1fr' }}>
+                      <div className="mobile-metric">
+                        <span className="mobile-metric-label">المبلغ</span>
+                        <span className="mobile-metric-val" style={{ color: 'var(--primary)' }}>
+                          {Number(inv.total_sales_amount || 0).toLocaleString()} د.ع
+                        </span>
+                      </div>
+                      <div className="mobile-metric">
+                        <span className="mobile-metric-label">البونص</span>
+                        <span className="badge badge-warning" style={{ width: 'fit-content' }}>+{inv.total_bonus_count} 🎁</span>
+                      </div>
+                    </div>
+                    {isAdmin && (
+                      <div className="mobile-card-actions">
+                        <button onClick={() => onApproveInvoice(inv.id)} className="btn-clay btn-success btn-sm flex-1" style={{ justifyContent: 'center' }}>
+                          <CheckCircle2 size={14} /> اعتماد
+                        </button>
+                        <button onClick={() => onRejectInvoice(inv.id)} className="btn-clay btn-danger btn-sm flex-1" style={{ justifyContent: 'center' }}>
+                          <AlertCircle size={14} /> رفض
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 

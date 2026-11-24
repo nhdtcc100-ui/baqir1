@@ -964,74 +964,114 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                   لا توجد بنود مفصلة لهذه الفاتورة
                 </div>
               ) : (
-                <div style={{ overflowX: 'auto', border: '1px solid var(--gray-200)', borderRadius: 12 }}>
-                  <table className="clay-table" style={{ margin: 0, fontSize: '0.86rem' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--gray-100)' }}>
-                        <th>#</th>
-                        <th>اسم المستحضر الدوائي</th>
-                        <th>النوع</th>
-                        <th style={{ textAlign: 'center' }}>الكمية المباعة</th>
-                        <th style={{ textAlign: 'center' }}>سعر الوحدة</th>
-                        <th style={{ textAlign: 'center' }}>البونص (10+1)</th>
-                        <th style={{ textAlign: 'center' }}>إجمالي القطع</th>
-                        <th style={{ textAlign: 'left' }}>المجموع الصافي</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedInvoice.items.map((item, idx) => (
-                        <tr key={item.id || idx}>
-                          <td>{idx + 1}</td>
-                          <td style={{ fontWeight: 800, color: 'var(--gray-900)' }}>
-                            {item.product_name_snapshot || 'مستحضر دوائي'}
-                          </td>
-                          <td>
-                            {(() => {
-                              const form = (item as any).dosage_form || (
-                                item.product_type_snapshot === 'drop' ? 'قطرة' :
-                                item.product_type_snapshot === 'cream' ? 'كريم' :
-                                item.product_type_snapshot === 'ointment' ? 'مرهم' :
-                                autoDetectDosageForm(item.product_name_snapshot || '')
-                              );
-                              const badgeStyle = getDosageFormBadgeColor(form);
-                              return (
-                                <span
-                                  className="badge"
-                                  style={{
-                                    fontSize: '0.75rem',
-                                    fontWeight: 800,
-                                    background: badgeStyle.bg,
-                                    color: badgeStyle.color,
-                                    border: `1px solid ${badgeStyle.border}`
-                                  }}
-                                >
-                                  {form}
-                                </span>
-                              );
-                            })()}
-                          </td>
-                          <td style={{ textAlign: 'center', fontWeight: 700 }}>
-                            {item.sold_quantity} قطعة
-                          </td>
-                          <td style={{ textAlign: 'center', color: 'var(--gray-600)' }}>
-                            {Number(item.historical_unit_price).toLocaleString()} د.ع
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span className={`badge ${item.bonus_quantity > 0 ? 'badge-warning' : 'badge-gray'}`}>
-                              +{item.bonus_quantity} مجانية
-                            </span>
-                          </td>
-                          <td style={{ textAlign: 'center', fontWeight: 800, color: 'var(--gray-800)' }}>
-                            {(item.sold_quantity || 0) + (item.bonus_quantity || 0)}
-                          </td>
-                          <td style={{ textAlign: 'left', fontWeight: 900, color: 'var(--primary)' }}>
-                            {Number(item.line_total).toLocaleString()} د.ع
-                          </td>
+                <>
+                  <div className="desktop-table-view" style={{ overflowX: 'auto', border: '1px solid var(--gray-200)', borderRadius: 12 }}>
+                    <table className="clay-table" style={{ margin: 0, fontSize: '0.86rem' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--gray-100)' }}>
+                          <th>#</th>
+                          <th>اسم المستحضر الدوائي</th>
+                          <th>النوع</th>
+                          <th style={{ textAlign: 'center' }}>الكمية المباعة</th>
+                          <th style={{ textAlign: 'center' }}>سعر الوحدة</th>
+                          <th style={{ textAlign: 'center' }}>البونص (10+1)</th>
+                          <th style={{ textAlign: 'center' }}>إجمالي القطع</th>
+                          <th style={{ textAlign: 'left' }}>المجموع الصافي</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {selectedInvoice.items.map((item, idx) => (
+                          <tr key={item.id || idx}>
+                            <td>{idx + 1}</td>
+                            <td style={{ fontWeight: 800, color: 'var(--gray-900)' }}>
+                              {item.product_name_snapshot || 'مستحضر دوائي'}
+                            </td>
+                            <td>
+                              {(() => {
+                                const form = (item as any).dosage_form || (
+                                  item.product_type_snapshot === 'drop' ? 'قطرة' :
+                                  item.product_type_snapshot === 'cream' ? 'كريم' :
+                                  item.product_type_snapshot === 'ointment' ? 'مرهم' :
+                                  autoDetectDosageForm(item.product_name_snapshot || '')
+                                );
+                                const badgeStyle = getDosageFormBadgeColor(form);
+                                return (
+                                  <span
+                                    className="badge"
+                                    style={{
+                                      fontSize: '0.75rem',
+                                      fontWeight: 800,
+                                      background: badgeStyle.bg,
+                                      color: badgeStyle.color,
+                                      border: `1px solid ${badgeStyle.border}`
+                                    }}
+                                  >
+                                    {form}
+                                  </span>
+                                );
+                              })()}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: 700 }}>
+                              {item.sold_quantity} قطعة
+                            </td>
+                            <td style={{ textAlign: 'center', color: 'var(--gray-600)' }}>
+                              {Number(item.historical_unit_price).toLocaleString()} د.ع
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span className={`badge ${item.bonus_quantity > 0 ? 'badge-warning' : 'badge-gray'}`}>
+                                +{item.bonus_quantity} مجانية
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: 800, color: 'var(--gray-800)' }}>
+                              {(item.sold_quantity || 0) + (item.bonus_quantity || 0)}
+                            </td>
+                            <td style={{ textAlign: 'left', fontWeight: 900, color: 'var(--primary)' }}>
+                              {Number(item.line_total).toLocaleString()} د.ع
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mobile-cards-view" style={{ gap: '0.6rem' }}>
+                    {selectedInvoice.items.map((item, idx) => {
+                      const form = (item as any).dosage_form || (
+                        item.product_type_snapshot === 'drop' ? 'قطرة' :
+                        item.product_type_snapshot === 'cream' ? 'كريم' :
+                        item.product_type_snapshot === 'ointment' ? 'مرهم' :
+                        autoDetectDosageForm(item.product_name_snapshot || '')
+                      );
+                      const badgeStyle = getDosageFormBadgeColor(form);
+                      return (
+                        <div key={item.id || idx} style={{
+                          background: 'var(--gray-50)',
+                          border: '1px solid var(--gray-200)',
+                          borderRadius: 12,
+                          padding: '0.75rem',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '0.45rem'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.4rem' }}>
+                            <span style={{ fontWeight: 800, color: 'var(--gray-900)', fontSize: '0.9rem' }}>
+                              {idx + 1}. {item.product_name_snapshot || 'مستحضر دوائي'}
+                            </span>
+                            <span className="badge" style={{ fontSize: '0.7rem', background: badgeStyle.bg, color: badgeStyle.color, border: `1px solid ${badgeStyle.border}` }}>
+                              {form}
+                            </span>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--gray-600)' }}>
+                            <span>الكمية: <strong>{item.sold_quantity}</strong> قطعة</span>
+                            <span>السعر: <strong>{Number(item.historical_unit_price).toLocaleString()}</strong> د.ع</span>
+                            <span>البونص: <strong style={{ color: '#b45309' }}>+{item.bonus_quantity}</strong></span>
+                            <span style={{ color: 'var(--primary)', fontWeight: 900 }}>المجموع: {Number(item.line_total).toLocaleString()} د.ع</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
 
               {/* Total Financial Box */}
@@ -1370,27 +1410,17 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                 </div>
               </div>
 
-              <div className="table-responsive" style={{ marginBottom: '1.25rem' }}>
-                <div style={{ minWidth: 540, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <div className="invoice-items-scroll" style={{ marginBottom: '1.25rem' }}>
+                <div className="edit-invoice-items-wrap">
                   {editItems.map((item, idx) => {
                     const qty = Math.max(1, parseInt(item.sold_quantity) || 1);
                     const price = parseFloat(item.historical_unit_price) || 0;
-                    const bonus = Math.floor(qty / 10);
                     const total = qty * price;
                     return (
                       <div
                         key={item.id || idx}
-                        style={{
-                          display: 'grid',
-                        gridTemplateColumns: '2fr 100px 110px 80px 110px 36px',
-                        gap: '0.5rem',
-                        alignItems: 'center',
-                        background: 'var(--gray-50)',
-                        borderRadius: 10,
-                        padding: '0.5rem 0.75rem',
-                        border: '1px solid var(--gray-200)'
-                      }}
-                    >
+                        className="edit-invoice-item-row"
+                      >
                       {/* Name */}
                       <div>
                         <span style={{ fontSize: '0.68rem', color: 'var(--gray-400)', display: 'block' }}>اسم الدواء / المادة</span>
@@ -1455,7 +1485,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                             type="number"
                             min={0}
                             className="clay-input"
-                            style={{ padding: '0.25rem 0.35rem', textAlign: 'center', fontSize: '0.82rem', width: 48, fontWeight: 800, color: 'var(--warning)' }}
+                            style={{ padding: '0.35rem 0.4rem', textAlign: 'center', fontSize: '0.82rem', width: '100%', fontWeight: 800, color: 'var(--warning)' }}
                             value={item.bonus_quantity !== undefined ? item.bonus_quantity : Math.floor(qty / 10)}
                             onChange={e => {
                               const val = Math.max(0, parseInt(e.target.value) || 0);

@@ -93,6 +93,18 @@ export function App() {
     if (currentUser) loadData();
   }, [currentUser]);
 
+  // Lock background page scrolling while mobile sidebar drawer is open
+  useEffect(() => {
+    if (mobileOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mobileOpen]);
+
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleLogout = () => {
     removeToken();
@@ -272,33 +284,126 @@ export function App() {
 
       {/* ── Mobile Drawer ──────────────────────────────────────────────────── */}
       {mobileOpen && (
-        <div className="mobile-nav-drawer">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.5rem 0.85rem', borderBottom: '1px solid var(--gray-200)', marginBottom: '0.5rem' }}>
-            <div className="topbar-user-avatar" style={{ background: avatarColor, width: 38, height: 38, fontSize: '0.95rem' }}>
-              {currentUser.full_name.charAt(0)}
+        <aside className="mobile-nav-drawer" aria-label="القائمة الجانبية">
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            padding: '0.5rem 0.25rem 0.9rem',
+            borderBottom: '1.5px solid var(--gray-200)',
+            marginBottom: '0.5rem',
+            flexShrink: 0
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', minWidth: 0 }}>
+              <div className="topbar-user-avatar" style={{ background: avatarColor, width: 42, height: 42, fontSize: '1rem' }}>
+                {currentUser.full_name.charAt(0)}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontWeight: 900, fontSize: '0.95rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {currentUser.full_name}
+                </span>
+                <span style={{ fontSize: '0.74rem', color: '#475569', fontWeight: 700 }}>{roleLabel}</span>
+              </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--gray-900)' }}>{currentUser.full_name}</span>
-              <span style={{ fontSize: '0.75rem', color: 'var(--gray-500)', fontWeight: 600 }}>{roleLabel} • {currentUser.email}</span>
-            </div>
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label="إغلاق القائمة"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                border: '1px solid var(--gray-200)',
+                background: '#f1f5f9',
+                color: '#0f172a',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                flexShrink: 0
+              }}
+            >
+              <X size={20} />
+            </button>
           </div>
 
-          {navItems.map(item => (
-            <button
-              key={item.id}
-              onClick={() => navigate(item.id)}
-              className={`mobile-nav-item ${activeTab === item.id ? 'active' : ''}`}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-          <div className="divider" />
-          <button className="mobile-nav-item" onClick={handleLogout} style={{ color: '#dc2626' }}>
-            <LogOut size={18} />
+          <div style={{ fontSize: '0.72rem', fontWeight: 800, color: '#64748b', padding: '0 0.35rem 0.25rem' }}>
+            أقسام المنظومة
+          </div>
+
+          {navItems.map(item => {
+            const isActive = activeTab === item.id;
+            const isAdd = item.id === 'add-invoice';
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => navigate(item.id)}
+                className={`mobile-nav-item ${isActive ? 'active' : ''}`}
+                style={isAdd && !isActive ? {
+                  background: '#ecfdf5',
+                  color: '#047857',
+                  borderColor: '#a7f3d0',
+                  fontWeight: 800
+                } : undefined}
+              >
+                <span style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  background: isActive
+                    ? 'rgba(255,255,255,0.22)'
+                    : isAdd
+                      ? '#d1fae5'
+                      : '#e0e7ff',
+                  color: isActive
+                    ? '#ffffff'
+                    : isAdd
+                      ? '#059669'
+                      : '#2563eb'
+                }}>
+                  {item.icon}
+                </span>
+                <span style={{ flex: 1 }}>{item.label}</span>
+              </button>
+            );
+          })}
+
+          <div className="divider" style={{ margin: '0.75rem 0' }} />
+
+          <button
+            type="button"
+            className="mobile-nav-item"
+            onClick={handleLogout}
+            style={{
+              background: '#fef2f2',
+              color: '#b91c1c',
+              borderColor: '#fecaca',
+              fontWeight: 800,
+              marginTop: 'auto'
+            }}
+          >
+            <span style={{
+              width: 34,
+              height: 34,
+              borderRadius: 10,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: '#fee2e2',
+              color: '#dc2626',
+              flexShrink: 0
+            }}>
+              <LogOut size={18} />
+            </span>
             <span>تسجيل الخروج</span>
           </button>
-        </div>
+        </aside>
       )}
 
       {/* ── Main Content ───────────────────────────────────────────────────── */}

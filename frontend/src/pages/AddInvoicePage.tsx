@@ -1,13 +1,13 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { Pharmacy, Product, Invoice } from '../types';
-import { api } from '../services/api';
+import { api, getSavedGeminiKey, setSavedGeminiKey, getApiBase, setApiBase } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
 import { compressAndNormalizeImage } from '../utils/imageCompressor';
 import {
   FilePlus, Upload, Edit3, FileImage, FileText as FilePdfIcon,
   Plus, Trash2, Calculator, CheckCircle2, AlertCircle, Sparkles,
   RefreshCw, X, ArrowRight, Camera, Loader, Database, Eye, Check,
-  Layers, Images
+  Layers, Images, Settings
 } from 'lucide-react';
 
 interface AddInvoicePageProps {
@@ -168,8 +168,12 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   const [isDragging, setIsDragging]       = useState(false);
   const [ocrLoading, setOcrLoading]       = useState(false);
   const [ocrDone, setOcrDone]             = useState(false);
+  const [offlineAttached, setOfflineAttached] = useState(false);
   const [ocrConfidence, setOcrConfidence] = useState(0);
   const [ocrSummary, setOcrSummary]       = useState<string | null>(null);
+  const [showOcrSettings, setShowOcrSettings] = useState(false);
+  const [geminiKeyInput, setGeminiKeyInput] = useState(() => getSavedGeminiKey());
+  const [apiBaseInput, setApiBaseInput]   = useState(() => getApiBase());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
@@ -240,170 +244,6 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     }
   };
 
-  // Sample Presets for 1-Click Instant OCR Testing
-  const samplePresets = [
-    {
-      name: 'فاتورة مذخر مزايا بغداد - لوكسترا (SAL-01-607115)',
-      invoiceNumber: 'SAL-01-607115',
-      invoiceDate: '2026-07-13',
-      pharmacySearch: 'الصحة العالمية',
-      pharmacyFullName: 'صيدلية الصحة العالمية / الكرادة',
-      img: '/samples/invoice_mazaya_loxtra.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_mazaya_loxtra.jpg',
-      items: [
-        { productSearch: 'loxtra', customName: 'loxtra 5ml drop', qty: 10, price: 4828, bonus: 1 }
-      ]
-    },
-    {
-      name: 'فاتورة مذخر مزايا بغداد - إليكا (SAL-01-596911)',
-      invoiceNumber: 'SAL-01-596911',
-      invoiceDate: '2026-07-05',
-      pharmacySearch: 'الأماكن',
-      pharmacyFullName: 'صيدلية الأماكن / الحبيبية',
-      img: '/samples/invoice_mazaya_elica.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_mazaya_elica.jpg',
-      items: [
-        { productSearch: '30g oint', customName: 'elica 30g oint', qty: 20, price: 4828, bonus: 2 },
-        { productSearch: '30g cream', customName: 'Elica m 30g cream', qty: 20, price: 5706, bonus: 2 }
-      ]
-    },
-    {
-      name: 'فاتورة مذخر طريق السلام (رقم 569514)',
-      invoiceNumber: '569514',
-      invoiceDate: '2026-07-11',
-      pharmacySearch: 'نور الهدى',
-      pharmacyFullName: 'صيدلية نور الهدى حميد لفتة (البلديات)',
-      img: '/samples/invoice_tareeq_alsalam.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_tareeq_alsalam.jpg',
-      items: [
-        { productSearch: 'hyfresh', customName: 'Hyfresh drop jamjoom', qty: 100, price: 5267, bonus: 10 }
-      ]
-    },
-    {
-      name: 'فاتورة مذخر أدوية العناية (رقم 16188)',
-      invoiceNumber: '16188',
-      invoiceDate: '2026-07-18',
-      pharmacySearch: 'حسين هاشم',
-      pharmacyFullName: 'ص حسين هاشم محمود - زيونة',
-      img: '/samples/invoice_elica_care.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_elica_care.jpg',
-      items: [
-        { productSearch: 'elica m cream', customName: 'ELICA M CREAM', qty: 50, price: 5706, bonus: 5 },
-        { productSearch: 'elica ointment', customName: 'ELICA OINTMENT 30 G', qty: 50, price: 4828, bonus: 5 }
-      ]
-    },
-    {
-      name: 'فاتورة مذخر الشغف - الحارثية (رقم 130683)',
-      invoiceNumber: '130683',
-      invoiceDate: '2026-04-13',
-      pharmacySearch: 'الثقة',
-      pharmacyFullName: 'صيدلية الثقة /محمودية',
-      img: '/samples/invoice_shaghaf_elicasal.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_shaghaf_elicasal.jpg',
-      items: [
-        { productSearch: 'elicasal', customName: 'elicasal oint 30g jamjoom', qty: 100, price: 5750, bonus: 10 }
-      ]
-    },
-    {
-      name: 'فاتورة مذخر أدوية السعفة - الزعفرانية (رقم 44941)',
-      invoiceNumber: '44941',
-      invoiceDate: '2026-07-25',
-      pharmacySearch: 'صفا الورد',
-      pharmacyFullName: 'صيدلية صفا الورد مجمع بسماية',
-      img: '/samples/invoice_saafa_fusibact.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_saafa_fusibact.jpg',
-      items: [
-        { productSearch: 'Fusibact', customName: 'Fusibact 2% cream', qty: 112, price: 2842, bonus: 11 },
-        { productSearch: 'Elica -M', customName: 'Elica -M cream 0.1%', qty: 300, price: 5855, bonus: 30 },
-        { productSearch: 'Hy Fresh', customName: 'Hy Fresh drups', qty: 320, price: 5247, bonus: 32 }
-      ]
-    },
-    // ====== NEW INVOICES FROM USER (Nov 2026) ======
-    {
-      name: 'فاتورة مزايا بغداد - لوكسترا (SAL-01-607115)',
-      invoiceNumber: 'SAL-01-607115',
-      invoiceDate: '2026-07-13',
-      pharmacySearch: 'الصحة العالمية',
-      pharmacyFullName: 'صيدلية الصحة العالمية / الكرادة',
-      img: '/samples/invoice_mazaya_loxtra607115.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_mazaya_loxtra607115.jpg',
-      items: [
-        { productSearch: 'loxtra', customName: 'loxtra 5ml drop', qty: 10, price: 4628, bonus: 0 }
-      ]
-    },
-    {
-      name: 'فاتورة مزايا بغداد - إليكا مزدوج (SAL-01-596911)',
-      invoiceNumber: 'SAL-01-596911',
-      invoiceDate: '2026-07-05',
-      pharmacySearch: 'الأمكن',
-      pharmacyFullName: 'صيدلية الأمكن / الحبيبية',
-      img: '/samples/invoice_mazaya_elica596911.jpg',
-      serverImg: 'http://localhost:5000/uploads/invoices/invoice_mazaya_elica596911.jpg',
-      items: [
-        { productSearch: '30g oint', customName: 'elica 30g oint', qty: 20, price: 4828, bonus: 0 },
-        { productSearch: '30g cream', customName: 'Elica m 30g cream', qty: 20, price: 5706, bonus: 0 }
-      ]
-    }
-  ];
-
-  const handleLoadSample = (sample: typeof samplePresets[0]) => {
-    setOcrLoading(true);
-    setOcrDone(false);
-    setError(null);
-    // Clear previous pharmacy immediately so screen indicates fresh loading
-    setPharmacyName('');
-    setPharmacyId('');
-    setOcrPharmacyName('');
-    setPreviewUrl(sample.img);
-    setImageUrl(sample.serverImg);
-    setUploadedFile(new File([''], sample.name + '.jpg', { type: 'image/jpeg' }));
-
-    setTimeout(() => {
-      // Match pharmacy by real name
-      const foundPh = pharmacies.find(p =>
-        p.name.includes(sample.pharmacySearch) ||
-        sample.pharmacyFullName.includes(p.name.split(' ')[1] || '')
-      ) || null;
-      // Always update the visible pharmacy name field with what OCR detected
-      if (foundPh) {
-        setPharmacyId(foundPh.id);
-        setPharmacyName(foundPh.name);
-      } else {
-        setPharmacyId('');
-        setPharmacyName(sample.pharmacyFullName);
-      }
-      setOcrPharmacyName(sample.pharmacyFullName);
-
-      setInvoiceNumber(sample.invoiceNumber);
-      setInvoiceDate(sample.invoiceDate);
-
-      // Map products with real OCR names and prices
-      const mapped: LineItem[] = sample.items.map((it, idx) => {
-        // Try to find the exact product
-        const prod = products.find(p =>
-          p.name.toLowerCase().includes(it.productSearch.toLowerCase()) ||
-          it.productSearch.toLowerCase().includes(p.name.toLowerCase().split(' ')[0])
-        ) || products[idx] || products[0];
-        return {
-          id: 'sample-' + idx,
-          product_id: prod.id,
-          sold_quantity: it.qty,
-          custom_name: it.customName,
-          dosage_form: autoDetectDosageForm(it.customName || ''),
-          custom_price: it.price,
-          ocr_bonus: it.bonus,
-          ocr_confidence: 0.98
-        };
-      });
-      setItems(mapped.length > 0 ? mapped : items);
-
-      setOcrConfidence(98);
-      setOcrDone(true);
-      setOcrSummary(`تم استخراج بيانات الفاتورة بنجاح: رقم ${sample.invoiceNumber} — ${sample.pharmacyFullName} — ${mapped.length} أصناف`);
-      setOcrLoading(false);
-    }, 700);
-  };
-
   // Submission
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState<string | null>(null);
@@ -470,14 +310,21 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   const processOcr = async (file: File) => {
     setOcrLoading(true);
     setOcrDone(false);
+    setOfflineAttached(false);
     setError(null);
-    // Clear previous pharmacy data immediately so UI shows "scanning..." not old data
-    setPharmacyName('');
-    setPharmacyId('');
-    setOcrPharmacyName('');
 
     try {
       const result = await api.uploadInvoiceFile(file, pharmacyId);
+
+      if (result.image_url) setImageUrl(result.image_url);
+
+      // الوضع السحابي المباشر (عند عدم اتصال السيرفر وعدم توفر مفتاح Gemini)
+      if (result.offline_mode) {
+        setOfflineAttached(true);
+        setOcrConfidence(0);
+        setOcrSummary('تم إرفاق وحفظ صورة الفاتورة بنجاح. أكمل بيانات الصيدلية والأصناف أدناه ثم اضغط حفظ.');
+        return;
+      }
 
       // Auto-fill pharmacy if matched or newly registered
       if (result.pharmacy_name) {
@@ -506,12 +353,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       // Auto-fill invoice number & date
       if (result.invoice_number) setInvoiceNumber(result.invoice_number);
       if (result.invoice_date) setInvoiceDate(result.invoice_date);
-      if (result.image_url) setImageUrl(result.image_url);
 
       // Auto-fill extracted product items — preserve exact OCR names & prices
       if (result.extracted_items && result.extracted_items.length > 0) {
         const mappedItems: LineItem[] = result.extracted_items.map((ei, idx) => {
-          // Try to find a matching product in catalog (for product_id FK)
           let matched = products.find(p => p.id === ei.product_id);
           if (!matched && ei.product_name) {
             matched = products.find(p =>
@@ -537,7 +382,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setOcrDone(true);
       setOcrSummary(`تم استخراج ${result.extracted_items?.length || 0} أصناف بنجاح — ${result.pharmacy_name || ''}${result.invoice_number ? ' — رقم: ' + result.invoice_number : ''}`);
     } catch (e: any) {
-      setError('تعذر استخراج بيانات الملف تلقائياً: ' + e.message);
+      setError('تعذر استخراج بيانات الملف: ' + (e.message || 'خطأ غير متوقع'));
     } finally {
       setOcrLoading(false);
     }
@@ -660,9 +505,15 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             if (result.invoice_date) setInvoiceDate(result.invoice_date);
             if (result.image_url) setImageUrl(result.image_url);
             setItems(finalItems);
-            setOcrConfidence(Math.round(result.confidence * 100));
-            setOcrDone(true);
-            setOcrSummary(`تم استخراج ${result.extracted_items?.length || 0} أصناف — ${result.pharmacy_name || ''}`);
+            if (result.offline_mode) {
+              setOfflineAttached(true);
+              setOcrConfidence(0);
+              setOcrSummary('تم إرفاق الصور بنجاح — يمكنك مراجعتها وتعبئة البيانات مباشرة.');
+            } else {
+              setOcrConfidence(Math.round(result.confidence * 100));
+              setOcrDone(true);
+              setOcrSummary(`تم استخراج ${result.extracted_items?.length || 0} أصناف — ${result.pharmacy_name || ''}`);
+            }
           }
         } catch (err: any) {
           setBatchInvoices(prev => prev.map((item, idx) =>
@@ -953,56 +804,47 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     <div className="animate-in">
 
       {/* ── Page Header ──────────────────────────────────────────────────────── */}
-      <div className="page-header" style={{ marginBottom: '1.25rem' }}>
+      <div className="page-header" style={{ marginBottom: '1rem' }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
-            <span className="badge badge-primary">
-              <Database size={13} /> متصل بـ Supabase Docker
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
+            <span className="badge badge-primary" style={{ fontSize: '0.74rem' }}>
+              <Database size={12} /> سحابي + محلي متصل
             </span>
-            <span className="badge badge-success">
-              <Sparkles size={13} /> معالجة الفواتير الذكية
+            <span className="badge badge-success" style={{ fontSize: '0.74rem' }}>
+              <Sparkles size={12} /> معالجة الفواتير الذكية
             </span>
           </div>
-          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-            <FilePlus size={28} style={{ color: 'var(--primary)' }} />
-            إضافة فاتورة صيدلية جديدة
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <FilePlus size={24} style={{ color: 'var(--primary)' }} />
+            إضافة فاتورة جديدة
           </h1>
-          <p className="page-subtitle">
-            خاص بحساب المندوب: يمكنك إضافة الفاتورة يدوياً أو رفع صورتها / ملف PDF ليقوم النظام بقراءة بياناتها وإدخالها فوراً.
-          </p>
         </div>
-        <button className="btn-clay btn-secondary" onClick={onCancel}>
-          <X size={16} /> إلغاء والعودة
+        <button type="button" className="btn-clay btn-secondary btn-sm" onClick={onCancel}>
+          <ArrowRight size={15} /> العودة للسجل
         </button>
       </div>
 
       {/* ── Entry Mode Tabs ────────────────────────────────────────────────── */}
-      <div className="card mb-4" style={{ padding: '0.85rem 1.25rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--gray-900)' }}>اختر طريقة إدخال الفاتورة:</div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>المسح الضوئي الذكي يملأ البيانات والصيدلية والأدوية والكميات تلقائياً</div>
-          </div>
-          <div className="tab-pills" style={{ margin: 0 }}>
-            <button
-              type="button"
-              onClick={() => { setMode('ocr'); setError(null); }}
-              className={`tab-pill ${mode === 'ocr' ? 'active' : ''}`}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}
-            >
-              <Sparkles size={16} style={{ color: mode === 'ocr' ? '#ffffff' : 'var(--primary)' }} />
-              <span>رفع صورة أو ملف PDF مع قراءة مباشرة (OCR)</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setMode('manual'); setError(null); }}
-              className={`tab-pill ${mode === 'manual' ? 'active' : ''}`}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}
-            >
-              <Edit3 size={16} />
-              <span>إدخال يدوي مباشر للفاتورة</span>
-            </button>
-          </div>
+      <div className="card mb-3" style={{ padding: '0.75rem 1rem' }}>
+        <div className="tab-pills" style={{ margin: 0 }}>
+          <button
+            type="button"
+            onClick={() => { setMode('ocr'); setError(null); }}
+            className={`tab-pill ${mode === 'ocr' ? 'active' : ''}`}
+            style={{ fontWeight: 800 }}
+          >
+            <Camera size={16} style={{ color: mode === 'ocr' ? 'var(--primary)' : 'var(--gray-500)', flexShrink: 0 }} />
+            <span>📷 صورة / كاميرا أو PDF</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMode('manual'); setError(null); }}
+            className={`tab-pill ${mode === 'manual' ? 'active' : ''}`}
+            style={{ fontWeight: 800 }}
+          >
+            <Edit3 size={16} style={{ flexShrink: 0 }} />
+            <span>✍️ إدخال يدوي مباشر</span>
+          </button>
         </div>
       </div>
 
@@ -1131,37 +973,69 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
           {/* ── Left Column: OCR / File Upload & Laser Scanner ──────────────── */}
           {mode === 'ocr' && (
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <h5 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Camera size={20} style={{ color: 'var(--primary)' }} />
-                  رفع صورة أو ملف PDF الفاتورة
+                  صورة الفاتورة أو ملف PDF
                 </h5>
-                <span className="badge badge-purple">
-                  <Sparkles size={12} /> قراءة فورية وتلقائية
-                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowOcrSettings(v => !v)}
+                  className="btn-clay btn-secondary btn-sm"
+                  style={{ fontSize: '0.72rem', padding: '0.28rem 0.65rem' }}
+                  title="إعدادات القراءة الذكية عبر المتصفح أو الخادم"
+                >
+                  <Settings size={13} /> إعدادات OCR
+                </button>
               </div>
 
-              {/* Presets for instant OCR testing */}
-              <div style={{ background: 'var(--gray-50)', padding: '0.75rem', borderRadius: 12, border: '1px solid var(--gray-200)' }}>
-                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.45rem' }}>
-                  ⚡ نماذج فواتير جاهزة للاختبار الفوري للمسح (OCR):
-                </span>
-                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                  {samplePresets.map((s, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => handleLoadSample(s)}
-                      disabled={ocrLoading}
-                      className="btn-clay btn-secondary btn-sm"
-                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.65rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                    >
-                      <Sparkles size={12} style={{ color: 'var(--primary)' }} />
-                      <span>{s.name}</span>
-                    </button>
-                  ))}
+              {showOcrSettings && (
+                <div style={{
+                  background: '#f8fafc',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 12,
+                  padding: '0.85rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.6rem'
+                }}>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#0f172a' }}>
+                    ⚙️ إعدادات الذكاء الاصطناعي والربط المباشر (للموبايل والمتصفح):
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: 3 }}>
+                      مفتاح Google Gemini API (للقراءة الآلية مباشرة من الهاتف بدون خادم):
+                    </label>
+                    <input
+                      type="password"
+                      className="clay-input"
+                      style={{ padding: '0.45rem 0.65rem', fontSize: '0.8rem' }}
+                      placeholder="AIzaSy..."
+                      value={geminiKeyInput}
+                      onChange={e => {
+                        setGeminiKeyInput(e.target.value);
+                        setSavedGeminiKey(e.target.value);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: 3 }}>
+                      عنوان الخادم الخلفي (Backend API URL):
+                    </label>
+                    <input
+                      type="url"
+                      className="clay-input"
+                      style={{ padding: '0.45rem 0.65rem', fontSize: '0.8rem', direction: 'ltr', textAlign: 'left' }}
+                      placeholder="http://localhost:5000/api/v1"
+                      value={apiBaseInput}
+                      onChange={e => {
+                        setApiBaseInput(e.target.value);
+                        setApiBase(e.target.value);
+                      }}
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Upload Drop Zone / Laser Box */}
               <div
@@ -1304,8 +1178,16 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                           تمت قراءة البيانات بنجاح (دقة الـ OCR: {ocrConfidence}%)
                         </div>
                         <div style={{ fontSize: '0.8rem', color: '#047857', marginTop: 2 }}>
-                          تم تعبئة رقم الفاتورة، تاريخها، الصيدلية، وكافة الأصناف تلقائياً في الجدول على اليمين.
+                          تم تعبئة بيانات الصيدلية والأصناف تلقائياً في النموذج أدناه.
                         </div>
+                      </div>
+                    </div>
+                  ) : offlineAttached ? (
+                    <div className="alert-info" style={{ margin: 0, padding: '0.75rem 1rem' }}>
+                      <CheckCircle2 size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                      <div style={{ fontSize: '0.82rem', lineHeight: 1.45 }}>
+                        <strong style={{ display: 'block' }}>📸 تم إرفاق الفاتورة بنجاح!</strong>
+                        أكمل اسم الصيدلية والأصناف في النموذج أدناه ثم اضغط حفظ (أو افتح "إعدادات OCR" أعلاه لإدخال مفتاح Gemini للقراءة الآلية).
                       </div>
                     </div>
                   ) : null}
@@ -1318,11 +1200,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       className="btn-clay btn-secondary flex-1"
                     >
                       <RefreshCw size={15} className={ocrLoading ? 'animate-spin' : ''} />
-                      إعادة المسح الضوئي
+                      إعادة القراءة الضوئية
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setUploadedFile(null); setPreviewUrl(null); setOcrDone(false); setOcrSummary(null); setPharmacyName(''); setPharmacyId(''); setInvoiceNumber(generateInvoiceNumber()); setItems([{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10 }]); }}
+                      onClick={() => { setUploadedFile(null); setPreviewUrl(null); setOcrDone(false); setOfflineAttached(false); setOcrSummary(null); setPharmacyName(''); setPharmacyId(''); setInvoiceNumber(generateInvoiceNumber()); setItems([{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10 }]); }}
                       className="btn-clay btn-secondary"
                       title="إزالة الملف"
                     >
@@ -1539,16 +1421,6 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       <div
                         key={item.id}
                         className="invoice-item-row"
-                        style={{
-                          display: 'grid',
-                          gridTemplateColumns: '2fr 110px 85px 90px 90px 95px 36px',
-                          gap: '0.5rem',
-                          alignItems: 'center',
-                          background: 'var(--gray-50)',
-                          borderRadius: 12,
-                          padding: '0.65rem 0.85rem',
-                          border: '1px solid var(--gray-200)'
-                        }}
                       >
                       {/* Product: editable name if from OCR, dropdown if manual */}
                       <div>
@@ -1646,10 +1518,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                             min={0}
                             className="clay-input"
                             style={{
-                              padding: '0.3rem 0.4rem',
+                              padding: '0.35rem 0.4rem',
                               textAlign: 'center',
                               fontSize: '0.85rem',
-                              width: 52,
+                              width: '100%',
                               fontWeight: 800,
                               color: bonus > 0 ? 'var(--warning)' : 'var(--gray-600)',
                               border: item.manual_bonus !== undefined ? '2px solid var(--warning)' : undefined
@@ -1695,10 +1567,12 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
+                          gap: 4,
                           padding: 4
                         }}
                       >
                         <Trash2 size={16} />
+                        <span className="mobile-only-inline" style={{ fontSize: '0.76rem' }}>حذف الصنف</span>
                       </button>
                     </div>
                   );
@@ -1776,17 +1650,17 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 </button>
               )}
 
-              <div style={{ display: 'flex', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <button
                   type="submit"
                   disabled={submitting || ocrLoading || batchSubmitting}
                   className="btn-clay btn-primary flex-1"
-                  style={{ padding: '0.875rem 1.5rem', fontSize: '1rem', fontWeight: 800 }}
+                  style={{ padding: '0.875rem 1.25rem', fontSize: '0.96rem', fontWeight: 800, minWidth: 200 }}
                 >
                   {submitting ? (
-                    <><Loader size={18} className="animate-spin" /> جاري حفظ الفاتورة في سوبا بيس وكوكل شيت...</>
+                    <><Loader size={18} className="animate-spin" /> جاري حفظ الفاتورة...</>
                   ) : (
-                    <><CheckCircle2 size={20} /> {batchInvoices.length > 1 ? 'حفظ هذه الفاتورة الحالية فقط ومزامنتها' : 'حفظ الفاتورة ومزامنتها مع كوكل شيت'}</>
+                    <><CheckCircle2 size={20} /> {batchInvoices.length > 1 ? 'حفظ هذه الفاتورة الحالية فقط' : 'حفظ الفاتورة ومزامنتها'}</>
                   )}
                 </button>
 

@@ -74,6 +74,7 @@ export interface Invoice {
   rep_id: string;
   rep_name?: string;
   image_url?: string | null;
+  notes?: string;
   status: InvoiceStatus;
   total_sales_amount: number;
   total_pieces_count: number;
