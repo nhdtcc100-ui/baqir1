@@ -11,9 +11,12 @@
   },
   "dependencies": {
     "bootstrap": "^5.3.8",
+    "eruda": "^3.4.3",
+    "heic2any": "^0.0.4",
     "lucide-react": "^1.65.0",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

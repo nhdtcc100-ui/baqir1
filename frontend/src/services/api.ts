@@ -1,10 +1,14 @@
 import { User, Pharmacy, Product, Invoice, KPISummary } from '../types';
+import { prepareInvoiceFile, PreparedInvoiceFile } from '../utils/imageCompressor';
+import { runLocalBrowserTesseractOcr } from '../utils/localOcrFallback';
+import { detectDosageFormClient, detectAreaFromText } from '../utils/invoiceTableParser';
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
 const DEFAULT_SHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 const DEFAULT_SHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_SHEET_ID}/edit?usp=sharing`;
 const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbzNVERdMAD6DfcaW6oGOSOZeuuNv-0j2qJ1HVndYMILL8eWkcD5PJ1fG3sJkLV80-qs/exec';
-const ADMIN_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU/edit?usp=sharing';
+const ADMIN_SHEET_ID = '1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU';
+const ADMIN_SHEET_URL = `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/edit?usp=sharing`;
 
 export const getApiBase = (): string => {
   const custom = localStorage.getItem('pharma_api_base');
@@ -186,13 +190,81 @@ function isNetworkError(err: any): boolean {
   );
 }
 
+export interface OcrProgressUpdate {
+  stage: 'inspect' | 'prepare' | 'upload' | 'analyze' | 'done';
+  percent: number;
+  message: string;
+}
+
+export interface PendingOcrQueueItem {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  dataUrl: string;
+  pharmacyId?: string;
+  createdAt: string;
+  reason: string;
+}
+
+const LS_PENDING_OCR_QUEUE_KEY = 'pharma_pending_ocr_queue_v1';
+
+export function getPendingOcrQueue(): PendingOcrQueueItem[] {
+  try {
+    const raw = localStorage.getItem(LS_PENDING_OCR_QUEUE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function enqueuePendingOcrScan(item: Omit<PendingOcrQueueItem, 'id' | 'createdAt'>): PendingOcrQueueItem {
+  const queue = getPendingOcrQueue();
+  const entry: PendingOcrQueueItem = {
+    ...item,
+    id: 'q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    createdAt: new Date().toISOString()
+  };
+  // نحتفظ بآخر 5 صور كحد أقصى لتفادي امتلاء localStorage
+  const next = [entry, ...queue].slice(0, 5);
+  try {
+    localStorage.setItem(LS_PENDING_OCR_QUEUE_KEY, JSON.stringify(next));
+  } catch {
+    try {
+      localStorage.setItem(LS_PENDING_OCR_QUEUE_KEY, JSON.stringify(next.slice(0, 2)));
+    } catch { /* ignore quota */ }
+  }
+  return entry;
+}
+
+export function removePendingOcrQueueItem(id: string) {
+  const next = getPendingOcrQueue().filter(q => q.id !== id);
+  try {
+    localStorage.setItem(LS_PENDING_OCR_QUEUE_KEY, JSON.stringify(next));
+  } catch { /* ignore */ }
+}
+
+export function clearPendingOcrQueue() {
+  try {
+    localStorage.removeItem(LS_PENDING_OCR_QUEUE_KEY);
+  } catch { /* ignore */ }
+}
+
+/** هل الخادم المهيأ غير قابل للوصول من HTTPS (مثل localhost على GitHub Pages)؟ */
+export function isLocalhostFromRemoteHttps(): boolean {
+  const apiBase = getApiBase();
+  return (
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'https:' &&
+    (apiBase.startsWith('http://localhost') || apiBase.startsWith('http://127.0.0.1'))
+  );
+}
+
 /** Timeout helper so mobile doesn't wait 60s when localhost:5000 is unreachable */
 async function fetchApi(path: string, init?: RequestInit, timeoutMs = 6000): Promise<Response> {
   const apiBase = getApiBase();
-  const isRemoteHttpsToLocalhost =
-    typeof window !== 'undefined' &&
-    window.location.protocol === 'https:' &&
-    apiBase.startsWith('http://localhost');
+  const isRemoteHttpsToLocalhost = isLocalhostFromRemoteHttps();
 
   // If served on GitHub Pages HTTPS and still targeting default localhost, fail fast in 600ms
   const effectiveTimeout = isRemoteHttpsToLocalhost ? 600 : timeoutMs;
@@ -209,8 +281,103 @@ async function fetchApi(path: string, init?: RequestInit, timeoutMs = 6000): Pro
   }
 }
 
-// ── Client-Side File DataURL & Optional Direct Gemini Vision OCR ─────────────
-function fileToBase64DataUrl(file: File): Promise<{ dataUrl: string; base64: string; mimeType: string }> {
+/**
+ * رفع Multipart/FormData عبر XMLHttpRequest مع تتبع نسبة التقدم + Retry (Exponential Backoff)
+ * ملاحظة: لا يتم تعيين Content-Type يدوياً حتى يضيف المتصفح boundary تلقائياً.
+ */
+async function uploadMultipartWithRetry(
+  path: string,
+  formData: FormData,
+  onUploadProgress?: (pct: number) => void,
+  maxRetries = 3,
+  timeoutMs = 28000
+): Promise<any> {
+  if (isLocalhostFromRemoteHttps()) {
+    throw new TypeError('Localhost backend unreachable from HTTPS origin');
+  }
+
+  const apiBase = getApiBase();
+  const token = getToken();
+  let lastErr: any;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${apiBase}${path}`, true);
+        xhr.timeout = timeoutMs;
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable && onUploadProgress) {
+            onUploadProgress(Math.round((ev.loaded / ev.total) * 100));
+          }
+        };
+        xhr.onload = () => {
+          let json: any = {};
+          try { json = JSON.parse(xhr.responseText || '{}'); } catch { /* ignore */ }
+          resolve({ status: xhr.status, body: json });
+        };
+        xhr.onerror = () => reject(new TypeError('Network error during file upload'));
+        xhr.ontimeout = () => reject(new TypeError('Upload request timed out'));
+        xhr.send(formData);
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        removeToken();
+        removeCurrentUser();
+        window.dispatchEvent(new Event('auth:logout'));
+        throw new Error('انتهت صلاحية جلسة الدخول، يرجى تسجيل الدخول مجدداً');
+      }
+
+      if (res.status >= 200 && res.status < 300) {
+        return res.body?.data ?? res.body;
+      }
+
+      // أخطاء 4xx (مثل ملف غير صالح 400) لا يُعاد محاولتها
+      if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+        throw new Error(res.body?.error || res.body?.message || `خطأ في التحقق من الملف (${res.status})`);
+      }
+
+      throw new Error(res.body?.error || res.body?.message || `Server returned ${res.status}`);
+    } catch (err: any) {
+      lastErr = err;
+      const shouldRetry = attempt < maxRetries && isNetworkError(err);
+      if (!shouldRetry) throw err;
+      const backoffMs = Math.min(4000, 800 * Math.pow(2, attempt - 1));
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+  }
+
+  throw lastErr;
+}
+
+/**
+ * متابعة وظيفة تحليل في الخلفية (Job Polling) إذا أعاد الخادم 202 + jobId
+ */
+async function pollBackendOcrJob(jobId: string, onProgress?: (pct: number, msg: string) => void): Promise<any> {
+  const maxPolls = 30;
+  for (let i = 0; i < maxPolls; i++) {
+    const res = await fetchApi(`/invoices/ocr-status/${encodeURIComponent(jobId)}`, {
+      headers: authHeaders()
+    }, 8000);
+    const data = await handleResponse<any>(res);
+    if (data?.status === 'completed' && data?.result) {
+      return data.result;
+    }
+    if (data?.status === 'failed') {
+      throw new Error(data.error || 'فشلت عملية تحليل الفاتورة في الخلفية');
+    }
+    if (typeof data?.progress === 'number') {
+      onProgress?.(data.progress, data.message || 'جاري تحليل الفاتورة بالذكاء الاصطناعي...');
+    }
+    await new Promise(r => setTimeout(r, 1200));
+  }
+  throw new Error('انتهت مهلة انتظار نتيجة التحليل من الخادم');
+}
+
+// ── Client-Side File DataURL & Direct Gemini Vision OCR ──────────────────────
+function fileToBase64DataUrl(file: File, knownMimeType?: string): Promise<{ dataUrl: string; base64: string; mimeType: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -220,7 +387,7 @@ function fileToBase64DataUrl(file: File): Promise<{ dataUrl: string; base64: str
       resolve({
         dataUrl,
         base64,
-        mimeType: file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
+        mimeType: knownMimeType || file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg')
       });
     };
     reader.onerror = () => reject(new Error('تعذر قراءة الملف من الجهاز، يرجى التحقق من صلاحية الوصول للملفات'));
@@ -228,40 +395,195 @@ function fileToBase64DataUrl(file: File): Promise<{ dataUrl: string; base64: str
   });
 }
 
-async function runBrowserGeminiOcr(fileData: { base64: string; mimeType: string }, geminiKey: string) {
-  const prompt = `اقرأ فاتورة الأدوية هذه واستخرج JSON فقط بدون Markdown أو نص إضافي بهذا الشكل الدقيق:
+const GEMINI_CANDIDATE_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-flash-latest',
+  'gemini-1.5-flash'
+];
+
+const IRAQI_PHARMA_OCR_PROMPT = `أنت نظام ذكاء اصطناعي خبير متخصص في قراءة فواتير أدوية المذاخر والمستودعات في العراق.
+تجاهل أي نوافذ فيديو أو تشتيت جانبي على لقطات شاشة الهاتف واقرأ الفاتورة بدقة كاملة مهما كانت لغتها (عربية / إنجليزية / مختلطة).
+
+قواعد الاستخراج الصارمة:
+1. invoice_number: رقم الفاتورة (مثل SAL-01-596911 أو 21084 أو 44941).
+2. invoice_date: التاريخ بصيغة YYYY-MM-DD (مثال: 13/07/2026 -> 2026-07-13).
+3. pharmacy_name: الاسم الكامل للصيدلية المشترية بعد "اسم الجهة" أو "المطلوب لـ" أو "Client Info :" أو "الزبون". أضف كلمة "صيدلية" في البداية إن لم توجد. ممنوع إرجاع كلمة "صيدلية" وحدها دون اسمها الكامل. تجاهل حقل Reference #.
+4. pharmacy_area: المنطقة/الحي (مثال: الزعفرانية، الكرادة، المنصور، زيونة، مدينة الصدر...).
+5. items: مصفوفة الأصناف في جدول الفاتورة:
+   - product_name: اسم الدواء كاملاً كما هو مكتوب.
+   - dosage_form: يجب أن تكون واحدة من هذه الكلمات الـ 4 فقط: "قطرة" | "كريم" | "مرهم" | "حبوب".
+   - quantity: الكمية المباعة كرقم صحيح.
+   - unit_price: سعر المفرد بالدينار (أزل الفواصل مثل 5,750 أو 5'750 -> 5750).
+   - bonus_quantity: عمود المجاني / البونص / FOC (0 إن لم يوجد).
+
+أعد كائن JSON صحيحاً فقط بدون أي نص أو Markdown إضافي بهذا الشكل:
 {
-  "invoice_number": "رقم الفاتورة",
+  "invoice_number": "...",
   "invoice_date": "YYYY-MM-DD",
-  "pharmacy_name": "الاسم الكامل للصيدلية",
-  "pharmacy_area": "المنطقة أو المكان",
+  "pharmacy_name": "صيدلية ...",
+  "pharmacy_area": "...",
   "items": [
-    { "product_name": "اسم الدواء", "dosage_form": "قطرة|كريم|مرهم|حبوب", "quantity": 10, "unit_price": 5000, "bonus_quantity": 1 }
+    { "product_name": "...", "dosage_form": "قطرة|كريم|مرهم|حبوب", "quantity": 10, "unit_price": 5000, "bonus_quantity": 0 }
   ],
-  "confidence": 0.9
+  "confidence": 0.95
 }`;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`;
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { text: prompt },
-          { inline_data: { mime_type: fileData.mimeType, data: fileData.base64 } }
-        ]
-      }]
-    })
-  });
-  if (!res.ok) throw new Error('Gemini API returned ' + res.status);
-  const data = await res.json();
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const cleaned = rawText.replace(/```json\s*|```/gi, '').trim();
-  const jsonStart = cleaned.indexOf('{');
-  const jsonEnd = cleaned.lastIndexOf('}');
-  if (jsonStart < 0 || jsonEnd < 0) throw new Error('Invalid JSON from Gemini');
-  return JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
+function formatGeminiErrorArabic(status: number, apiMessage: string): string {
+  const low = (apiMessage || '').toLowerCase();
+  if (status === 400 && (low.includes('api key') || low.includes('api_key_invalid'))) {
+    return 'مفتاح Gemini API غير صالح (تأكد من نسخه كاملاً ويبدأ عادةً بـ AIzaSy).';
+  }
+  if (status === 401 || status === 403) {
+    return `تم رفض مفتاح Gemini (${status}): تحقق من تفعيل Generative Language API وصلاحيات المفتاح.`;
+  }
+  if (status === 429) {
+    return 'تم تجاوز حد الطلبات المجاني لمفتاح Gemini مؤقتاً (429). انتظر ثوانٍ وحاول مجدداً.';
+  }
+  if (status === 404) {
+    return 'نموذج Gemini غير متاح لهذا المفتاح (404).';
+  }
+  return `خطأ من خادم Gemini (${status}): ${apiMessage || 'استجابة غير متوقعة'}`;
+}
+
+async function runBrowserGeminiOcr(
+  fileData: { base64: string; mimeType: string },
+  geminiKey: string,
+  onProgress?: (pct: number, msg: string) => void
+) {
+  let lastError: Error | null = null;
+
+  for (let mIdx = 0; mIdx < GEMINI_CANDIDATE_MODELS.length; mIdx++) {
+    const modelName = GEMINI_CANDIDATE_MODELS[mIdx];
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+      try {
+        onProgress?.(55 + mIdx * 8, `جاري القراءة الذكية عبر (${modelName})...`);
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: IRAQI_PHARMA_OCR_PROMPT },
+                { inline_data: { mime_type: fileData.mimeType, data: fileData.base64 } }
+              ]
+            }],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: 'application/json'
+            }
+          })
+        });
+
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          const apiMsg = errJson?.error?.message || res.statusText || '';
+          const msg = formatGeminiErrorArabic(res.status, apiMsg);
+
+          // لا تعِد المحاولة على نفس النموذج إذا كان المفتاح غير صالح تماماً
+          if (res.status === 400 && apiMsg.toLowerCase().includes('api_key_invalid')) {
+            throw Object.assign(new Error(msg), { fatalAuth: true });
+          }
+          // 404 نموذج غير متاح -> انتقل للنموذج التالي فوراً
+          if (res.status === 404) {
+            lastError = new Error(msg);
+            break;
+          }
+          // 429 / 5xx -> retry backoff
+          if ((res.status === 429 || res.status >= 500) && attempt < 2) {
+            await new Promise(r => setTimeout(r, 1200));
+            continue;
+          }
+          throw new Error(msg);
+        }
+
+        const data = await res.json();
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const cleaned = rawText.replace(/```json\s*|```/gi, '').trim();
+        const jsonStart = cleaned.indexOf('{');
+        const jsonEnd = cleaned.lastIndexOf('}');
+        if (jsonStart < 0 || jsonEnd < 0) {
+          throw new Error('لم يُرجع الذكاء الاصطناعي بيانات جدول صالحة (JSON).');
+        }
+        const parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
+        if (Array.isArray(parsed.items)) {
+          parsed.items = parsed.items.map((it: any) => ({
+            ...it,
+            dosage_form: ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(it.dosage_form)
+              ? it.dosage_form
+              : detectDosageFormClient(String(it.product_name || ''))
+          }));
+        }
+        if (!parsed.pharmacy_area && parsed.pharmacy_name) {
+          parsed.pharmacy_area = detectAreaFromText(String(parsed.pharmacy_name));
+        }
+        return { parsed, modelUsed: modelName };
+      } catch (err: any) {
+        clearTimeout(timer);
+        if (err?.fatalAuth) throw err;
+        lastError = err?.name === 'AbortError'
+          ? new Error('انتهت مهلة الاتصال بـ Gemini API (تأكد من سرعة الإنترنت)')
+          : err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  throw lastError || new Error('تعذر تحليل الفاتورة عبر جميع نماذج Gemini.');
+}
+
+/**
+ * جلب المستخدمين من شيت الإدارة العام مباشرة في المتصفح (لدعم مزامنة مفتاح Gemini والشيت دون خادم)
+ */
+async function fetchAdminSheetUsersInBrowser(): Promise<Array<User & { password_hash?: string }>> {
+  const urls = [
+    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}`,
+    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json`
+  ];
+  for (const url of urls) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+      if (!res.ok) continue;
+      const text = await res.text();
+      const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
+      if (!match?.[1]) continue;
+      const parsed = JSON.parse(match[1]);
+      const rows: any[] = parsed?.table?.rows || [];
+      const list: Array<User & { password_hash?: string }> = [];
+      for (const r of rows) {
+        const c = r.c || [];
+        const col0 = String(c[0]?.v ?? '').trim();
+        const email = (String(c[2]?.v ?? '') || String(c[1]?.v ?? '')).trim().toLowerCase();
+        if (!email || !email.includes('@')) continue;
+        if (col0.toLowerCase() === 'id' || email === 'email') continue;
+        const roleRaw = String(c[4]?.v ?? 'medical_rep').trim().toLowerCase();
+        const role = (roleRaw === 'admin' || roleRaw === 'supervisor') ? roleRaw : 'medical_rep';
+        const activeStr = String(c[5]?.v ?? 'TRUE').trim().toUpperCase();
+        if (activeStr === 'FALSE' || activeStr === '0' || activeStr === 'معطل') continue;
+        list.push({
+          id: col0 || `usr-${list.length + 1}`,
+          full_name: String(c[1]?.v ?? '').trim() || email.split('@')[0],
+          email,
+          password_hash: String(c[3]?.v ?? '').trim(),
+          role,
+          is_active: true,
+          gemini_api_key: String(c[6]?.v ?? '').trim() || undefined,
+          sheet_id: String(c[7]?.v ?? '').trim() || undefined,
+          webhook_url: String(c[8]?.v ?? '').trim() || undefined
+        });
+      }
+      if (list.length > 0) return list;
+    } catch { /* try next */ }
+  }
+  return [];
 }
 
 // Helper to push an invoice locally and optionally fire webhook
@@ -424,16 +746,37 @@ export const api = {
     } catch (err: any) {
       if (isNetworkError(err)) {
         const low = email.toLowerCase().trim();
-        let demoUser: User;
+        let demoUser: User | null = null;
 
-        if (low.includes('super') || low.includes('مشرف')) {
-          demoUser = { ...SEED_USERS[1] };
-        } else if (low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) {
-          demoUser = { ...SEED_USERS[3] };
-        } else if (low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) {
-          demoUser = { ...SEED_USERS[2] };
-        } else {
-          demoUser = { ...SEED_USERS[0] };
+        // محاولة مزامنة بيانات المستخدم (ومفتاح Gemini الخاص به) من شيت الإدارة
+        try {
+          const sheetUsers = await fetchAdminSheetUsersInBrowser();
+          const matchedSheetUser = sheetUsers.find(u => {
+            const e = (u.email || '').toLowerCase();
+            const n = (u.full_name || '').toLowerCase();
+            if (e === low || e === `${low}@pharma.com` || e.split('@')[0] === low || n === low) return true;
+            if ((low.includes('super') || low.includes('مشرف')) && (e.includes('supervisor') || u.role === 'supervisor')) return true;
+            if ((low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) && (e.includes('karkh') || n.includes('الكرخ'))) return true;
+            if ((low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) && (e.includes('rusafa') || n.includes('الرصافة'))) return true;
+            if ((low.includes('admin') || low.includes('مدير') || low === 'baqer' || low === 'باقر') && (e.includes('admin') || u.role === 'admin')) return true;
+            return false;
+          });
+          if (matchedSheetUser) {
+            const { password_hash: _ph, ...cleanUser } = matchedSheetUser;
+            demoUser = cleanUser;
+          }
+        } catch { /* ignore sheet fallback */ }
+
+        if (!demoUser) {
+          if (low.includes('super') || low.includes('مشرف')) {
+            demoUser = { ...SEED_USERS[1] };
+          } else if (low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) {
+            demoUser = { ...SEED_USERS[3] };
+          } else if (low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) {
+            demoUser = { ...SEED_USERS[2] };
+          } else {
+            demoUser = { ...SEED_USERS[0] };
+          }
         }
 
         const token = 'demo-preview-jwt-' + Date.now();
@@ -708,8 +1051,50 @@ export const api = {
     }
   },
 
-  // ── OCR Upload (with Browser Gemini Vision + Offline Safe DataURL Fallback) ─
-  async uploadInvoiceFile(file: File, pharmacyId?: string): Promise<{
+  // ── Test Gemini API Key from Browser ──
+  async testGeminiKey(rawKey: string): Promise<{ valid: boolean; model?: string; message: string }> {
+    const key = rawKey.trim();
+    if (!key) {
+      return { valid: false, message: 'يرجى إدخال مفتاح Google Gemini API أولاً.' };
+    }
+
+    let lastMsg = 'تعذر التحقق من المفتاح';
+    for (const model of GEMINI_CANDIDATE_MODELS) {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'أجب بكلمة OK فقط' }] }],
+            generationConfig: { maxOutputTokens: 10 }
+          })
+        });
+        if (res.ok) {
+          setSavedGeminiKey(key);
+          return { valid: true, model, message: `تم التحقق! المفتاح يعمل بنجاح على (${model}) ✅` };
+        }
+        const errJson = await res.json().catch(() => ({}));
+        lastMsg = formatGeminiErrorArabic(res.status, errJson?.error?.message || res.statusText || '');
+        if (res.status === 400 || res.status === 401 || res.status === 403) {
+          return { valid: false, message: lastMsg };
+        }
+      } catch (e: any) {
+        lastMsg = 'تعذر الاتصال بخوادم Google Gemini: ' + (e?.message || 'خطأ شبكة');
+      }
+    }
+    return { valid: false, message: lastMsg };
+  },
+
+  // ── Full Mobile-Safe OCR Pipeline (Inspect → Prep → Upload/Gemini/Tesseract → Queue) ─
+  async uploadInvoiceFile(
+    rawFile: File,
+    pharmacyId?: string,
+    options?: {
+      onProgress?: (update: OcrProgressUpdate) => void;
+      onPreparedPreview?: (previewUrl: string, prep: PreparedInvoiceFile) => void;
+    }
+  ): Promise<{
     extracted_items: { product_id?: string; product_name: string; dosage_form?: string; quantity: number; unit_price?: number; bonus_quantity?: number }[];
     invoice_number?: string;
     invoice_date?: string;
@@ -720,42 +1105,132 @@ export const api = {
     confidence: number;
     raw_text?: string;
     offline_mode?: boolean;
+    ocr_engine?: 'backend' | 'gemini-browser' | 'tesseract-browser' | 'offline-manual';
+    ocr_warning?: string;
+    ocr_error?: string;
+    queued_offline?: boolean;
+    prepared_info?: {
+      originalSizeBytes: number;
+      finalSizeBytes: number;
+      wasCompressed: boolean;
+      wasConvertedFromHeic: boolean;
+      kind: string;
+    };
   }> {
+    const report = (stage: OcrProgressUpdate['stage'], percent: number, message: string) => {
+      options?.onProgress?.({ stage, percent, message });
+    };
+
+    // المرحلة 2 و 3: فحص Magic Bytes + تحويل HEIC + تصحيح EXIF + تصغير ≤1600px + مسح GPS EXIF
+    report('inspect', 10, 'فحص سلامة الملف وصيغته الحقيقية...');
+    const prepared = await prepareInvoiceFile(rawFile, 1600, 0.82);
+
+    report(
+      'prepare',
+      25,
+      prepared.wasConvertedFromHeic
+        ? 'تم تحويل HEIC وتصغير الصورة للموبايل...'
+        : prepared.wasCompressed
+          ? `تم ضغط الصورة (${Math.round(prepared.finalSizeBytes / 1024)} KB) وتصحيح الاتجاه...`
+          : 'تم التحقق من الملف جاهز للمعالجة...'
+    );
+
+    if (options?.onPreparedPreview && !prepared.inspection.isPdf) {
+      try {
+        const objUrl = URL.createObjectURL(prepared.file);
+        options.onPreparedPreview(objUrl, prepared);
+      } catch { /* ignore */ }
+    }
+
+    const prepSummary = {
+      originalSizeBytes: prepared.originalSizeBytes,
+      finalSizeBytes: prepared.finalSizeBytes,
+      wasCompressed: prepared.wasCompressed,
+      wasConvertedFromHeic: prepared.wasConvertedFromHeic,
+      kind: prepared.inspection.kind
+    };
+
+    // المرحلة 4 أ: محاولة الرفع والتحليل عبر الخادم الخلفي (إذا كان مضبوطاً وقابلاً للوصول)
     try {
       const formData = new FormData();
-      formData.append('invoice_file', file);
+      formData.append('invoice_file', prepared.file);
       if (pharmacyId) formData.append('pharmacy_id', pharmacyId);
-      const res = await fetchApi('/invoices/ocr', {
-        method: 'POST',
-        headers: authHeadersMultipart(),
-        body: formData
-      }, 28000);
-      return await handleResponse(res);
-    } catch (err: any) {
-      if (isNetworkError(err)) {
-        // Read compressed file locally as DataURL so image previews & saving always work
-        const fileData = await fileToBase64DataUrl(file);
-        const geminiKey = getSavedGeminiKey();
 
-        if (geminiKey) {
-          try {
-            const parsed = await runBrowserGeminiOcr(fileData, geminiKey);
-            return {
-              extracted_items: Array.isArray(parsed.items) ? parsed.items : [],
-              invoice_number: parsed.invoice_number || undefined,
-              invoice_date: parsed.invoice_date || new Date().toISOString().split('T')[0],
-              pharmacy_name: parsed.pharmacy_name || undefined,
-              pharmacy_area: parsed.pharmacy_area || undefined,
-              image_url: fileData.dataUrl,
-              confidence: Number(parsed.confidence || 0.9),
-              offline_mode: false
-            };
-          } catch (gemErr) {
-            console.warn('Browser Gemini OCR fallback failed, continuing with manual entry:', gemErr);
-          }
+      report('upload', 35, 'رفع الفاتورة للخادم...');
+      const useAsyncBackend = !isLocalhostFromRemoteHttps();
+      if (useAsyncBackend) {
+        const uploadResult = await uploadMultipartWithRetry(
+          '/invoices/ocr',
+          formData,
+          (pct) => report('upload', 35 + Math.round(pct * 0.25), `جاري الرفع (${pct}%)...`),
+          2,
+          28000
+        );
+
+        // دعم التحليل بالخلفية إذا أعاد الخادم jobId (202 Accepted)
+        if (uploadResult?.jobId && !uploadResult?.extracted_items) {
+          report('analyze', 65, 'بدأ التحليل في الخلفية...');
+          const jobResult = await pollBackendOcrJob(uploadResult.jobId, (pct, msg) =>
+            report('analyze', Math.max(65, pct), msg)
+          );
+          report('done', 100, 'اكتملت القراءة بنجاح');
+          return { ...jobResult, ocr_engine: 'backend', prepared_info: prepSummary };
         }
 
-        // Graceful cloud/offline mode: never fail with "Failed to fetch"!
+        report('done', 100, 'اكتملت القراءة بنجاح');
+        return { ...uploadResult, ocr_engine: 'backend', prepared_info: prepSummary };
+      }
+      throw new TypeError('Localhost backend skipped on HTTPS origin');
+    } catch (err: any) {
+      if (!isNetworkError(err)) {
+        throw err;
+      }
+
+      // المرحلة 4 ب + 5: التحليل المباشر من المتصفح (عند استضافة GitHub Pages أو غياب الخادم)
+      report('analyze', 45, 'تحضير البيانات للقراءة...');
+      const fileData = await fileToBase64DataUrl(prepared.file, prepared.inspection.mimeType);
+      const geminiKey = getSavedGeminiKey();
+      let geminiErrorMsg: string | undefined;
+
+      // المسار الذكي 1: Google Gemini Vision مباشرة من المتصفح
+      if (geminiKey) {
+        try {
+          const { parsed, modelUsed } = await runBrowserGeminiOcr(
+            fileData,
+            geminiKey,
+            (pct, msg) => report('analyze', pct, msg)
+          );
+          report('done', 100, `اكتملت القراءة بالذكاء الاصطناعي (${modelUsed})`);
+          return {
+            extracted_items: Array.isArray(parsed.items) ? parsed.items : [],
+            invoice_number: parsed.invoice_number || undefined,
+            invoice_date: parsed.invoice_date || new Date().toISOString().split('T')[0],
+            pharmacy_name: parsed.pharmacy_name || undefined,
+            pharmacy_area: parsed.pharmacy_area || undefined,
+            image_url: fileData.dataUrl,
+            confidence: Number(parsed.confidence || 0.92),
+            offline_mode: false,
+            ocr_engine: 'gemini-browser',
+            ocr_warning: prepared.warning,
+            prepared_info: prepSummary
+          };
+        } catch (gemErr: any) {
+          geminiErrorMsg = gemErr?.message || 'فشل تحليل الفاتورة عبر Gemini';
+          console.warn('Browser Gemini OCR failed:', geminiErrorMsg);
+        }
+      }
+
+      // فحص حالة الشبكة: إذا انقطع الإنترنت تماماً خزّن الصورة في الطابور المحلي
+      const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      if (isOffline) {
+        enqueuePendingOcrScan({
+          fileName: prepared.file.name,
+          mimeType: fileData.mimeType,
+          dataUrl: fileData.dataUrl,
+          pharmacyId,
+          reason: 'انقطاع اتصال الإنترنت أثناء الرفع'
+        });
+        report('done', 100, 'تم حفظ الفاتورة محلياً لحين عودة الاتصال');
         return {
           extracted_items: [],
           invoice_number: '',
@@ -763,12 +1238,80 @@ export const api = {
           pharmacy_name: '',
           pharmacy_area: '',
           image_url: fileData.dataUrl,
-          confidence: 1,
+          confidence: 0,
           raw_text: '',
-          offline_mode: true
+          offline_mode: true,
+          ocr_engine: 'offline-manual',
+          queued_offline: true,
+          ocr_error: geminiErrorMsg || 'لا يوجد اتصال بالإنترنت — تم حفظ الصورة في الطابور المحلي لإكمال التحليل لاحقاً.',
+          prepared_info: prepSummary
         };
       }
-      throw err;
+
+      // المسار الاحتياطي 2: القراءة المحلية في المتصفح (Tesseract.js + محلل الجداول العراقي) للصور
+      if (!prepared.inspection.isPdf) {
+        try {
+          report('analyze', 55, 'جاري القراءة التلقائية محلياً بالمتصفح (بدون مفتاح)...');
+          const localParsed = await runLocalBrowserTesseractOcr(
+            prepared.file,
+            MOCK_PRODUCTS,
+            getStoredPharmacies(),
+            (pct, msg) => report('analyze', pct, msg)
+          );
+
+          report('done', 100, 'اكتملت القراءة المحلية');
+          return {
+            extracted_items: localParsed.items.map(it => ({
+              product_id: it.matched_product_id,
+              product_name: it.product_name,
+              dosage_form: it.dosage_form,
+              quantity: it.quantity,
+              unit_price: it.unit_price,
+              bonus_quantity: it.bonus_quantity
+            })),
+            invoice_number: localParsed.invoice_number || undefined,
+            invoice_date: localParsed.invoice_date || new Date().toISOString().split('T')[0],
+            pharmacy_name: localParsed.pharmacy_name || undefined,
+            pharmacy_area: localParsed.pharmacy_area || undefined,
+            image_url: fileData.dataUrl,
+            confidence: localParsed.confidence_score,
+            raw_text: localParsed.raw_text,
+            offline_mode: false,
+            ocr_engine: 'tesseract-browser',
+            ocr_error: geminiErrorMsg,
+            ocr_warning: geminiErrorMsg
+              ? `تعذرت القراءة عبر Gemini (${geminiErrorMsg}) — تم استخدام القراءة المحلية بدلاً منه؛ راجع الحقول وعدّلها.`
+              : !geminiKey
+                ? 'تمت القراءة بالمحرك المحلي المجاني (بدون مفتاح Gemini) — قد تحتاج الفواتير العربية المختومة لمراجعة بعض الحقول، وللحصول على دقة 98% أضف مفتاح Gemini مجاني بالأعلى.'
+                : prepared.warning,
+            prepared_info: prepSummary
+          };
+        } catch (tessErr: any) {
+          console.warn('Local browser Tesseract OCR failed:', tessErr?.message || tessErr);
+        }
+      }
+
+      // المسار النهائي: إرفاق الصورة آمن مع إبلاغ صريح بالسبب
+      report('done', 100, 'تم إرفاق الفاتورة');
+      return {
+        extracted_items: [],
+        invoice_number: '',
+        invoice_date: new Date().toISOString().split('T')[0],
+        pharmacy_name: '',
+        pharmacy_area: '',
+        image_url: fileData.dataUrl,
+        confidence: 0,
+        raw_text: '',
+        offline_mode: true,
+        ocr_engine: 'offline-manual',
+        ocr_error: geminiErrorMsg,
+        ocr_warning: geminiErrorMsg
+          ? `فشلت قراءة Gemini: ${geminiErrorMsg}`
+          : prepared.inspection.isPdf
+            ? 'قراءة ملفات PDF تلقائياً على الموبايل تتطلب إدخال مفتاح Google Gemini API في إعدادات OCR بالأعلى.'
+            : (prepared.warning || 'لم يتم تفعيل مفتاح Gemini أو الخادم — يمكنك تعبئة البيانات يدوياً أو تفعيل Gemini بالأعلى.'),
+        prepared_info: prepSummary
+      };
     }
   },
 

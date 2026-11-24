@@ -173,15 +173,18 @@ export async function extractInvoiceWithGemini(imagePath: string, customApiKey?:
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const candidateModels = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.8-flash'];
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest', 'gemini-1.5-flash'];
 
     const imageBuffer = fs.readFileSync(imagePath);
     const base64Image = imageBuffer.toString('base64');
 
     const ext = imagePath.toLowerCase();
-    let mimeType: 'image/jpeg' | 'image/png' | 'image/webp' = 'image/jpeg';
+    let mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/heic' | 'image/heif' | 'application/pdf' = 'image/jpeg';
     if (ext.endsWith('.png')) mimeType = 'image/png';
     else if (ext.endsWith('.webp')) mimeType = 'image/webp';
+    else if (ext.endsWith('.heic')) mimeType = 'image/heic';
+    else if (ext.endsWith('.heif')) mimeType = 'image/heif';
+    else if (ext.endsWith('.pdf')) mimeType = 'application/pdf';
 
     let responseText = '';
     let usedModel = '';

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createWorker } from 'tesseract.js';
 import sharp from 'sharp';
 import { validateRequest } from '../../middleware/validate.middleware';
@@ -33,7 +34,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 35 * 1024 * 1024 },
+  limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ok = file.mimetype.startsWith('image/') ||
                 file.mimetype === 'application/pdf' ||
@@ -42,6 +43,66 @@ const upload = multer({
     ok ? cb(null, true) : cb(new Error('صيغة الملف غير مدعومة. يُرجى رفع صورة أو PDF'));
   }
 });
+
+/**
+ * تحقق أمان على السيرفر من البايتات الأولى للملف (Magic Bytes) — لا نثق بما يرسله الموبايل فقط
+ */
+export function verifyMagicBytesOnServer(filePath: string): { valid: boolean; kind: string } {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(16);
+    const read = fs.readSync(fd, buf, 0, 16, 0);
+    if (read < 4) return { valid: false, kind: 'empty' };
+
+    if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return { valid: true, kind: 'pdf' };
+    if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return { valid: true, kind: 'jpeg' };
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return { valid: true, kind: 'png' };
+    if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return { valid: true, kind: 'gif' };
+    if (buf[0] === 0x42 && buf[1] === 0x4D) return { valid: true, kind: 'bmp' };
+    if (read >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return { valid: true, kind: 'webp' };
+    if (read >= 12 && buf.toString('ascii', 4, 8) === 'ftyp') {
+      const brand = buf.toString('ascii', 8, 12).toLowerCase();
+      if (['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'heis', 'avif'].includes(brand)) {
+        return { valid: true, kind: 'heic' };
+      }
+    }
+    return { valid: false, kind: 'unknown' };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+interface OcrJobState {
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  message: string;
+  userId: string;
+  result?: any;
+  error?: string;
+  createdAt: number;
+}
+const ocrJobs = new Map<string, OcrJobState>();
+
+/** سياسة تنظيف الصور والمهام القديمة للخصوصية (> 24 ساعة) */
+function cleanupExpiredUploadsAndJobs() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [id, job] of ocrJobs.entries()) {
+    if (job.createdAt < cutoff) ocrJobs.delete(id);
+  }
+  const uploadDir = path.join(__dirname, '../../../uploads/invoices');
+  if (fs.existsSync(uploadDir)) {
+    try {
+      for (const name of fs.readdirSync(uploadDir)) {
+        if (!name.startsWith('invoice_')) continue;
+        const p = path.join(uploadDir, name);
+        const stat = fs.statSync(p);
+        if (stat.isFile() && stat.mtimeMs < cutoff) {
+          fs.unlinkSync(p);
+        }
+      }
+    } catch { /* ignore cleanup warning */ }
+  }
+}
 
 // ── Validation Schemas ────────────────────────────────────────────────────────
 const createInvoiceSchema = z.object({
@@ -403,6 +464,16 @@ async function processInvoiceFile(file: Express.Multer.File, userId: string, cus
   };
 }
 
+/** تحقق موحّد مع حذف الملف المرفوض فوراً */
+function validateUploadedFileMagicOrThrow(file: Express.Multer.File) {
+  const magic = verifyMagicBytesOnServer(file.path);
+  if (!magic.valid) {
+    try { fs.unlinkSync(file.path); } catch {}
+    throw { statusCode: 400, message: 'محتوى الملف لا يطابق صورة صالحة أو PDF حقيقي.' };
+  }
+  return magic;
+}
+
 /**
  * @route   POST /api/v1/invoices/ocr
  * @access  medical_rep, admin
@@ -414,9 +485,79 @@ router.post('/ocr',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!req.file) { sendError(res, 'لم يتم إرسال أي ملف للمسح الضوئي', 400); return; }
+      validateUploadedFileMagicOrThrow(req.file);
       const result = await processInvoiceFile(req.file, req.user!.userId, req.user?.geminiApiKey);
+      cleanupExpiredUploadsAndJobs();
       sendSuccess(res, result, 'تمت قراءة وتحليل بيانات الفاتورة بنجاح');
     } catch (e) { next(e); }
+  }
+);
+
+/**
+ * @route   POST /api/v1/invoices/ocr-async
+ * @access  medical_rep, admin
+ * @desc    رفع الصورة وتشغيل التحليل في الخلفية وإعادة jobId فوراً (يمنع timeout على الشبكات البطيئة)
+ */
+router.post('/ocr-async',
+  requireRoles(['medical_rep', 'admin']),
+  upload.single('invoice_file'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file) { sendError(res, 'لم يتم إرسال أي ملف للمسح الضوئي', 400); return; }
+      validateUploadedFileMagicOrThrow(req.file);
+      const jobId = crypto.randomUUID();
+      const uploadedFile = req.file;
+      const userId = req.user!.userId;
+      const customKey = req.user?.geminiApiKey;
+
+      ocrJobs.set(jobId, {
+        status: 'queued',
+        progress: 65,
+        message: 'تم استلام الملف، جاري التحليل في الخلفية...',
+        userId,
+        createdAt: Date.now()
+      });
+
+      setImmediate(async () => {
+        const job = ocrJobs.get(jobId);
+        if (!job) return;
+        job.status = 'processing';
+        job.progress = 78;
+        try {
+          const result = await processInvoiceFile(uploadedFile, userId, customKey);
+          job.status = 'completed';
+          job.progress = 100;
+          job.message = 'اكتملت قراءة الفاتورة';
+          job.result = result;
+        } catch (err: any) {
+          job.status = 'failed';
+          job.error = err?.message || 'فشل تحليل الفاتورة';
+        }
+      });
+
+      cleanupExpiredUploadsAndJobs();
+      res.status(202).json({
+        success: true,
+        data: { jobId, status: 'queued' },
+        message: 'تم رفع الصورة بنجاح وبدأ التحليل في الخلفية'
+      });
+    } catch (e) { next(e); }
+  }
+);
+
+/**
+ * @route   GET /api/v1/invoices/ocr-status/:jobId
+ * @access  medical_rep, admin
+ */
+router.get('/ocr-status/:jobId',
+  requireRoles(['medical_rep', 'admin']),
+  (req: Request, res: Response) => {
+    const job = ocrJobs.get(req.params.jobId);
+    if (!job || job.userId !== req.user!.userId) {
+      sendError(res, 'لم يتم العثور على وظيفة التحليل المطلوبة', 404);
+      return;
+    }
+    sendSuccess(res, job);
   }
 );
 
@@ -442,6 +583,7 @@ router.post('/ocr-batch',
 
       for (const file of files) {
         try {
+          validateUploadedFileMagicOrThrow(file);
           const resSingle = await processInvoiceFile(file, req.user!.userId, req.user?.geminiApiKey);
           results.push(resSingle);
           if (resSingle.extracted_items.length > 0) successCount++;

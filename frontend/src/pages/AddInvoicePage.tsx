@@ -1,13 +1,24 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Pharmacy, Product, Invoice } from '../types';
-import { api, getSavedGeminiKey, setSavedGeminiKey, getApiBase, setApiBase } from '../services/api';
-import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
-import { compressAndNormalizeImage } from '../utils/imageCompressor';
 import {
-  FilePlus, Upload, Edit3, FileImage, FileText as FilePdfIcon,
+  api,
+  getSavedGeminiKey,
+  setSavedGeminiKey,
+  getApiBase,
+  setApiBase,
+  OcrProgressUpdate,
+  isLocalhostFromRemoteHttps,
+  getPendingOcrQueue,
+  removePendingOcrQueueItem,
+  PendingOcrQueueItem
+} from '../services/api';
+import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
+import {
+  FilePlus, Upload, Edit3, FileText as FilePdfIcon,
   Plus, Trash2, Calculator, CheckCircle2, AlertCircle, Sparkles,
   RefreshCw, X, ArrowRight, Camera, Loader, Database, Eye, Check,
-  Layers, Images, Settings
+  Layers, Images, Settings, Key, ExternalLink, AlertTriangle,
+  WifiOff, Terminal, ShieldCheck
 } from 'lucide-react';
 
 interface AddInvoicePageProps {
@@ -167,15 +178,55 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   const [previewUrl, setPreviewUrl]       = useState<string | null>(null);
   const [isDragging, setIsDragging]       = useState(false);
   const [ocrLoading, setOcrLoading]       = useState(false);
+  const [ocrProgress, setOcrProgress]     = useState<OcrProgressUpdate | null>(null);
   const [ocrDone, setOcrDone]             = useState(false);
+  const [ocrEngineUsed, setOcrEngineUsed] = useState<string | null>(null);
+  const [ocrWarning, setOcrWarning]       = useState<string | null>(null);
+  const [ocrRawText, setOcrRawText]       = useState<string | null>(null);
+  const [showRawText, setShowRawText]     = useState(false);
   const [offlineAttached, setOfflineAttached] = useState(false);
   const [ocrConfidence, setOcrConfidence] = useState(0);
   const [ocrSummary, setOcrSummary]       = useState<string | null>(null);
   const [showOcrSettings, setShowOcrSettings] = useState(false);
+  const [showAdvancedServer, setShowAdvancedServer] = useState(false);
   const [geminiKeyInput, setGeminiKeyInput] = useState(() => getSavedGeminiKey());
+  const [showGeminiKeyText, setShowGeminiKeyText] = useState(false);
+  const [keyTestLoading, setKeyTestLoading] = useState(false);
+  const [keyTestResult, setKeyTestResult] = useState<{ valid: boolean; message: string } | null>(null);
   const [apiBaseInput, setApiBaseInput]   = useState(() => getApiBase());
+  const [erudaActive, setErudaActive]     = useState(false);
+  const [pendingQueue, setPendingQueue]   = useState<PendingOcrQueueItem[]>(() => getPendingOcrQueue());
+  const [isOnline, setIsOnline]           = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+
+  const enableErudaDebugger = async () => {
+    try {
+      const mod = await import('eruda');
+      const eruda = (mod as any).default || mod;
+      eruda.init();
+      setErudaActive(true);
+    } catch (e: any) {
+      setError('تعذر تشغيل أداة التشخيص: ' + (e?.message || ''));
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('debug=1') && !erudaActive) {
+      enableErudaDebugger();
+    }
+    const handleOnline = () => {
+      setIsOnline(true);
+      setPendingQueue(getPendingOcrQueue());
+    };
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const switchToBatchItem = (index: number) => {
     if (index < 0 || index >= batchInvoices.length) return;
@@ -306,23 +357,67 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       return updated;
     }));
 
-  // ── Smart OCR execution ───────────────────────────────────────────────────
+  // ── Shared Helper: Map OCR extracted items into Form LineItems ────────────
+  const mapExtractedItems = useCallback((
+    extractedItems: Array<{ product_id?: string; product_name: string; dosage_form?: string; quantity: number; unit_price?: number; bonus_quantity?: number }> | undefined,
+    confidence: number
+  ): LineItem[] => {
+    if (!extractedItems || extractedItems.length === 0) return [];
+    return extractedItems.map((ei, idx) => {
+      let matched = products.find(p => p.id === ei.product_id);
+      if (!matched && ei.product_name) {
+        matched = products.find(p =>
+          p.name.toLowerCase().includes(ei.product_name.toLowerCase().slice(0, 6)) ||
+          ei.product_name.toLowerCase().includes(p.name.toLowerCase().slice(0, 6))
+        );
+      }
+      const qty = ei.quantity || 10;
+      return {
+        id: 'ocr-' + idx + '-' + Date.now().toString().slice(-4),
+        product_id: matched?.id || products[0]?.id || '',
+        sold_quantity: qty,
+        custom_name: ei.product_name || matched?.name || '',
+        dosage_form: ei.dosage_form || autoDetectDosageForm(ei.product_name || matched?.name || ''),
+        custom_price: ei.unit_price ?? (matched ? Number(matched.base_price) : undefined),
+        ocr_bonus: fixedBonusEnabled
+          ? Math.floor(qty / 10)
+          : (ei.bonus_quantity !== undefined ? ei.bonus_quantity : Math.floor(qty / 10)),
+        ocr_confidence: confidence
+      };
+    });
+  }, [products, fixedBonusEnabled]);
+
+  // ── Smart OCR execution (Inspect → Prep → Upload/Gemini/Tesseract) ────────
   const processOcr = async (file: File) => {
     setOcrLoading(true);
     setOcrDone(false);
     setOfflineAttached(false);
+    setOcrWarning(null);
+    setOcrRawText(null);
+    setOcrEngineUsed(null);
     setError(null);
+    setOcrProgress({ stage: 'inspect', percent: 8, message: 'فحص سلامة الملف وصيغته الحقيقية...' });
 
     try {
-      const result = await api.uploadInvoiceFile(file, pharmacyId);
+      const result = await api.uploadInvoiceFile(file, pharmacyId, {
+        onProgress: (u) => setOcrProgress(u),
+        onPreparedPreview: (url) => setPreviewUrl(url)
+      });
 
       if (result.image_url) setImageUrl(result.image_url);
+      if (result.ocr_engine) setOcrEngineUsed(result.ocr_engine);
+      if (result.raw_text) setOcrRawText(result.raw_text);
+      if (result.ocr_warning) setOcrWarning(result.ocr_warning);
+      if (result.queued_offline) setPendingQueue(getPendingOcrQueue());
 
-      // الوضع السحابي المباشر (عند عدم اتصال السيرفر وعدم توفر مفتاح Gemini)
+      // الوضع السحابي اليدوي (عدم توفر خادم ولا مفتاح ولا قراءة محلية)
       if (result.offline_mode) {
         setOfflineAttached(true);
         setOcrConfidence(0);
-        setOcrSummary('تم إرفاق وحفظ صورة الفاتورة بنجاح. أكمل بيانات الصيدلية والأصناف أدناه ثم اضغط حفظ.');
+        if (result.ocr_error && !result.ocr_warning) {
+          setOcrWarning(result.ocr_error);
+        }
+        setOcrSummary('تم إرفاق صورة الفاتورة بنجاح — أكمل البيانات يدوياً أو فعّل مفتاح Gemini لقراءتها آلياً.');
         return;
       }
 
@@ -350,37 +445,26 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         }
       }
 
-      // Auto-fill invoice number & date
       if (result.invoice_number) setInvoiceNumber(result.invoice_number);
       if (result.invoice_date) setInvoiceDate(result.invoice_date);
 
-      // Auto-fill extracted product items — preserve exact OCR names & prices
-      if (result.extracted_items && result.extracted_items.length > 0) {
-        const mappedItems: LineItem[] = result.extracted_items.map((ei, idx) => {
-          let matched = products.find(p => p.id === ei.product_id);
-          if (!matched && ei.product_name) {
-            matched = products.find(p =>
-              p.name.toLowerCase().includes(ei.product_name.toLowerCase().slice(0, 6)) ||
-              ei.product_name.toLowerCase().includes(p.name.toLowerCase().slice(0, 6))
-            );
-          }
-          return {
-            id: 'ocr-' + idx,
-            product_id: matched?.id || products[0]?.id || '',
-            sold_quantity: ei.quantity || 10,
-            custom_name: ei.product_name || matched?.name || '',
-            dosage_form: (ei as any).dosage_form || autoDetectDosageForm(ei.product_name || matched?.name || ''),
-            custom_price: ei.unit_price ?? (matched ? Number(matched.base_price) : undefined),
-            ocr_bonus: fixedBonusEnabled ? Math.floor((ei.quantity || 10) / 10) : (ei.bonus_quantity !== undefined ? ei.bonus_quantity : Math.floor((ei.quantity || 10) / 10)),
-            ocr_confidence: result.confidence
-          };
-        });
+      const mappedItems = mapExtractedItems(result.extracted_items, result.confidence);
+      if (mappedItems.length > 0) {
         setItems(mappedItems);
       }
 
-      setOcrConfidence(Math.round(result.confidence * 100));
+      setOcrConfidence(Math.round((result.confidence || 0.7) * 100));
       setOcrDone(true);
-      setOcrSummary(`تم استخراج ${result.extracted_items?.length || 0} أصناف بنجاح — ${result.pharmacy_name || ''}${result.invoice_number ? ' — رقم: ' + result.invoice_number : ''}`);
+      const engineLabel = result.ocr_engine === 'gemini-browser'
+        ? 'Gemini Vision AI'
+        : result.ocr_engine === 'tesseract-browser'
+          ? 'القراءة المحلية التلقائية'
+          : 'الخادم الذكي';
+      setOcrSummary(
+        mappedItems.length > 0
+          ? `تم استخراج ${mappedItems.length} أصناف عبر (${engineLabel})${result.pharmacy_name ? ' — ' + result.pharmacy_name : ''}`
+          : `تمت معالجة الصورة عبر (${engineLabel}) — يرجى التحقق من الأصناف وتأكيدها.`
+      );
     } catch (e: any) {
       setError('تعذر استخراج بيانات الملف: ' + (e.message || 'خطأ غير متوقع'));
     } finally {
@@ -388,36 +472,21 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     }
   };
 
-  // ── Handle file selection / drop with IMMEDIATE OCR reading ──────────────
+  // ── Handle file selection / drop with Inspect + Prep + Immediate OCR ─────
   const handleFileDrop = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const rawFiles = Array.from(files).filter(f =>
-      f.type.startsWith('image/') ||
-      f.type === 'application/pdf' ||
-      /\.(jpg|jpeg|png|webp|jfif|bmp|gif|pdf|heic|heif)$/i.test(f.name)
-    );
+    if (!files || files.length === 0) return; // معالجة إلغاء الاختيار بهدوء
 
-    if (rawFiles.length === 0) {
-      setError('نوع الملف غير مدعوم. يرجى رفع صورة فاتورة (JPG, PNG, WebP, HEIC) أو ملف مستند PDF.');
-      return;
-    }
-
+    const selectedFiles = Array.from(files);
     setError(null);
-
-    // ضغط وتطبيع صور الموبايل (iPhone & Android) لتحويل HEIC والصور الضخمة إلى JPEG فائق السرعة
-    const allFiles = await Promise.all(
-      rawFiles.map(f => compressAndNormalizeImage(f).catch(err => {
-        console.warn('Compression error for', f.name, err);
-        return f;
-      }))
-    );
+    setOcrWarning(null);
+    setOcrRawText(null);
 
     // إذا تم اختيار أكثر من ملف أو كانت هناك دفعة مسبقة
-    if (allFiles.length > 1 || batchInvoices.length > 0) {
-      const newItems: BatchInvoice[] = allFiles.map((f, i) => ({
+    if (selectedFiles.length > 1 || batchInvoices.length > 0) {
+      const newItems: BatchInvoice[] = selectedFiles.map((f, i) => ({
         id: `batch-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
         file: f,
-        previewUrl: f.type !== 'application/pdf' ? URL.createObjectURL(f) : '',
+        previewUrl: f.type.startsWith('image/') && !/\.hei[cf]$/i.test(f.name) ? URL.createObjectURL(f) : '',
         status: 'pending',
         pharmacyId: '',
         pharmacyName: '',
@@ -433,7 +502,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       const startIdx = batchInvoices.length;
       setActiveBatchIndex(startIdx);
 
-      // معالجة كل ملف جديد بشكل متتالٍ بـ Gemini OCR
+      // معالجة كل ملف جديد عبر خط الإنتاج الموحد (Inspect -> Prep -> OCR)
       for (let i = 0; i < newItems.length; i++) {
         const itemIdx = startIdx + i;
         const curFile = newItems[i].file;
@@ -452,28 +521,15 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         }
 
         try {
-          const result = await api.uploadInvoiceFile(curFile);
-
-          const mapped: LineItem[] = (result.extracted_items || []).map((ei, idx) => {
-            let matched = products.find(p => p.id === ei.product_id);
-            if (!matched && ei.product_name) {
-              matched = products.find(p =>
-                p.name.toLowerCase().includes(ei.product_name.toLowerCase().slice(0, 6)) ||
-                ei.product_name.toLowerCase().includes(p.name.toLowerCase().slice(0, 6))
-              );
+          const result = await api.uploadInvoiceFile(curFile, undefined, {
+            onProgress: (u) => { if (itemIdx === startIdx) setOcrProgress(u); },
+            onPreparedPreview: (url) => {
+              setBatchInvoices(prev => prev.map((item, idx) => idx === itemIdx ? { ...item, previewUrl: url } : item));
+              if (itemIdx === startIdx) setPreviewUrl(url);
             }
-            return {
-              id: 'ocr-' + idx,
-              product_id: matched?.id || products[0]?.id || '',
-              sold_quantity: ei.quantity || 10,
-              custom_name: ei.product_name || matched?.name || '',
-              dosage_form: (ei as any).dosage_form || autoDetectDosageForm(ei.product_name || matched?.name || ''),
-              custom_price: ei.unit_price ?? (matched ? Number(matched.base_price) : undefined),
-              ocr_bonus: fixedBonusEnabled ? Math.floor((ei.quantity || 10) / 10) : (ei.bonus_quantity !== undefined ? ei.bonus_quantity : Math.floor((ei.quantity || 10) / 10)),
-              ocr_confidence: result.confidence
-            };
           });
 
+          const mapped = mapExtractedItems(result.extracted_items, result.confidence);
           const finalItems = mapped.length > 0 ? mapped : [{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10, dosage_form: 'حبوب' }];
 
           setBatchInvoices(prev => prev.map((item, idx) => {
@@ -488,7 +544,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 invoiceDate: result.invoice_date || item.invoiceDate,
                 imageUrl: result.image_url,
                 items: finalItems,
-                confidence: Math.round(result.confidence * 100)
+                confidence: Math.round((result.confidence || 0.7) * 100)
               };
             }
             return item;
@@ -504,13 +560,16 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             if (result.invoice_number) setInvoiceNumber(result.invoice_number);
             if (result.invoice_date) setInvoiceDate(result.invoice_date);
             if (result.image_url) setImageUrl(result.image_url);
+            if (result.ocr_engine) setOcrEngineUsed(result.ocr_engine);
+            if (result.ocr_warning) setOcrWarning(result.ocr_warning);
+            if (result.raw_text) setOcrRawText(result.raw_text);
             setItems(finalItems);
             if (result.offline_mode) {
               setOfflineAttached(true);
               setOcrConfidence(0);
               setOcrSummary('تم إرفاق الصور بنجاح — يمكنك مراجعتها وتعبئة البيانات مباشرة.');
             } else {
-              setOcrConfidence(Math.round(result.confidence * 100));
+              setOcrConfidence(Math.round((result.confidence || 0.7) * 100));
               setOcrDone(true);
               setOcrSummary(`تم استخراج ${result.extracted_items?.length || 0} أصناف — ${result.pharmacy_name || ''}`);
             }
@@ -519,13 +578,13 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
           setBatchInvoices(prev => prev.map((item, idx) =>
             idx === itemIdx ? { ...item, status: 'error', errorMsg: err.message } : item
           ));
+          if (itemIdx === startIdx) setError(err.message);
         } finally {
           if (itemIdx === startIdx) setOcrLoading(false);
         }
       }
 
-      // عند رفع أكثر من صورة، بعد اكتمال المسح لجميع الصور نفتح جدول المراجعة والتدقيق تلقائياً
-      if (allFiles.length > 1) {
+      if (selectedFiles.length > 1) {
         setTimeout(() => {
           setBatchInvoices(latest => {
             const cards: BatchInvoiceCard[] = latest.map((b, i) => ({
@@ -561,10 +620,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
           });
         }, 400);
       }
-
     } else {
       // ملف مفرد
-      const file = allFiles[0];
+      const file = selectedFiles[0];
       setUploadedFile(file);
       setInvoiceNumber(generateInvoiceNumber());
       setInvoiceDate(new Date().toISOString().split('T')[0]);
@@ -573,16 +631,33 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setOcrDone(false);
       setOcrSummary(null);
 
-      if (file.type !== 'application/pdf') {
-        const url = URL.createObjectURL(file);
-        setPreviewUrl(url);
+      // معاينة أولية سريعة (تُحدّث تلقائياً بعد فحص وتحويل HEIC عبر onPreparedPreview)
+      if (file.type.startsWith('image/') && !/\.hei[cf]$/i.test(file.name)) {
+        setPreviewUrl(URL.createObjectURL(file));
       } else {
         setPreviewUrl(null);
       }
 
       processOcr(file);
     }
-  }, [pharmacies, products, pharmacyId, batchInvoices]);
+  }, [pharmacies, products, pharmacyId, batchInvoices, mapExtractedItems]);
+
+  const handleRetryQueuedItem = async (qItem: PendingOcrQueueItem) => {
+    try {
+      const res = await fetch(qItem.dataUrl);
+      const blob = await res.blob();
+      const restoredFile = new File([blob], qItem.fileName || 'queued_invoice.jpg', {
+        type: qItem.mimeType || 'image/jpeg'
+      });
+      removePendingOcrQueueItem(qItem.id);
+      setPendingQueue(getPendingOcrQueue());
+      setUploadedFile(restoredFile);
+      setPreviewUrl(qItem.dataUrl);
+      await processOcr(restoredFile);
+    } catch (e: any) {
+      setError('تعذر استعادة الفاتورة المؤجلة: ' + (e?.message || ''));
+    }
+  };
 
   // ── فتح جدول المراجعة والتدقيق الشامل لجميع فواتير الدفعة ─────────────────
   const openBatchReviewTable = () => {
@@ -848,10 +923,53 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         </div>
       </div>
 
+      {/* ── Network & Offline Queue Banner ───────────────────────────────── */}
+      {!isOnline && (
+        <div className="alert-danger mb-3" style={{ background: '#fff7ed', borderColor: '#fdba74', color: '#9a3412' }}>
+          <WifiOff size={18} />
+          <span style={{ fontWeight: 700, fontSize: '0.84rem' }}>
+            أنت غير متصل بالإنترنت حالياً — يمكنك التقاط الصور وسنحفظها محلياً لإكمال التحليل عند عودة الشبكة.
+          </span>
+        </div>
+      )}
+
+      {pendingQueue.length > 0 && isOnline && (
+        <div className="alert-info mb-3" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <span style={{ fontWeight: 800, fontSize: '0.84rem' }}>
+              ⏳ يوجد {pendingQueue.length} فواتير محفوظة من انقطاع الشبكة السابق بانتظار التحليل:
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+            {pendingQueue.map(q => (
+              <div key={q.id} style={{ display: 'flex', gap: '0.35rem', alignItems: 'center', background: '#ffffff', padding: '0.3rem 0.6rem', borderRadius: 8, border: '1px solid #bfdbfe' }}>
+                <span style={{ fontSize: '0.76rem', fontWeight: 700 }}>{q.fileName}</span>
+                <button
+                  type="button"
+                  onClick={() => handleRetryQueuedItem(q)}
+                  className="btn-clay btn-primary btn-sm"
+                  style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem' }}
+                >
+                  تحليل الآن
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { removePendingOcrQueueItem(q.id); setPendingQueue(getPendingOcrQueue()); }}
+                  style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: 2 }}
+                  title="حذف من الطابور"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Error Banner ──────────────────────────────────────────────────── */}
       {error && (
         <div className="alert-danger mb-4">
-          <AlertCircle size={20} />
+          <AlertCircle size={20} style={{ flexShrink: 0 }} />
           <span style={{ fontWeight: 600 }}>{error}</span>
           <button
             style={{ marginRight: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}
@@ -886,11 +1004,19 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
               </button>
               <button
                 type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                className="btn-clay btn-secondary btn-sm"
+                style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Camera size={14} /> تصوير فاتورة أخرى
+              </button>
+              <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="btn-clay btn-secondary btn-sm"
                 style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: 4 }}
               >
-                <Plus size={14} /> إضافة صور فواتير أخرى
+                <Plus size={14} /> إضافة من المعرض
               </button>
               {batchInvoices.length > 1 && (
                 <button
@@ -945,7 +1071,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   </div>
 
                   <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--gray-800)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {bItem.pharmacyName || 'صيدلية قيد القراءة...'}
+                    {bItem.pharmacyName || (bItem.status === 'error' ? 'فشل القراءة' : 'صيدلية قيد القراءة...')}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.68rem', color: 'var(--gray-500)' }}>
@@ -982,93 +1108,206 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   type="button"
                   onClick={() => setShowOcrSettings(v => !v)}
                   className="btn-clay btn-secondary btn-sm"
-                  style={{ fontSize: '0.72rem', padding: '0.28rem 0.65rem' }}
+                  style={{ fontSize: '0.74rem', padding: '0.32rem 0.7rem' }}
                   title="إعدادات القراءة الذكية عبر المتصفح أو الخادم"
                 >
                   <Settings size={13} /> إعدادات OCR
                 </button>
               </div>
 
+              {/* ── Live OCR Engine Readiness Banner ───────────────────────────── */}
+              {(() => {
+                const hasBackend = !isLocalhostFromRemoteHttps();
+                const hasGemini = Boolean(geminiKeyInput.trim());
+                if (hasBackend) {
+                  return (
+                    <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', gap: '0.45rem', fontWeight: 700 }}>
+                      <ShieldCheck size={16} style={{ color: '#059669', flexShrink: 0 }} />
+                      <span>متصل بالخادم الخلفي لقراءة الفواتير بالذكاء الاصطناعي.</span>
+                    </div>
+                  );
+                }
+                if (hasGemini) {
+                  return (
+                    <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 700 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Sparkles size={15} style={{ color: '#059669', flexShrink: 0 }} />
+                        القراءة الذكية عبر Gemini Vision AI مفعّلة ومجانية على هاتفك
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowOcrSettings(v => !v)}
+                        style={{ background: 'none', border: 'none', color: '#047857', fontWeight: 800, cursor: 'pointer', fontSize: '0.74rem', textDecoration: 'underline', padding: 0 }}
+                      >
+                        تعديل المفتاح
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ background: '#fffbeb', border: '1.5px solid #fcd34d', borderRadius: 12, padding: '0.75rem 0.85rem', fontSize: '0.8rem', color: '#92400e', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <strong style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <AlertTriangle size={16} style={{ color: '#d97706', flexShrink: 0 }} />
+                        مفتاح Gemini AI غير مُعد بعد (تعمل الآن القراءة المحلية فقط)
+                      </strong>
+                      <button
+                        type="button"
+                        onClick={() => setShowOcrSettings(true)}
+                        className="btn-clay btn-primary btn-sm"
+                        style={{ background: '#d97706', borderColor: '#b45309', fontSize: '0.74rem', padding: '0.28rem 0.65rem' }}
+                      >
+                        <Key size={13} /> تفعيل القراءة الذكية الآن
+                      </button>
+                    </div>
+                    <div style={{ fontSize: '0.75rem', lineHeight: 1.45, color: '#78350f' }}>
+                      لقراءة الفواتير العربية والإنجليزية بدقة 98% مباشرة من الموبايل بدون خادم، أضف مفتاح Google Gemini المجاني في الإعدادات.
+                    </div>
+                  </div>
+                );
+              })()}
+
               {showOcrSettings && (
                 <div style={{
                   background: '#f8fafc',
-                  border: '1px solid #cbd5e1',
+                  border: '1.5px solid #cbd5e1',
                   borderRadius: 12,
-                  padding: '0.85rem',
+                  padding: '0.9rem',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '0.6rem'
+                  gap: '0.75rem'
                 }}>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#0f172a' }}>
-                    ⚙️ إعدادات الذكاء الاصطناعي والربط المباشر (للموبايل والمتصفح):
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>
+                      🔑 مفتاح Google Gemini AI (للقراءة الفورية من الهاتف):
+                    </span>
+                    <a
+                      href="https://aistudio.google.com/apikey"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: '0.73rem', fontWeight: 800, color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
+                    >
+                      احصل على مفتاح مجاني <ExternalLink size={12} />
+                    </a>
                   </div>
-                  <div>
-                    <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: 3 }}>
-                      مفتاح Google Gemini API (للقراءة الآلية مباشرة من الهاتف بدون خادم):
-                    </label>
+
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                     <input
-                      type="password"
+                      type={showGeminiKeyText ? 'text' : 'password'}
                       className="clay-input"
-                      style={{ padding: '0.45rem 0.65rem', fontSize: '0.8rem' }}
+                      style={{ flex: '1 1 180px', padding: '0.48rem 0.65rem', fontSize: '0.85rem', direction: 'ltr', textAlign: 'left' }}
                       placeholder="AIzaSy..."
                       value={geminiKeyInput}
                       onChange={e => {
                         setGeminiKeyInput(e.target.value);
                         setSavedGeminiKey(e.target.value);
+                        setKeyTestResult(null);
                       }}
                     />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: 3 }}>
-                      عنوان الخادم الخلفي (Backend API URL):
-                    </label>
-                    <input
-                      type="url"
-                      className="clay-input"
-                      style={{ padding: '0.45rem 0.65rem', fontSize: '0.8rem', direction: 'ltr', textAlign: 'left' }}
-                      placeholder="http://localhost:5000/api/v1"
-                      value={apiBaseInput}
-                      onChange={e => {
-                        setApiBaseInput(e.target.value);
-                        setApiBase(e.target.value);
+                    <button
+                      type="button"
+                      onClick={() => setShowGeminiKeyText(v => !v)}
+                      className="btn-clay btn-secondary btn-sm"
+                      style={{ fontSize: '0.75rem' }}
+                    >
+                      {showGeminiKeyText ? 'إخفاء' : 'إظهار'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={keyTestLoading || !geminiKeyInput.trim()}
+                      onClick={async () => {
+                        setKeyTestLoading(true);
+                        const res = await api.testGeminiKey(geminiKeyInput);
+                        setKeyTestResult(res);
+                        setKeyTestLoading(false);
                       }}
-                    />
+                      className="btn-clay btn-primary btn-sm"
+                      style={{ fontSize: '0.76rem', fontWeight: 800 }}
+                    >
+                      {keyTestLoading ? 'جاري الاختبار...' : 'اختبار وحفظ 🔍'}
+                    </button>
                   </div>
+
+                  {keyTestResult && (
+                    <div className={keyTestResult.valid ? 'alert-success' : 'alert-danger'} style={{ margin: 0, padding: '0.55rem 0.75rem', fontSize: '0.78rem' }}>
+                      {keyTestResult.message}
+                    </div>
+                  )}
+
+                  {/* Advanced server & debug options */}
+                  <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.55rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedServer(v => !v)}
+                      style={{ background: 'none', border: 'none', color: '#475569', fontSize: '0.74rem', fontWeight: 700, cursor: 'pointer', padding: 0 }}
+                    >
+                      {showAdvancedServer ? '▼ إخفاء خيارات الخادم المتقدمة' : '◀ خيارات الخادم الخلفي المتقدمة (اختياري)'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={enableErudaDebugger}
+                      className="btn-clay btn-secondary btn-sm"
+                      style={{ fontSize: '0.72rem', padding: '0.25rem 0.55rem' }}
+                      title="عرض وحدة فحص الأخطاء والشبكة على شاشة الموبايل"
+                    >
+                      <Terminal size={12} /> {erudaActive ? 'Console مفعّل ✓' : 'تشغيل فاحص الموبايل (Console)'}
+                    </button>
+                  </div>
+
+                  {showAdvancedServer && (
+                    <div>
+                      <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: 3 }}>
+                        عنوان الخادم الخلفي (Backend API URL — للخوادم السحابية فقط):
+                      </label>
+                      <input
+                        type="url"
+                        className="clay-input"
+                        style={{ padding: '0.45rem 0.65rem', fontSize: '0.82rem', direction: 'ltr', textAlign: 'left' }}
+                        placeholder="https://your-server.example.com/api/v1"
+                        value={apiBaseInput}
+                        onChange={e => {
+                          setApiBaseInput(e.target.value);
+                          setApiBase(e.target.value);
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
+
+              {/* Synchronous Separate Hidden Inputs (لا يستدعى click بعد أي await؛ بدون امتدادات تربك أندرويد) */}
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
+                style={{ display: 'none' }}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,application/pdf"
+                onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
+                style={{ display: 'none' }}
+              />
 
               {/* Upload Drop Zone / Laser Box */}
               <div
                 className={`upload-zone ${isDragging ? 'drag-over' : ''}`}
                 style={{
                   position: 'relative',
-                  minHeight: 280,
-                  cursor: 'pointer',
+                  minHeight: 260,
+                  cursor: 'default',
                   border: uploadedFile ? '2px solid var(--primary)' : undefined,
                   background: ocrLoading ? '#0f172a' : undefined
                 }}
                 onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
                 onDragLeave={() => setIsDragging(false)}
                 onDrop={e => { e.preventDefault(); setIsDragging(false); handleFileDrop(e.dataTransfer.files); }}
-                onClick={() => fileInputRef.current?.click()}
               >
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
-                  style={{ display: 'none' }}
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept="image/*,application/pdf,.heic,.heif"
-                  onChange={e => { handleFileDrop(e.target.files); e.target.value = ''; }}
-                  style={{ display: 'none' }}
-                />
-
                 {/* Laser scan animation when reading */}
                 {ocrLoading && (
                   <div className="ocr-laser-line" />
@@ -1078,16 +1317,13 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   <div style={{ position: 'relative', width: '100%', textAlign: 'center' }}>
                     <img
                       src={previewUrl}
-                      alt="معاينة الفاتورة - انقر لاستبدال"
-                      title="انقر لاستبدال بفاتورة أخرى"
-                      onClick={e => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                      alt="معاينة الفاتورة"
                       style={{
-                        maxHeight: 260,
+                        maxHeight: 270,
                         maxWidth: '100%',
                         borderRadius: 12,
                         objectFit: 'contain',
-                        opacity: ocrLoading ? 0.6 : 1,
-                        cursor: 'pointer',
+                        opacity: ocrLoading ? 0.5 : 1,
                         border: '2px dashed var(--primary)'
                       }}
                     />
@@ -1100,12 +1336,27 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                         alignItems: 'center',
                         justifyContent: 'center',
                         color: '#38bdf8',
-                        background: 'rgba(15, 23, 42, 0.75)',
-                        borderRadius: 12
+                        background: 'rgba(15, 23, 42, 0.8)',
+                        borderRadius: 12,
+                        padding: '1rem'
                       }}>
-                        <Loader size={36} className="animate-spin" style={{ marginBottom: 12 }} />
-                        <div style={{ fontWeight: 800, fontSize: '1rem', color: '#ffffff' }}>جاري مسح بيانات الفاتورة ضوئياً...</div>
-                        <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: 4 }}>استخراج الصيدلية، الأدوية، والكميات تلقائياً</div>
+                        <Loader size={34} className="animate-spin" style={{ marginBottom: 10 }} />
+                        <div style={{ fontWeight: 800, fontSize: '0.96rem', color: '#ffffff' }}>
+                          {ocrProgress?.message || 'جاري قراءة بيانات الفاتورة...'}
+                        </div>
+                        {ocrProgress && (
+                          <div style={{ width: '80%', maxWidth: 260, marginTop: 10 }}>
+                            <div className="progress-bar-bg" style={{ background: 'rgba(255,255,255,0.2)', height: 7 }}>
+                              <div
+                                className="progress-bar-fill"
+                                style={{ width: `${ocrProgress.percent}%`, background: 'linear-gradient(90deg, #38bdf8, #10b981)' }}
+                              />
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: '#cbd5e1', marginTop: 4 }}>
+                              {ocrProgress.percent}%
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1114,20 +1365,20 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     <FilePdfIcon size={64} style={{ color: 'var(--danger)', marginBottom: 10 }} />
                     <p style={{ fontWeight: 700, fontSize: '1rem', margin: 0 }}>{uploadedFile.name}</p>
                     <p style={{ fontSize: '0.8rem', color: 'var(--gray-400)', marginTop: 4 }}>
-                      مستند PDF ({(uploadedFile.size / 1024).toFixed(1)} KB)
+                      ({(uploadedFile.size / 1024).toFixed(1)} KB)
                     </p>
                     {ocrLoading && (
                       <div style={{ marginTop: '1rem', color: '#38bdf8' }}>
                         <Loader size={24} className="animate-spin" style={{ display: 'inline-block', verticalAlign: 'middle', marginLeft: 8 }} />
-                        <span style={{ fontWeight: 700 }}>جاري استخراج بيانات جدول الفاتورة من ملف PDF...</span>
+                        <span style={{ fontWeight: 700 }}>{ocrProgress?.message || 'جاري تجهيز وقراءة الملف...'}</span>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div style={{ padding: '1.5rem 1rem', textAlign: 'center' }}>
+                  <div style={{ padding: '1.5rem 0.85rem', textAlign: 'center' }}>
                     <div style={{
-                      width: 58,
-                      height: 58,
+                      width: 56,
+                      height: 56,
                       borderRadius: '50%',
                       background: 'rgba(37, 99, 235, 0.1)',
                       color: 'var(--primary)',
@@ -1136,31 +1387,31 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       justifyContent: 'center',
                       margin: '0 auto 0.75rem'
                     }}>
-                      <Upload size={28} />
+                      <Upload size={26} />
                     </div>
-                    <p style={{ fontWeight: 800, color: 'var(--gray-800)', fontSize: '0.98rem', marginBottom: 4 }}>
-                      اسحب صورة الفاتورة أو اضغط لاختيارها مباشرة
+                    <p style={{ fontWeight: 800, color: 'var(--gray-800)', fontSize: '0.96rem', marginBottom: 4 }}>
+                      اختر طريقة رفع الفاتورة
                     </p>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--gray-500)', maxWidth: 360, margin: '0 auto 1rem' }}>
-                      يدعم كاميرا الموبايل، صور الآيفون والسامسونج، ومستندات PDF
+                    <p style={{ fontSize: '0.78rem', color: 'var(--gray-500)', maxWidth: 340, margin: '0 auto 1rem' }}>
+                      يتم ضغط الصور وتصحيح دورانها (EXIF/HEIC) تلقائياً على جهازك قبل القراءة
                     </p>
 
                     <div style={{ display: 'flex', gap: '0.6rem', justifyContent: 'center', flexWrap: 'wrap' }}>
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); cameraInputRef.current?.click(); }}
+                        onClick={() => cameraInputRef.current?.click()}
                         className="btn-clay btn-primary"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', fontWeight: 800, padding: '0.6rem 1rem', background: '#059669', borderColor: '#047857' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.86rem', fontWeight: 800, padding: '0.65rem 1.05rem', background: '#059669', borderColor: '#047857' }}
                       >
-                        <Camera size={17} /> التقاط بالكاميرا مباشرة
+                        <Camera size={17} /> التقاط صورة بالكاميرا
                       </button>
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                        onClick={() => fileInputRef.current?.click()}
                         className="btn-clay btn-secondary"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.85rem', fontWeight: 800, padding: '0.6rem 1rem' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.86rem', fontWeight: 800, padding: '0.65rem 1.05rem' }}
                       >
-                        <Images size={17} style={{ color: 'var(--primary)' }} /> اختيار من الألبوم أو PDF
+                        <Images size={17} style={{ color: 'var(--primary)' }} /> من المعرض أو PDF
                       </button>
                     </div>
                   </div>
@@ -1169,16 +1420,18 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
 
               {/* Status & Re-scan bar */}
               {uploadedFile && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                   {ocrDone ? (
                     <div className="alert-success" style={{ margin: 0, padding: '0.75rem 1rem' }}>
                       <CheckCircle2 size={22} style={{ color: 'var(--success)', flexShrink: 0 }} />
                       <div>
                         <div style={{ fontWeight: 800, color: '#065f46' }}>
-                          تمت قراءة البيانات بنجاح (دقة الـ OCR: {ocrConfidence}%)
+                          {ocrEngineUsed === 'tesseract-browser'
+                            ? `تمت القراءة بالمحرك المحلي (${ocrConfidence}%) — راجع البنود`
+                            : `تمت قراءة البيانات بنجاح (${ocrConfidence}%)`}
                         </div>
                         <div style={{ fontSize: '0.8rem', color: '#047857', marginTop: 2 }}>
-                          تم تعبئة بيانات الصيدلية والأصناف تلقائياً في النموذج أدناه.
+                          {ocrSummary || 'تم تعبئة بيانات الصيدلية والأصناف تلقائياً في النموذج أدناه.'}
                         </div>
                       </div>
                     </div>
@@ -1187,12 +1440,49 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       <CheckCircle2 size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
                       <div style={{ fontSize: '0.82rem', lineHeight: 1.45 }}>
                         <strong style={{ display: 'block' }}>📸 تم إرفاق الفاتورة بنجاح!</strong>
-                        أكمل اسم الصيدلية والأصناف في النموذج أدناه ثم اضغط حفظ (أو افتح "إعدادات OCR" أعلاه لإدخال مفتاح Gemini للقراءة الآلية).
+                        {ocrSummary || 'أكمل اسم الصيدلية والأصناف في النموذج أدناه ثم اضغط حفظ.'}
                       </div>
                     </div>
                   ) : null}
 
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {ocrWarning && (
+                    <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '0.65rem 0.85rem', fontSize: '0.78rem', color: '#92400e', lineHeight: 1.45, display: 'flex', gap: '0.45rem', alignItems: 'flex-start' }}>
+                      <AlertTriangle size={16} style={{ color: '#d97706', flexShrink: 0, marginTop: 2 }} />
+                      <div>{ocrWarning}</div>
+                    </div>
+                  )}
+
+                  {ocrRawText && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setShowRawText(v => !v)}
+                        style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: '0.76rem', fontWeight: 700, cursor: 'pointer', padding: 0 }}
+                      >
+                        {showRawText ? '▼ إخفاء النص الخام المستخرج' : '📄 عرض النص الخام المقروء من الفاتورة'}
+                      </button>
+                      {showRawText && (
+                        <pre
+                          dir="auto"
+                          style={{
+                            marginTop: '0.4rem',
+                            background: '#0f172a',
+                            color: '#e2e8f0',
+                            padding: '0.65rem',
+                            borderRadius: 10,
+                            fontSize: '0.74rem',
+                            maxHeight: 160,
+                            overflowY: 'auto',
+                            whiteSpace: 'pre-wrap'
+                          }}
+                        >
+                          {ocrRawText}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
                     <button
                       type="button"
                       onClick={() => uploadedFile && processOcr(uploadedFile)}
@@ -1200,11 +1490,42 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       className="btn-clay btn-secondary flex-1"
                     >
                       <RefreshCw size={15} className={ocrLoading ? 'animate-spin' : ''} />
-                      إعادة القراءة الضوئية
+                      إعادة القراءة
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setUploadedFile(null); setPreviewUrl(null); setOcrDone(false); setOfflineAttached(false); setOcrSummary(null); setPharmacyName(''); setPharmacyId(''); setInvoiceNumber(generateInvoiceNumber()); setItems([{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10 }]); }}
+                      onClick={() => cameraInputRef.current?.click()}
+                      disabled={ocrLoading}
+                      className="btn-clay btn-secondary"
+                      title="التقاط صورة أخرى بالكاميرا"
+                    >
+                      <Camera size={15} /> كاميرا
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={ocrLoading}
+                      className="btn-clay btn-secondary"
+                      title="اختيار ملف آخر من المعرض"
+                    >
+                      <Images size={15} /> معرض
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadedFile(null);
+                        setPreviewUrl(null);
+                        setOcrDone(false);
+                        setOfflineAttached(false);
+                        setOcrSummary(null);
+                        setOcrWarning(null);
+                        setOcrRawText(null);
+                        setOcrEngineUsed(null);
+                        setPharmacyName('');
+                        setPharmacyId('');
+                        setInvoiceNumber(generateInvoiceNumber());
+                        setItems([{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10 }]);
+                      }}
                       className="btn-clay btn-secondary"
                       title="إزالة الملف"
                     >
