@@ -995,22 +995,132 @@ body {
 }
 
 .mobile-bottom-nav-item.highlight .bottom-nav-icon {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
   color: #ffffff !important;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.45);
-  margin-top: -20px;
-  border: 3px solid #ffffff;
+  box-shadow: 0 4px 16px rgba(5, 150, 105, 0.45);
+  margin-top: -24px;
+  border: 3.5px solid #ffffff;
   transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .mobile-bottom-nav-item.highlight:active .bottom-nav-icon {
-  transform: scale(0.92) translateY(-14px);
+  transform: scale(0.92) translateY(-18px);
+}
+
+.mobile-bottom-nav-item.highlight .bottom-nav-label {
+  color: #059669 !important;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+/* ── Topbar Mobile Add Invoice Button ────────────────────────────────────────── */
+.topbar-mobile-add-btn {
+  display: none;
+  align-items: center;
+  gap: 0.35rem;
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.76rem;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .topbar-mobile-add-btn {
+    display: inline-flex;
+  }
+}
+
+/* ── Floating Action Button (FAB) for Mobile ─────────────────────────────────── */
+.mobile-fab-btn {
+  display: none;
+  position: fixed;
+  bottom: 78px;
+  left: 16px;
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 30px;
+  padding: 0.65rem 1.15rem;
+  font-size: 0.88rem;
+  font-weight: 800;
+  box-shadow: 0 6px 20px rgba(5, 150, 105, 0.45);
+  cursor: pointer;
+  z-index: 1045;
+  align-items: center;
+  gap: 0.45rem;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mobile-fab-btn:active {
+  transform: scale(0.94);
+}
+
+@media (max-width: 900px) {
+  .mobile-fab-btn {
+    display: flex;
+  }
+}
+
+/* ── Mobile Pharmacy Page Styles ─────────────────────────────────────────────── */
+.pharmacy-desktop-view {
+  display: grid;
+}
+.pharmacy-mobile-page {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .pharmacy-desktop-view {
+    display: none !important;
+  }
+  .pharmacy-mobile-page {
+    display: flex !important;
+    flex-direction: column;
+    gap: 1rem;
+  }
+}
+
+.pharmacy-mobile-card {
+  background: #ffffff;
+  border-radius: var(--radius);
+  padding: 1.1rem;
+  border: 1px solid var(--gray-200);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pharmacy-mobile-card:active {
+  transform: scale(0.99);
+}
+
+.pharmacy-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #ffffff;
+  border: 1px solid var(--gray-300);
+  color: var(--gray-800);
+  padding: 0.5rem 0.85rem;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 0.84rem;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
 .bottom-nav-icon {

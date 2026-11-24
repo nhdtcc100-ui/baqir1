@@ -15,6 +15,7 @@ interface BillingLedgerProps {
   onRejectInvoice: (id: string, reason: string) => void;
   onDeleteInvoice?: (id: string) => void;
   onUpdateInvoice?: (invoice: Invoice) => void;
+  onAddInvoice?: () => void;
 }
 
 export const BillingLedger: React.FC<BillingLedgerProps> = ({
@@ -24,7 +25,8 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   onApproveInvoice,
   onRejectInvoice,
   onDeleteInvoice,
-  onUpdateInvoice
+  onUpdateInvoice,
+  onAddInvoice
 }) => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
   const [pharmacyFilter, setPharmacyFilter] = useState<string>('all');
@@ -325,10 +327,22 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
           </p>
         </div>
 
-        <button onClick={handleExportCSV} className="btn-clay btn-secondary">
-          <Download size={18} />
-          <span>تصدير تقرير Excel (CSV)</span>
-        </button>
+        <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {onAddInvoice && (
+            <button
+              onClick={onAddInvoice}
+              className="btn-clay btn-primary"
+              style={{ background: '#059669', borderColor: '#047857', display: 'flex', alignItems: 'center', gap: '0.45rem', fontWeight: 800 }}
+            >
+              <Plus size={18} />
+              <span>إضافة فاتورة جديدة</span>
+            </button>
+          )}
+          <button onClick={handleExportCSV} className="btn-clay btn-secondary">
+            <Download size={18} />
+            <span>تصدير تقرير Excel (CSV)</span>
+          </button>
+        </div>
       </div>
 
       {/* ── Stat Summary Cards ─────────────────────────────────────────────── */}
