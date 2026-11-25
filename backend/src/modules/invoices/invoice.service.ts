@@ -17,6 +17,7 @@ export interface InvoiceItemInput {
 
 export interface CreateInvoiceInput {
   pharmacy_id: string;
+  pharmacy_name?: string;
   pharmacy_area?: string;
   invoice_number?: string;
   invoice_date?: string;
@@ -455,7 +456,7 @@ export class InvoiceService {
       invoices[invIdx] = {
         ...invoices[invIdx],
         pharmacy_id: newPharmacyId,
-        pharmacy_name: phObj?.name || invoices[invIdx].pharmacy_name,
+        pharmacy_name: input.pharmacy_name || phObj?.name || invoices[invIdx].pharmacy_name,
         pharmacy_city: phObj?.city || invoices[invIdx].pharmacy_city,
         pharmacy_area: newPharmacyArea || (phObj as any)?.area || invoices[invIdx].pharmacy_area || '',
         invoice_number: newInvoiceNumber,

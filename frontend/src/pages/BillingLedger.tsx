@@ -7,6 +7,7 @@ import {
 import { api } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
 import { detectLocalInvoiceDuplicates } from '../utils/duplicateDetector';
+import { detectAreaFromText } from '../utils/invoiceTableParser';
 import { autoDetectDosageForm, getDosageFormBadgeColor } from './BatchReviewTable';
 
 interface BillingLedgerProps {
@@ -52,6 +53,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   // Edit Invoice Modal State
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [editPharmacyId, setEditPharmacyId] = useState('');
+  const [editPharmacyName, setEditPharmacyName] = useState('');
   const [editPharmacyArea, setEditPharmacyArea] = useState('');
   const [editInvoiceNumber, setEditInvoiceNumber] = useState('');
   const [editInvoiceDate, setEditInvoiceDate] = useState('');
@@ -62,7 +64,9 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   const handleOpenEdit = (inv: Invoice) => {
     setEditingInvoice(inv);
     setEditPharmacyId(inv.pharmacy_id);
-    setEditPharmacyArea(inv.pharmacy_area || (inv as any).area || '');
+    const resolvedName = inv.pharmacy_name || pharmacies.find(p => p.id === inv.pharmacy_id)?.name || '';
+    setEditPharmacyName(resolvedName);
+    setEditPharmacyArea(inv.pharmacy_area || (inv as any).area || detectAreaFromText(resolvedName) || '');
     setEditInvoiceNumber(inv.invoice_number || '');
     setEditInvoiceDate((inv.invoice_date || '').split('T')[0]);
     setEditItems(
@@ -101,6 +105,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     try {
       const updated = await api.updateInvoice(inv.id, {
         pharmacy_id: inv.pharmacy_id,
+        pharmacy_name: inv.pharmacy_name,
         pharmacy_area: inv.pharmacy_area || (inv as any).area || '',
         invoice_number: inv.invoice_number,
         invoice_date: (inv.invoice_date || '').split('T')[0],
@@ -130,8 +135,11 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setEditSubmitting(true);
     setEditError(null);
     try {
+      const cleanEditPhName = editPharmacyName.trim();
+      const matchedPh = pharmacies.find(p => p.name.trim().toLowerCase() === cleanEditPhName.toLowerCase());
       const payload = {
-        pharmacy_id: editPharmacyId,
+        pharmacy_id: matchedPh ? matchedPh.id : (editPharmacyId && matchedPh === undefined && !cleanEditPhName ? editPharmacyId : undefined),
+        pharmacy_name: cleanEditPhName || undefined,
         pharmacy_area: editPharmacyArea.trim(),
         invoice_number: editInvoiceNumber.trim(),
         invoice_date: editInvoiceDate,
@@ -1344,16 +1352,32 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                   <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
                     الصيدلية المستهدفة *
                   </label>
-                  <select
+                  <input
+                    type="text"
+                    list="edit-pharmacies-datalist"
                     className="clay-input"
-                    value={editPharmacyId}
-                    onChange={e => setEditPharmacyId(e.target.value)}
+                    placeholder="اكتب اسم الصيدلية أو اختر من القائمة..."
+                    value={editPharmacyName}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setEditPharmacyName(val);
+                      const matched = pharmacies.find(p => p.name.trim().toLowerCase() === val.trim().toLowerCase());
+                      setEditPharmacyId(matched ? matched.id : '');
+                      const detected = matched ? (matched as any).area : detectAreaFromText(val);
+                      if (detected && !editPharmacyArea.trim()) {
+                        setEditPharmacyArea(detected);
+                      }
+                    }}
                     required
-                  >
+                    style={{ fontWeight: 700 }}
+                  />
+                  <datalist id="edit-pharmacies-datalist">
                     {pharmacies.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.city})</option>
+                      <option key={p.id} value={p.name}>
+                        {p.city ? `(${p.city})` : ''}
+                      </option>
                     ))}
-                  </select>
+                  </datalist>
                 </div>
 
                 <div>

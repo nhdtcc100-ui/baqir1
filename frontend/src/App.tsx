@@ -165,6 +165,7 @@ export function App() {
   const handleUpdateInvoice = (updated: Invoice) => {
     setInvoices(prev => prev.map(inv => inv.id === updated.id ? updated : inv));
     addToast(`تم تعديل الفاتورة ${updated.invoice_number} بنجاح ✏️`, 'success');
+    loadData();
   };
 
   const handleInvoiceCreated = (invoice: Invoice) => {

@@ -167,6 +167,16 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
           pharmacy_area: (ph as any)?.area || inv.pharmacy_area
         };
       }
+      if (field === 'pharmacy_name') {
+        const cleanVal = String(value || '').trim().toLowerCase();
+        const ph = pharmacies.find(p => p.name.trim().toLowerCase() === cleanVal);
+        return {
+          ...inv,
+          pharmacy_name: value,
+          pharmacy_id: ph ? ph.id : '',
+          pharmacy_area: ph ? ((ph as any).area || inv.pharmacy_area) : inv.pharmacy_area
+        };
+      }
       return { ...inv, [field]: value };
     }));
   };

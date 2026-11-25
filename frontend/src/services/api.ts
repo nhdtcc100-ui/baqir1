@@ -982,16 +982,21 @@ function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }):
   const invoices = getStoredInvoices();
   const curUser = getCurrentUser();
 
-  let targetPharmacy = pharmacies.find(p => p.id === payload.pharmacy_id) ||
-    pharmacies.find(p => payload.pharmacy_name && p.name.trim().toLowerCase() === payload.pharmacy_name.trim().toLowerCase());
+  const cleanTypedName = String(payload.pharmacy_name || '').trim();
+  const cleanAreaInput = String(payload.pharmacy_area || '').trim();
 
-  if (!targetPharmacy && payload.pharmacy_name) {
+  // Prioritize the explicitly typed pharmacy_name; only match pharmacy_id when no custom name overrides it
+  let targetPharmacy = cleanTypedName
+    ? pharmacies.find(p => p.name.trim().toLowerCase() === cleanTypedName.toLowerCase())
+    : pharmacies.find(p => p.id === payload.pharmacy_id);
+
+  if (!targetPharmacy && cleanTypedName) {
     targetPharmacy = {
       id: 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
-      name: payload.pharmacy_name.trim(),
+      name: cleanTypedName,
       city: 'بغداد',
-      area: payload.pharmacy_area || '',
-      address: payload.pharmacy_area ? `بغداد - ${payload.pharmacy_area}` : 'بغداد',
+      area: cleanAreaInput || detectAreaFromText(cleanTypedName) || '',
+      address: cleanAreaInput ? `بغداد - ${cleanAreaInput}` : 'بغداد',
       phone: '',
       assigned_rep_id: curUser?.id,
       assigned_rep_name: curUser?.full_name || 'مندوب ميداني',
@@ -1346,6 +1351,7 @@ export const api = {
 
   async updateInvoice(id: string, payload: {
     pharmacy_id?: string;
+    pharmacy_name?: string;
     pharmacy_area?: string;
     invoice_number?: string;
     invoice_date?: string;
@@ -1371,10 +1377,31 @@ export const api = {
       if (isNetworkError(err)) {
         const list = getStoredInvoices();
         const pharmacies = getStoredPharmacies();
+        const curUser = getCurrentUser();
         const idx = list.findIndex(i => i.id === id);
         if (idx === -1) throw new Error('الفاتورة غير موجودة محلياً');
         const old = list[idx];
-        const ph = pharmacies.find(p => p.id === (payload.pharmacy_id || old.pharmacy_id));
+        const cleanTypedName = (payload.pharmacy_name || '').trim();
+        let ph = cleanTypedName
+          ? pharmacies.find(p => p.name.trim().toLowerCase() === cleanTypedName.toLowerCase())
+          : pharmacies.find(p => p.id === (payload.pharmacy_id || old.pharmacy_id));
+
+        if (!ph && cleanTypedName) {
+          ph = {
+            id: 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
+            name: cleanTypedName,
+            city: 'بغداد',
+            area: (payload.pharmacy_area || '').trim() || detectAreaFromText(cleanTypedName) || '',
+            address: payload.pharmacy_area ? `بغداد - ${payload.pharmacy_area}` : 'بغداد',
+            phone: '',
+            assigned_rep_id: curUser?.id,
+            assigned_rep_name: curUser?.full_name || 'مندوب ميداني',
+            total_invoices: 0,
+            total_sales: 0
+          };
+          pharmacies.unshift(ph);
+          saveStoredPharmacies(pharmacies);
+        }
 
         let updatedItems = old.items || [];
         let totalSales = old.total_sales_amount;
@@ -1407,12 +1434,12 @@ export const api = {
           });
         }
 
-        const resolvedPhName = ph?.name || old.pharmacy_name || '';
+        const resolvedPhName = cleanTypedName || ph?.name || old.pharmacy_name || '';
         const resolvedPhArea = (payload.pharmacy_area || '').trim() || old.pharmacy_area || (ph as any)?.area || detectAreaFromText(resolvedPhName) || '';
 
         const updated: Invoice = {
           ...old,
-          pharmacy_id: payload.pharmacy_id || old.pharmacy_id,
+          pharmacy_id: ph?.id || payload.pharmacy_id || old.pharmacy_id,
           pharmacy_name: resolvedPhName,
           pharmacy_area: resolvedPhArea,
           invoice_number: payload.invoice_number ?? old.invoice_number,

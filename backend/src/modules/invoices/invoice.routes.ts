@@ -131,6 +131,7 @@ const reviewSchema = z.object({
 
 const updateInvoiceSchema = z.object({
   pharmacy_id: z.string().min(1).optional(),
+  pharmacy_name: z.string().optional(),
   pharmacy_area: z.string().optional(),
   invoice_number: z.string().max(100).optional(),
   invoice_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -561,33 +562,47 @@ router.post('/',
         return;
       }
 
-      if (!pharmacy_id && pharmacy_name && distinctPh.length >= 2) {
-        let ph = await PharmacyService.findByName(pharmacy_name);
-        if (!ph) {
+      // Always honor an explicitly typed pharmacy_name rather than letting a stale pharmacy_id override it
+      const typedPhName = (pharmacy_name || '').trim();
+      if (typedPhName) {
+        if (pharmacy_id) {
           try {
-            ph = await PharmacyService.create({
-              name: pharmacy_name.startsWith('ص') ? pharmacy_name : `صيدلية ${pharmacy_name}`,
-              city: 'بغداد',
-              address: pharmacy_area || 'بغداد',
-              assigned_rep_id: repId
-            });
-          } catch (err: any) {}
+            const byId = await PharmacyService.findById(pharmacy_id);
+            if (!byId || cleanPharmacyName(byId.name) !== distinctPh) {
+              pharmacy_id = undefined;
+            }
+          } catch {
+            pharmacy_id = undefined;
+          }
         }
-        if (ph) pharmacy_id = ph.id;
+        if (!pharmacy_id) {
+          let ph = await PharmacyService.findByName(typedPhName);
+          if (!ph) {
+            try {
+              ph = await PharmacyService.create({
+                name: typedPhName,
+                city: 'بغداد',
+                address: pharmacy_area || 'بغداد',
+                assigned_rep_id: repId
+              });
+            } catch (err: any) {}
+          }
+          if (ph) pharmacy_id = ph.id;
+        }
       }
 
       if (!pharmacy_id) {
         const all = await PharmacyService.findAll();
-        if (all.length > 0) {
-          pharmacy_id = all[0].id;
-        } else {
+        if (typedPhName && distinctPh.length >= 2) {
           const ph = await PharmacyService.create({
-            name: distinctPh.length >= 2 ? (pharmacy_name!.startsWith('ص') ? pharmacy_name! : `صيدلية ${pharmacy_name}`) : 'صيدلية النور النموذجية',
+            name: typedPhName,
             city: 'بغداد',
             address: pharmacy_area || 'بغداد',
             assigned_rep_id: repId
           });
           pharmacy_id = ph.id;
+        } else if (all.length > 0) {
+          pharmacy_id = all[0].id;
         }
       }
 
@@ -672,7 +687,29 @@ router.put('/:id',
         if (invoice.rep_id !== userId)           { sendError(res, 'غير مصرح لك بتعديل هذه الفاتورة', 403); return; }
         if (invoice.status !== 'pending_review') { sendError(res, 'لا يمكن تعديل الفاتورة بعد اعتمادها أو رفضها', 400); return; }
       }
-      const updated = await InvoiceService.update(req.params.id, req.body);
+      const { pharmacy_name: editPhName, pharmacy_area: editPhArea, ...restBody } = req.body;
+      let resolvedPhId = restBody.pharmacy_id;
+      if (editPhName && String(editPhName).trim().length >= 2) {
+        const cleanEditName = String(editPhName).trim();
+        let matched = await PharmacyService.findByName(cleanEditName);
+        if (!matched || matched.name.trim().toLowerCase() !== cleanEditName.toLowerCase()) {
+          try {
+            matched = await PharmacyService.create({
+              name: cleanEditName,
+              city: 'بغداد',
+              address: editPhArea || 'بغداد',
+              assigned_rep_id: userId
+            });
+          } catch { /* ignore */ }
+        }
+        if (matched) resolvedPhId = matched.id;
+      }
+      const updated = await InvoiceService.update(req.params.id, {
+        ...restBody,
+        ...(resolvedPhId ? { pharmacy_id: resolvedPhId } : {}),
+        ...(editPhName ? { pharmacy_name: String(editPhName).trim() } : {}),
+        ...(editPhArea !== undefined ? { pharmacy_area: editPhArea } : {})
+      });
       // مزامنة الفاتورة المعدلة فوراً مع كوكل شيت (استبدال السطور القديمة بالجديدة)
       GoogleSheetsService.replaceInvoice(updated, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
         console.error('[GoogleSheets] Update sync err:', e);

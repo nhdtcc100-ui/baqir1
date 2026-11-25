@@ -769,10 +769,13 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         }
       }
 
-      const payloads = updatedBatch.map(item => ({
-        pharmacy_id: item.pharmacyId || undefined,
-        pharmacy_name: item.pharmacyName.trim() || undefined,
-        pharmacy_area: item.pharmacyArea?.trim() || undefined,
+      const payloads = updatedBatch.map(item => {
+        const cleanPhName = item.pharmacyName.trim();
+        const exactPh = availablePharmacies.find(p => p.name.trim().toLowerCase() === cleanPhName.toLowerCase());
+        return {
+          pharmacy_id: exactPh?.id || undefined,
+          pharmacy_name: cleanPhName || undefined,
+          pharmacy_area: item.pharmacyArea?.trim() || undefined,
         invoice_number: item.invoiceNumber.trim(),
         invoice_date: item.invoiceDate,
         image_url: item.imageUrl || undefined,
@@ -790,7 +793,8 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             ocr_confidence: i.ocr_confidence
           };
         })
-      }));
+        };
+      });
 
       const res = await api.createInvoicesBatch(payloads);
       if (res.invoices && res.invoices.length > 0) {
@@ -833,9 +837,13 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
 
     setSubmitting(true);
     try {
+      const cleanTypedPharmacy = pharmacyName.trim();
+      const exactPh = availablePharmacies.find(
+        p => p.name.trim().toLowerCase() === cleanTypedPharmacy.toLowerCase()
+      );
       const payload = {
-        pharmacy_id: pharmacyId || undefined,
-        pharmacy_name: pharmacyName.trim() || undefined,
+        pharmacy_id: exactPh?.id || undefined,
+        pharmacy_name: cleanTypedPharmacy || undefined,
         pharmacy_area: pharmacyArea.trim() || undefined,
         invoice_number: invoiceNumber.trim(),
         invoice_date: invoiceDate,
@@ -875,24 +883,28 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         existingInvoices={invoices}
         onCancel={() => setShowBatchReview(false)}
         onSaveAll={async (updatedCards) => {
-          const payloads = updatedCards.map(c => ({
-            pharmacy_id: c.pharmacy_id || undefined,
-            pharmacy_name: c.pharmacy_name?.trim() || undefined,
-            pharmacy_area: c.pharmacy_area?.trim() || undefined,
-            invoice_number: c.invoice_number?.trim(),
-            invoice_date: c.invoice_date,
-            image_url: c.image_url || undefined,
-            items: c.items.map(it => ({
-              product_id: it.product_id || products[0]?.id || '',
-              sold_quantity: it.quantity,
-              custom_product_name: it.product_name,
-              dosage_form: it.dosage_form || autoDetectDosageForm(it.product_name || ''),
-              custom_unit_price: it.unit_price,
-              bonus_quantity: it.bonus_quantity,
-              custom_bonus: it.bonus_quantity,
-              ocr_confidence: it.ocr_confidence
-            }))
-          }));
+          const payloads = updatedCards.map(c => {
+            const cleanPh = (c.pharmacy_name || '').trim();
+            const exactPh = availablePharmacies.find(p => p.name.trim().toLowerCase() === cleanPh.toLowerCase());
+            return {
+              pharmacy_id: exactPh?.id || undefined,
+              pharmacy_name: cleanPh || undefined,
+              pharmacy_area: c.pharmacy_area?.trim() || undefined,
+              invoice_number: c.invoice_number?.trim(),
+              invoice_date: c.invoice_date,
+              image_url: c.image_url || undefined,
+              items: c.items.map(it => ({
+                product_id: it.product_id || products[0]?.id || '',
+                sold_quantity: it.quantity,
+                custom_product_name: it.product_name,
+                dosage_form: it.dosage_form || autoDetectDosageForm(it.product_name || ''),
+                custom_unit_price: it.unit_price,
+                bonus_quantity: it.bonus_quantity,
+                custom_bonus: it.bonus_quantity,
+                ocr_confidence: it.ocr_confidence
+              }))
+            };
+          });
           const res = await api.createInvoicesBatch(payloads);
           if (res.invoices && res.invoices.length > 0) {
             onInvoiceCreated(res.invoices[0]);
