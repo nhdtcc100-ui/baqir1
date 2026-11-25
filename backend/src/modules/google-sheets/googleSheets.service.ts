@@ -232,7 +232,32 @@ export class GoogleSheetsService {
   }
 
   /**
-   * 1 ب. تسجيل/ترحيل مستخدم إلى جدول المستخدمون في كوكل شيت
+   * 1 ب. إدارة المستخدمين في الشيت الرئيسي (إضافة، تعديل الاسم/الرمز، حذف) عبر Webhook
+   */
+  static async manageAdminSheetUser(
+    action: 'add_user' | 'register_user' | 'update_user' | 'delete_user' | 'seed_users',
+    payload: Record<string, any>,
+    customWebhook?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const webhook = (customWebhook || '').trim() || ENV.ADMIN_WEBHOOK_URL || this.getWebhookUrl();
+    if (!webhook) {
+      return { success: false, message: 'لا يوجد رابط Apps Script Webhook مفعّل لحفظ تعديلات الشيت الرئيسي.' };
+    }
+    try {
+      await this.postToWebhook({
+        action,
+        adminSpreadsheetId: ENV.ADMIN_SHEET_ID,
+        spreadsheetId: ENV.ADMIN_SHEET_ID,
+        ...payload
+      }, webhook);
+      return { success: true, message: 'تم تنفيذ التعديل على الشيت الرئيسي بنجاح.' };
+    } catch (e: any) {
+      return { success: false, message: e?.message || 'تعذر الاتصال بـ Apps Script للشيت الرئيسي' };
+    }
+  }
+
+  /**
+   * 1 ج. تسجيل/ترحيل مستخدم إلى جدول المستخدمون في كوكل شيت
    */
   static async pushUsersToAdminSheet(
     users: Array<{
@@ -244,29 +269,15 @@ export class GoogleSheetsService {
       is_active?: boolean;
       gemini_api_key?: string;
       sheet_id?: string;
+      sheet_url?: string;
       webhook_url?: string;
       area?: string;
       created_at?: string;
     }>,
-    mode: 'register_user' | 'seed_users' = 'register_user',
+    mode: 'register_user' | 'add_user' | 'seed_users' = 'register_user',
     customWebhook?: string
   ): Promise<{ success: boolean; message: string }> {
-    const webhook = (customWebhook || '').trim() || this.getWebhookUrl();
-    if (!webhook) {
-      return { success: false, message: 'لا يوجد رابط Apps Script Webhook مفعّل لحفظ المستخدم في الشيت.' };
-    }
-    try {
-      await this.postToWebhook({
-        action: mode,
-        adminSpreadsheetId: ENV.ADMIN_SHEET_ID,
-        spreadsheetId: ENV.ADMIN_SHEET_ID,
-        user: users[0],
-        users
-      }, webhook);
-      return { success: true, message: 'تم تسجيل المستخدم في جدول كوكل شيت بنجاح.' };
-    } catch (e: any) {
-      return { success: false, message: e?.message || 'تعذر الاتصال بـ Apps Script لشيت المستخدمين' };
-    }
+    return this.manageAdminSheetUser(mode, { user: users[0], users }, customWebhook);
   }
 
   private static async postToWebhook(payload: Record<string, any>, customWebhook?: string): Promise<void> {
@@ -714,16 +725,16 @@ export class GoogleSheetsService {
   }
 
   /**
-   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 4: قاعدة بيانات المستخدمين على كوكل شيت + تعدد قواعد البيانات + الفصل بين الإضافة والتعديل + تلوين الأحمر والأبيض)
+   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 5: الشيت الرئيسي 4 أعمدة + تعديل الاسم والرمز + تعدد قواعد البيانات + الفصل بين الإضافة والتعديل + تلوين الأحمر والأبيض)
    */
   static getAppsScriptCode(): string {
     return `/**
- * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (الإصدار 4)
+ * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (الإصدار 5)
  */
 
 var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
-var ADMIN_USERS_SHEET_ID = '1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU';
-var SCRIPT_VERSION = 4;
+var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
+var SCRIPT_VERSION = 5;
 
 function getTargetSpreadsheet(customSpreadsheetId) {
   var targetId = String(customSpreadsheetId || '').trim();
@@ -743,11 +754,38 @@ function getTargetSpreadsheet(customSpreadsheetId) {
   return null;
 }
 
+function isUsersSheetObj(sheet) {
+  if (!sheet) return false;
+  try {
+    var parentId = sheet.getParent().getId();
+    if (parentId === ADMIN_USERS_SHEET_ID) return true;
+  } catch (e) {}
+  var name = String(sheet.getName() || '').trim();
+  if (name === 'المستخدمون' || name.toLowerCase() === 'users') return true;
+  try {
+    if (sheet.getLastRow() > 0) {
+      var row1 = sheet.getRange(1, 1, 1, Math.min(4, Math.max(1, sheet.getLastColumn()))).getValues()[0];
+      var a = normAr(row1[0]);
+      var b = normAr(row1[1]);
+      if ((a.indexOf('الاسم') !== -1 && b.indexOf('الرمز') !== -1) || (a === 'id' && b.indexOf('full_name') !== -1)) {
+        return true;
+      }
+    }
+  } catch (e2) {}
+  return false;
+}
+
 function getTargetSheet(customSpreadsheetId, preferredSheetName) {
   var ss = getTargetSpreadsheet(customSpreadsheetId);
   if (!ss) return null;
   var name = preferredSheetName || 'الفواتير';
-  return ss.getSheetByName(name) || (name === 'الفواتير' ? ss.getActiveSheet() : null);
+  var chosen = ss.getSheetByName(name) || (name === 'الفواتير' ? ss.getActiveSheet() : null);
+  if (chosen && isUsersSheetObj(chosen) && name === 'الفواتير') {
+    var invSheet = ss.getSheetByName('الفواتير');
+    if (invSheet && !isUsersSheetObj(invSheet)) return invSheet;
+    return null;
+  }
+  return chosen;
 }
 
 function getOrCreateUsersSheet(adminSpreadsheetId) {
@@ -758,50 +796,93 @@ function getOrCreateUsersSheet(adminSpreadsheetId) {
   }
   if (!ss) ss = getTargetSpreadsheet('');
   if (!ss) return null;
-  var sheet = ss.getSheetByName('المستخدمون');
-  if (!sheet) sheet = ss.insertSheet('المستخدمون');
-  var userHeaders = ['id', 'full_name', 'email', 'password_hash', 'role', 'is_active', 'gemini_api_key', 'sheet_id', 'webhook_url', 'area', 'created_at'];
-  var lastRow = sheet.getLastRow();
-  if (lastRow === 0) {
-    sheet.appendRow(userHeaders);
-    sheet.getRange(1, 1, 1, userHeaders.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
-  } else {
-    var row1 = sheet.getRange(1, 1, 1, Math.max(9, sheet.getLastColumn())).getValues()[0];
-    if (String(row1[0] || '').trim() !== 'A' && String(row1[0] || '').trim().toLowerCase() !== 'id') {
-      sheet.insertRowBefore(1);
-      sheet.getRange(1, 1, 1, userHeaders.length).setValues([userHeaders]).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+  var allSheets = ss.getSheets();
+  for (var s = 0; s < allSheets.length; s++) {
+    var cand = allSheets[s];
+    if (cand.getLastRow() > 0) {
+      var r1 = cand.getRange(1, 1, 1, Math.min(4, Math.max(1, cand.getLastColumn()))).getValues()[0];
+      var c0 = normAr(r1[0]);
+      var c1 = normAr(r1[1]);
+      if (c0.indexOf('الاسم') !== -1 || c1.indexOf('الرمز') !== -1 || c0 === 'id') {
+        return cand;
+      }
     }
+  }
+  var sheet = ss.getSheetByName('المستخدمون') || ss.getSheets()[0];
+  if (!sheet) sheet = ss.insertSheet('المستخدمون');
+  if (sheet.getLastRow() === 0) {
+    var masterHeaders = ['الاسم', 'الرمز السري', 'صفحة كوكل شيت', 'اي بي اي سكربت'];
+    sheet.appendRow(masterHeaders);
+    sheet.getRange(1, 1, 1, masterHeaders.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
   }
   return sheet;
 }
 
-function getUsersHeaderRowIndex(data) {
-  for (var r = 0; r < Math.min(3, data.length); r++) {
-    var c0 = String(data[r][0] || '').trim().toLowerCase();
-    var c2 = String(data[r][2] || '').trim().toLowerCase();
-    if (c0 === 'id' || c2 === 'email') return r;
+function resolveUserColMap(headers) {
+  var norm = [];
+  for (var i = 0; i < headers.length; i++) norm.push(normAr(headers[i]));
+  var findIdx = function(patterns) {
+    for (var c = 0; c < norm.length; c++) {
+      if (!norm[c]) continue;
+      for (var p = 0; p < patterns.length; p++) {
+        if (norm[c].indexOf(patterns[p]) !== -1) return c;
+      }
+    }
+    return -1;
+  };
+  var isLegacy = norm[0] === 'id' || (norm[0] && norm[0].indexOf('معرف') !== -1);
+  if (!isLegacy) {
+    return {
+      isLegacy: false,
+      nameCol: findIdx(['الاسم', 'full_name', 'name']) >= 0 ? findIdx(['الاسم', 'full_name', 'name']) : 0,
+      passCol: findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) >= 0 ? findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) : 1,
+      sheetCol: findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) >= 0 ? findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) : 2,
+      webhookCol: findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) >= 0 ? findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) : 3,
+      emailCol: findIdx(['email', 'بريد', 'username']),
+      idCol: findIdx(['معرف']),
+      roleCol: findIdx(['role', 'دور', 'صلاحيه']),
+      activeCol: findIdx(['is_active', 'الحاله']),
+      geminiCol: findIdx(['gemini', 'مفتاح'])
+    };
   }
-  return 0;
+  return {
+    isLegacy: true, idCol: 0, nameCol: 1, emailCol: 2, passCol: 3,
+    roleCol: 4, activeCol: 5, geminiCol: 6, sheetCol: 7, webhookCol: 8
+  };
+}
+
+function isBaqerName(name, email) {
+  var n = normAr(name).replace(/^(د\\.|دكتور)\\s+/i, '').trim();
+  var e = String(email || '').trim().toLowerCase();
+  return n === 'باقر' || n === 'باقر علي' || n.indexOf('باقر ') === 0 || n === 'baqer' || n === 'baqir' || e === 'baqer@pharma.com' || e === 'admin@pharma.com';
 }
 
 function readAllSheetUsers(sheet) {
-  if (!sheet || sheet.getLastRow() === 0) return [];
+  if (!sheet || sheet.getLastRow() <= 1) return [];
   var data = sheet.getDataRange().getValues();
-  var headerIdx = getUsersHeaderRowIndex(data);
+  var uMap = resolveUserColMap(data[0] || []);
   var users = [];
-  for (var i = headerIdx + 1; i < data.length; i++) {
+  for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    var idVal = String(row[0] || '').trim();
-    var fullName = String(row[1] || '').trim();
-    var email = String(row[2] || '').trim().toLowerCase();
-    if (!email && !idVal) continue;
-    if (idVal.toLowerCase() === 'a' || idVal.toLowerCase() === 'id' || email === 'email') continue;
+    var fullName = String(row[uMap.nameCol] || '').trim();
+    var emailVal = uMap.emailCol >= 0 ? String(row[uMap.emailCol] || '').trim().toLowerCase() : '';
+    var idVal = uMap.idCol >= 0 ? String(row[uMap.idCol] || '').trim() : '';
+    if (!fullName && !emailVal) continue;
+    var nCheck = normAr(fullName);
+    if (nCheck === 'الاسم' || nCheck === 'full_name' || idVal.toLowerCase() === 'id') continue;
+    var activeRaw = uMap.activeCol >= 0 ? String(row[uMap.activeCol] === undefined ? 'TRUE' : row[uMap.activeCol]).trim().toUpperCase() : 'TRUE';
+    if (activeRaw === 'FALSE' || activeRaw === '0' || activeRaw === 'معطل') continue;
     users.push({
-      id: idVal || ('usr-' + i), full_name: fullName || email.split('@')[0], email: email,
-      password_hash: String(row[3] || '').trim(), role: String(row[4] || 'medical_rep').trim().toLowerCase(),
-      is_active: String(row[5] === undefined ? 'TRUE' : row[5]).trim().toUpperCase() !== 'FALSE',
-      gemini_api_key: String(row[6] || '').trim(), sheet_id: String(row[7] || '').trim(),
-      webhook_url: String(row[8] || '').trim(), area: String(row[9] || '').trim(), created_at: String(row[10] || '').trim()
+      rowNumber: i + 1,
+      id: idVal || ('sheet-usr-' + (i + 1)),
+      full_name: fullName || emailVal.split('@')[0],
+      email: emailVal || (fullName.toLowerCase().replace(/\\s+/g, '_') + '@pharma.com'),
+      password_hash: String(row[uMap.passCol] || '').trim(),
+      role: isBaqerName(fullName, emailVal) ? 'admin' : 'medical_rep',
+      is_active: true,
+      gemini_api_key: uMap.geminiCol >= 0 ? String(row[uMap.geminiCol] || '').trim() : '',
+      sheet_id: String(row[uMap.sheetCol] || '').trim(),
+      webhook_url: String(row[uMap.webhookCol] || '').trim()
     });
   }
   return users;
@@ -982,7 +1063,7 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
 
 function setupSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
-  if (!sheet) return;
+  if (!sheet || isUsersSheetObj(sheet)) return;
   var headers = getExpectedCols(sheet);
   var totalCols = headers.length;
   var lastRow = sheet.getLastRow();
@@ -1045,7 +1126,7 @@ function setupSheet(sheet) {
 
 function highlightDuplicatesInSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
-  if (!sheet) return;
+  if (!sheet || isUsersSheetObj(sheet)) return;
   var lastRow = sheet.getLastRow();
   var totalCols = Math.max(16, sheet.getLastColumn());
   if (lastRow <= 1) return;
@@ -1124,49 +1205,118 @@ function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, ta
   return deleted;
 }
 
+function findUserRowIndex(data, uMap, targetRowNum, targetName, targetEmail) {
+  var cleanTargetName = normAr(targetName || '');
+  var cleanTargetEmail = String(targetEmail || '').trim().toLowerCase();
+  var rn = Number(targetRowNum || 0);
+  if (rn >= 2 && rn <= data.length) {
+    var rowAtIdx = data[rn - 1];
+    var rName = normAr(rowAtIdx[uMap.nameCol]);
+    var rEmail = uMap.emailCol >= 0 ? String(rowAtIdx[uMap.emailCol] || '').trim().toLowerCase() : '';
+    if ((!cleanTargetName && !cleanTargetEmail) || (cleanTargetName && rName === cleanTargetName) || (cleanTargetEmail && rEmail === cleanTargetEmail)) {
+      return rn;
+    }
+  }
+  for (var i = 1; i < data.length; i++) {
+    var nm = normAr(data[i][uMap.nameCol]);
+    var em = uMap.emailCol >= 0 ? String(data[i][uMap.emailCol] || '').trim().toLowerCase() : '';
+    if (cleanTargetName && nm === cleanTargetName) return i + 1;
+    if (cleanTargetEmail && em === cleanTargetEmail) return i + 1;
+  }
+  return -1;
+}
+
 function doPost(e) {
   try {
     if (!e || !e.postData || !e.postData.contents) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'لا توجد بيانات مرفقة بالطلب' })).setMimeType(ContentService.MimeType.JSON);
     var payload = JSON.parse(e.postData.contents);
     var actionName = String(payload.action || '').trim();
 
-    if (actionName === 'register_user' || actionName === 'upsert_user' || actionName === 'seed_users') {
+    if (actionName === 'register_user' || actionName === 'add_user' || actionName === 'upsert_user' || actionName === 'seed_users') {
       var usersSheet = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
-      if (!usersSheet) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح ورقة المستخدمون' })).setMimeType(ContentService.MimeType.JSON);
+      if (!usersSheet) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي للمستخدمين' })).setMimeType(ContentService.MimeType.JSON);
+      var headersU = usersSheet.getRange(1, 1, 1, Math.max(4, usersSheet.getLastColumn())).getValues()[0];
+      var uMap = resolveUserColMap(headersU);
       var incomingUsers = payload.users || (payload.user ? [payload.user] : []);
       var currentUsers = readAllSheetUsers(usersSheet);
       var inserted = 0;
       for (var ui = 0; ui < incomingUsers.length; ui++) {
         var u = incomingUsers[ui];
+        var uName = String(u.full_name || u.name || '').trim();
         var uEmail = String(u.email || '').trim().toLowerCase();
-        var uName = String(u.full_name || '').trim();
-        if (!uEmail) continue;
+        var uPass = String(u.password_hash || u.password || '').trim();
+        if (!uName && !uEmail) continue;
         var dupUser = false;
         for (var exi = 0; exi < currentUsers.length; exi++) {
-          if (currentUsers[exi].email === uEmail) { dupUser = true; break; }
+          if ((uName && normAr(currentUsers[exi].full_name) === normAr(uName)) || (uEmail && currentUsers[exi].email === uEmail)) {
+            dupUser = true;
+            break;
+          }
         }
         if (dupUser) {
-          if (actionName === 'register_user') return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'البريد أو اسم المستخدم مسجل بالفعل في جدول المستخدمين' })).setMimeType(ContentService.MimeType.JSON);
+          if (actionName === 'register_user' || actionName === 'add_user') return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'هذا الاسم مسجل مسبقاً في الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
           continue;
         }
-        usersSheet.appendRow([
-          u.id || ('usr-' + new Date().getTime() + '-' + ui),
-          uName || uEmail.split('@')[0],
-          uEmail,
-          String(u.password_hash || '').trim(),
-          u.role || 'medical_rep',
-          u.is_active === false ? 'FALSE' : 'TRUE',
-          String(u.gemini_api_key || '').trim(),
-          String(u.sheet_id || '').trim(),
-          String(u.webhook_url || '').trim(),
-          String(u.area || '').trim(),
-          u.created_at || new Date().toISOString()
-        ]);
-        currentUsers.push({ email: uEmail });
+        var totalUCols = Math.max(4, headersU.length);
+        var uRow = [];
+        for (var k = 0; k < totalUCols; k++) uRow.push('');
+        uRow[uMap.nameCol] = uName || uEmail.split('@')[0];
+        uRow[uMap.passCol] = uPass;
+        uRow[uMap.sheetCol] = String(u.sheet_url || u.sheet_id || '').trim();
+        uRow[uMap.webhookCol] = String(u.webhook_url || '').trim();
+        if (uMap.idCol >= 0) uRow[uMap.idCol] = u.id || ('usr-' + new Date().getTime() + '-' + ui);
+        if (uMap.emailCol >= 0) uRow[uMap.emailCol] = uEmail;
+        if (uMap.roleCol >= 0) uRow[uMap.roleCol] = isBaqerName(uName, uEmail) ? 'admin' : 'medical_rep';
+        if (uMap.activeCol >= 0) uRow[uMap.activeCol] = 'TRUE';
+        if (uMap.geminiCol >= 0) uRow[uMap.geminiCol] = String(u.gemini_api_key || '').trim();
+        var newRowIndex = usersSheet.getLastRow() + 1;
+        usersSheet.getRange(newRowIndex, 1, 1, totalUCols).setValues([uRow]);
+        try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
+        currentUsers.push({ full_name: uName, email: uEmail });
         inserted++;
       }
-      try { usersSheet.autoResizeColumns(1, 11); } catch (ue) {}
-      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, inserted: inserted, message: 'تم حفظ بيانات المستخدم في جدول المستخدمون بنجاح.' })).setMimeType(ContentService.MimeType.JSON);
+      try { usersSheet.autoResizeColumns(1, Math.max(4, headersU.length)); } catch (ue) {}
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, inserted: inserted, message: 'تم حفظ المستخدم بنجاح في الشيت الرئيسي.' })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'update_user') {
+      var usersSheetUpd = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheetUpd) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
+      var dataUpd = usersSheetUpd.getDataRange().getValues();
+      var headersUpd = dataUpd[0] || [];
+      var uMapUpd = resolveUserColMap(headersUpd);
+      var targetRow = findUserRowIndex(dataUpd, uMapUpd, payload.rowNumber, payload.currentName || payload.username, payload.email);
+      if (targetRow === -1) return ContentService.createTextOutput(JSON.stringify({ success: false, script_version: SCRIPT_VERSION, error: 'المستخدم غير موجود في الشيت الرئيسي.' })).setMimeType(ContentService.MimeType.JSON);
+      var newName = String(payload.newName || '').trim();
+      if (newName) {
+        for (var ci = 1; ci < dataUpd.length; ci++) {
+          if (ci + 1 !== targetRow && normAr(dataUpd[ci][uMapUpd.nameCol]) === normAr(newName)) {
+            return ContentService.createTextOutput(JSON.stringify({ success: false, script_version: SCRIPT_VERSION, error: 'الاسم الجديد مسجل مسبقاً لمستخدم آخر.' })).setMimeType(ContentService.MimeType.JSON);
+          }
+        }
+        usersSheetUpd.getRange(targetRow, uMapUpd.nameCol + 1).setValue(newName);
+      }
+      if (payload.newPassword !== undefined && String(payload.newPassword).trim() !== '') {
+        usersSheetUpd.getRange(targetRow, uMapUpd.passCol + 1).setNumberFormat('@').setValue(String(payload.newPassword).trim());
+      }
+      if (payload.newSheetUrl !== undefined) {
+        usersSheetUpd.getRange(targetRow, uMapUpd.sheetCol + 1).setValue(String(payload.newSheetUrl).trim());
+      }
+      if (payload.newWebhookUrl !== undefined) {
+        usersSheetUpd.getRange(targetRow, uMapUpd.webhookCol + 1).setValue(String(payload.newWebhookUrl).trim());
+      }
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, rowNumber: targetRow, message: 'تم تعديل البيانات وحفظها في الشيت الرئيسي بنجاح.' })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'delete_user') {
+      var usersSheetDel = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheetDel) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
+      var dataDel = usersSheetDel.getDataRange().getValues();
+      var uMapDel = resolveUserColMap(dataDel[0] || []);
+      var delRow = findUserRowIndex(dataDel, uMapDel, payload.rowNumber, payload.currentName || payload.username, payload.email);
+      if (delRow === -1) return ContentService.createTextOutput(JSON.stringify({ success: false, script_version: SCRIPT_VERSION, error: 'المستخدم غير موجود.' })).setMimeType(ContentService.MimeType.JSON);
+      usersSheetDel.deleteRow(delRow);
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, message: 'تم حذف المستخدم من الشيت الرئيسي بنجاح.' })).setMimeType(ContentService.MimeType.JSON);
     }
 
     var sheet = getTargetSheet(payload.spreadsheetId, payload.sheetName || 'الفواتير');
@@ -1268,7 +1418,7 @@ function doPost(e) {
 function onEdit(e) {
   try {
     var sheet = getTargetSheet();
-    if (sheet && sheet.getName() !== 'المستخدمون') highlightDuplicatesInSheet(sheet);
+    if (sheet && !isUsersSheetObj(sheet)) highlightDuplicatesInSheet(sheet);
   } catch (err) {}
 }
 
@@ -1278,7 +1428,8 @@ function doGet(e) {
     var customId = e && e.parameter ? (e.parameter.spreadsheetId || '') : '';
     if (action === 'users' || action === 'المستخدمون') {
       var uSheet = getOrCreateUsersSheet(e && e.parameter ? (e.parameter.adminSpreadsheetId || customId) : '');
-      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, users: readAllSheetUsers(uSheet) })).setMimeType(ContentService.MimeType.JSON);
+      var uHeaders = uSheet && uSheet.getLastRow() > 0 ? uSheet.getRange(1, 1, 1, Math.max(4, uSheet.getLastColumn())).getValues()[0] : [];
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, headers: uHeaders, users: readAllSheetUsers(uSheet) })).setMimeType(ContentService.MimeType.JSON);
     }
     var sheet = getTargetSheet(customId, 'الفواتير');
     if (!sheet) return ContentService.createTextOutput(JSON.stringify({ script_version: SCRIPT_VERSION, headers: [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
@@ -1318,9 +1469,12 @@ function doGet(e) {
 }
 
 function testRun() {
+  var uSheet = getOrCreateUsersSheet(ADMIN_USERS_SHEET_ID);
   var sheet = getTargetSheet();
-  setupSheet(sheet);
-  Logger.log('تم ترقية وتنسيق وفحص التكرار للشيت بنجاح (v' + SCRIPT_VERSION + '): ' + (sheet ? sheet.getLastRow() : 0));
+  if (sheet && !isUsersSheetObj(sheet)) {
+    setupSheet(sheet);
+  }
+  Logger.log('تم التحقق من الجداول والترقية بنجاح (v' + SCRIPT_VERSION + ').');
 }`;
   }
 

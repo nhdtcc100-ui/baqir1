@@ -7,13 +7,32 @@ import {
   normalizeDateYmd,
   buildItemsSignature
 } from '../utils/duplicateDetector';
+import {
+  ADMIN_SHEET_ID,
+  ADMIN_SHEET_URL,
+  DEFAULT_INVOICE_SHEET_ID,
+  DEFAULT_APPS_SCRIPT_URL,
+  AdminSheetUser,
+  normalizeDigits,
+  normalizePersonName,
+  isBaqerAdmin,
+  extractGoogleSheetId,
+  parseAdminSheetGvizPayload
+} from '../utils/adminUsersSheet';
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
-const DEFAULT_SHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
+const DEFAULT_SHEET_ID = DEFAULT_INVOICE_SHEET_ID;
 const DEFAULT_SHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_SHEET_ID}/edit?usp=sharing`;
-const DEFAULT_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbzNVERdMAD6DfcaW6oGOSOZeuuNv-0j2qJ1HVndYMILL8eWkcD5PJ1fG3sJkLV80-qs/exec';
-const ADMIN_SHEET_ID = '1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU';
-const ADMIN_SHEET_URL = `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/edit?usp=sharing`;
+const DEFAULT_WEBHOOK_URL = DEFAULT_APPS_SCRIPT_URL;
+
+export const getAdminWebhookUrl = (): string => {
+  return (localStorage.getItem('pharma_admin_webhook_url') || DEFAULT_WEBHOOK_URL).trim();
+};
+
+export const setAdminWebhookUrl = (url: string) => {
+  if (url.trim()) localStorage.setItem('pharma_admin_webhook_url', url.trim());
+  else localStorage.removeItem('pharma_admin_webhook_url');
+};
 
 export const getApiBase = (): string => {
   const custom = localStorage.getItem('pharma_api_base');
@@ -35,19 +54,37 @@ export const setSavedGeminiKey = (key: string) => {
 };
 
 export const getSavedWebhookUrl = (): string => {
-  return (localStorage.getItem('pharma_webhook_url') || getCurrentUser()?.webhook_url || DEFAULT_WEBHOOK_URL).trim();
+  const user = getCurrentUser();
+  if (user) {
+    const perUser = localStorage.getItem(`pharma_webhook_url::${user.id}`) || '';
+    if (perUser.trim()) return perUser.trim();
+    if (user.webhook_url && user.webhook_url.trim()) return user.webhook_url.trim();
+    if (user.role === 'admin') return DEFAULT_WEBHOOK_URL;
+    return '';
+  }
+  return (localStorage.getItem('pharma_webhook_url') || DEFAULT_WEBHOOK_URL).trim();
 };
 
 export const getSavedSheetId = (): string => {
-  const customUrl = localStorage.getItem('pharma_google_sheet_url') || '';
-  const match = customUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  if (match && match[1]) return match[1];
-  return (getCurrentUser()?.sheet_id || DEFAULT_SHEET_ID).trim();
+  const user = getCurrentUser();
+  if (user?.sheet_id && user.sheet_id.trim()) {
+    return extractGoogleSheetId(user.sheet_id) || user.sheet_id.trim();
+  }
+  if (user?.sheet_url && user.sheet_url.trim()) {
+    const m = extractGoogleSheetId(user.sheet_url);
+    if (m) return m;
+  }
+  if (!user) {
+    const customUrl = localStorage.getItem('pharma_google_sheet_url') || '';
+    const extracted = extractGoogleSheetId(customUrl);
+    if (extracted) return extracted;
+  }
+  return DEFAULT_SHEET_ID;
 };
 
 export const getSavedSheetUrl = (): string => {
-  const customUrl = localStorage.getItem('pharma_google_sheet_url');
-  if (customUrl && customUrl.trim()) return customUrl.trim();
+  const user = getCurrentUser();
+  if (user?.sheet_url && user.sheet_url.trim()) return user.sheet_url.trim();
   const id = getSavedSheetId();
   return `https://docs.google.com/spreadsheets/d/${id}/edit?usp=sharing`;
 };
@@ -135,48 +172,55 @@ const SEED_USERS: User[] = [
   { id: 'rep-karkh', email: 'karkh@pharma.com', full_name: 'أحمد خليل (مندوب الكرخ)', role: 'medical_rep', area: 'الكرخ', is_active: true }
 ];
 
-// ── Persistent Local Storage Store (Offline / GitHub Pages Support) ──────────
+// ── Persistent Local Storage Store (Scoped Per User / Personal Google Sheet) ──────────
 const LS_PHARMACIES_KEY = 'pharma_local_pharmacies_v1';
 const LS_INVOICES_KEY = 'pharma_local_invoices_v1';
 
+function getScopedStorageKey(baseKey: string): string {
+  const user = getCurrentUser();
+  const sheetScope = user?.sheet_id || extractGoogleSheetId(user?.sheet_url) || user?.id || DEFAULT_SHEET_ID;
+  return `${baseKey}::${sheetScope}`;
+}
+
 function getStoredPharmacies(): Pharmacy[] {
   try {
-    const raw = localStorage.getItem(LS_PHARMACIES_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch { /* ignore */ }
-  return [...MOCK_PHARMACIES];
-}
-
-function saveStoredPharmacies(list: Pharmacy[]) {
-  try {
-    localStorage.setItem(LS_PHARMACIES_KEY, JSON.stringify(list));
-  } catch { /* ignore */ }
-}
-
-function getStoredInvoices(): Invoice[] {
-  try {
-    const raw = localStorage.getItem(LS_INVOICES_KEY);
+    const raw = localStorage.getItem(getScopedStorageKey(LS_PHARMACIES_KEY));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
     }
   } catch { /* ignore */ }
-  return [...MOCK_INVOICES];
+  return getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_PHARMACIES] : [];
+}
+
+function saveStoredPharmacies(list: Pharmacy[]) {
+  try {
+    localStorage.setItem(getScopedStorageKey(LS_PHARMACIES_KEY), JSON.stringify(list));
+  } catch { /* ignore */ }
+}
+
+function getStoredInvoices(): Invoice[] {
+  try {
+    const raw = localStorage.getItem(getScopedStorageKey(LS_INVOICES_KEY));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch { /* ignore */ }
+  return getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : [];
 }
 
 function saveStoredInvoices(list: Invoice[]) {
+  const key = getScopedStorageKey(LS_INVOICES_KEY);
   try {
-    localStorage.setItem(LS_INVOICES_KEY, JSON.stringify(list));
+    localStorage.setItem(key, JSON.stringify(list));
   } catch {
     // Trim heavy base64 images if localStorage quota is exceeded
     try {
       const stripped = list.map((inv, idx) =>
         idx > 3 && inv.image_url?.startsWith('data:') ? { ...inv, image_url: undefined } : inv
       );
-      localStorage.setItem(LS_INVOICES_KEY, JSON.stringify(stripped));
+      localStorage.setItem(key, JSON.stringify(stripped));
     } catch { /* ignore */ }
   }
 }
@@ -665,51 +709,58 @@ async function runBrowserGeminiOcr(
 }
 
 /**
- * جلب المستخدمين من شيت الإدارة العام مباشرة في المتصفح (لدعم مزامنة مفتاح Gemini والشيت دون خادم)
+ * جلب المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم الأعمدة العربية الأربعة أو النموذج الموسع)
  */
-async function fetchAdminSheetUsersInBrowser(): Promise<Array<User & { password_hash?: string }>> {
+async function fetchAdminSheetUsersInBrowser(): Promise<AdminSheetUser[]> {
   const urls = [
-    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}`,
-    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json`
+    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&_t=${Date.now()}`,
+    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}&_t=${Date.now()}`
   ];
   for (const url of urls) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
+      const timer = setTimeout(() => controller.abort(), 5000);
       const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
       if (!res.ok) continue;
       const text = await res.text();
       const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
       if (!match?.[1]) continue;
       const parsed = JSON.parse(match[1]);
-      const rows: any[] = parsed?.table?.rows || [];
-      const list: Array<User & { password_hash?: string }> = [];
-      for (const r of rows) {
-        const c = r.c || [];
-        const col0 = String(c[0]?.v ?? '').trim();
-        const email = (String(c[2]?.v ?? '') || String(c[1]?.v ?? '')).trim().toLowerCase();
-        if (!email || !email.includes('@')) continue;
-        if (col0.toLowerCase() === 'id' || email === 'email') continue;
-        const roleRaw = String(c[4]?.v ?? 'medical_rep').trim().toLowerCase();
-        const role = (roleRaw === 'admin' || roleRaw === 'supervisor') ? roleRaw : 'medical_rep';
-        const activeStr = String(c[5]?.v ?? 'TRUE').trim().toUpperCase();
-        if (activeStr === 'FALSE' || activeStr === '0' || activeStr === 'معطل') continue;
-        list.push({
-          id: col0 || `usr-${list.length + 1}`,
-          full_name: String(c[1]?.v ?? '').trim() || email.split('@')[0],
-          email,
-          password_hash: String(c[3]?.v ?? '').trim(),
-          role,
-          is_active: true,
-          gemini_api_key: String(c[6]?.v ?? '').trim() || undefined,
-          sheet_id: String(c[7]?.v ?? '').trim() || undefined,
-          webhook_url: String(c[8]?.v ?? '').trim() || undefined
-        });
-      }
-      if (list.length > 0) return list;
+      const users = parseAdminSheetGvizPayload(parsed);
+      if (users.length > 0) return users;
     } catch { /* try next */ }
   }
   return [];
+}
+
+/**
+ * إرسال أمر تعديل / إضافة / حذف إلى Apps Script Webhook بدون CORS preflight
+ */
+async function sendWebhookCommand(webhookUrl: string, bodyObj: Record<string, any>): Promise<{ sent: boolean; parsed?: any; opaque?: boolean }> {
+  const body = JSON.stringify(bodyObj);
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body,
+      signal: controller.signal
+    }).finally(() => clearTimeout(timer));
+    const txt = await res.text().catch(() => '');
+    let parsed: any = null;
+    try { parsed = JSON.parse(txt); } catch { /* ignore non-JSON */ }
+    return { sent: true, parsed };
+  } catch {
+    // في حال حظر CORS قراءة الاستجابة فقط، نرسل بـ no-cors ثم نتحقق لاحقاً عبر GViz
+    await fetch(webhookUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body
+    });
+    return { sent: true, opaque: true };
+  }
 }
 
 export interface SheetRowPayload {
@@ -743,6 +794,8 @@ export interface SkippedSheetDuplicateNotice {
 export interface PendingSheetsSyncJob {
   id: string;
   action: 'add_invoice' | 'edit_invoice' | 'replace_invoice' | 'delete_invoice' | 'batchAppend' | 'repair';
+  targetSheetId?: string;
+  targetWebhookUrl?: string;
   invoice_number?: string;
   previous_invoice_number?: string;
   pharmacy_name?: string;
@@ -837,34 +890,103 @@ export function formatInvoiceToSheetRows(inv: any): SheetRowPayload[] {
   });
 }
 
-async function fetchLiveSheetRowsCompact(): Promise<any[]> {
+async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: any[] }> {
   try {
     const sheetId = getSavedSheetId();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3200);
-    const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`, { signal: controller.signal })
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&_t=${Date.now()}`, { signal: controller.signal })
       .finally(() => clearTimeout(timer));
-    if (!res.ok) return [];
+    if (!res.ok) return { reachable: false, rows: [] };
     const text = await res.text();
     const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
-    if (!m?.[1]) return [];
+    if (!m?.[1]) return { reachable: false, rows: [] };
     const parsed = JSON.parse(m[1]);
-    return (parsed.table?.rows || []).map((r: any) => {
+    const rows = (parsed.table?.rows || []).map((r: any) => {
       const c = r.c || [];
       const val = (i: number) => String(c[i]?.f ?? c[i]?.v ?? '').trim();
       return {
         invoice_number: val(0),
         invoice_date: val(1),
+        warehouse_name: val(2),
         pharmacy_name: val(3),
+        area: val(4),
+        city: val(5),
         product_name: val(6),
+        dosage_form: val(7),
         quantity: Number(c[8]?.v || 0),
         unit_price: Number(c[9]?.v || 0),
-        status: val(14)
+        bonus_quantity: Number(c[10]?.v || 0),
+        line_total: Number(c[11]?.v || 0),
+        total_invoice: Number(c[12]?.v || 0),
+        rep_name: val(13),
+        status: val(14),
+        timestamp: val(15)
       };
     }).filter((r: any) => r.invoice_number !== '123' && (r.invoice_number || r.pharmacy_name || r.product_name));
+    return { reachable: true, rows };
   } catch {
-    return [];
+    return { reachable: false, rows: [] };
   }
+}
+
+async function fetchLiveSheetRowsCompact(): Promise<any[]> {
+  const res = await fetchLiveSheetRowsStatus();
+  return res.rows;
+}
+
+function hydrateLocalInvoicesFromSheetRows(sheetRows: any[]): Invoice[] {
+  const curUser = getCurrentUser();
+  const groups = new Map<string, any[]>();
+  for (const r of sheetRows) {
+    const key = `${String(r.invoice_number || r.pharmacy_name || 'row').trim()}::${normalizeDateYmd(r.invoice_date)}::${String(r.timestamp || '').trim()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  const built: Invoice[] = [];
+  let gIdx = 0;
+  for (const grp of groups.values()) {
+    gIdx++;
+    const first = grp[0];
+    const items = grp.map((r: any, idx: number) => {
+      const qty = Math.max(1, Number(r.quantity) || 1);
+      const price = Number(r.unit_price) || 0;
+      const bonus = Number(r.bonus_quantity) || 0;
+      const lt = Number(r.line_total) || qty * price;
+      return {
+        id: `sh-item-${gIdx}-${idx}`,
+        product_id: 'pr-1',
+        product_name_snapshot: r.product_name || 'مستحضر دوائي',
+        dosage_form: r.dosage_form || detectDosageFormClient(r.product_name || ''),
+        sold_quantity: qty,
+        historical_unit_price: price,
+        bonus_quantity: bonus,
+        total_quantity: qty + bonus,
+        line_total: lt
+      };
+    });
+    const statusRaw = String(first.status || '');
+    const status = statusRaw.includes('معتمدة') ? 'approved' : statusRaw.includes('مرفوضة') ? 'rejected' : 'pending_review';
+    const totalSales = Number(first.total_invoice) || items.reduce((s, it) => s + it.line_total, 0);
+    built.push({
+      id: `sh-inv-${first.invoice_number || gIdx}-${gIdx}`,
+      invoice_number: first.invoice_number || `INV-${gIdx}`,
+      invoice_date: normalizeDateYmd(first.invoice_date) || new Date().toISOString().split('T')[0],
+      pharmacy_id: `ph-${gIdx}`,
+      pharmacy_name: first.pharmacy_name || 'صيدلية',
+      pharmacy_city: first.city || 'بغداد',
+      pharmacy_area: first.area || detectAreaFromText(first.pharmacy_name || '') || '',
+      rep_id: curUser?.id || 'rep-1',
+      rep_name: first.rep_name || curUser?.full_name || 'مندوب علمي',
+      status: status as any,
+      total_sales_amount: totalSales,
+      total_pieces_count: items.reduce((s, it) => s + it.sold_quantity, 0),
+      total_bonus_count: items.reduce((s, it) => s + it.bonus_quantity, 0),
+      created_at: new Date().toISOString(),
+      items
+    });
+  }
+  return built;
 }
 
 function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
@@ -914,20 +1036,22 @@ function enqueueSheetsSyncJob(job: Omit<PendingSheetsSyncJob, 'id' | 'createdAt'
   const existing = getPendingSheetsOutbox();
   const entry: PendingSheetsSyncJob = {
     ...job,
+    targetSheetId: job.targetSheetId || getSavedSheetId(),
+    targetWebhookUrl: job.targetWebhookUrl || getSavedWebhookUrl(),
     id: `sync-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     createdAt: new Date().toISOString()
   };
   const filtered = job.invoice_number
-    ? existing.filter(j => j.invoice_number !== job.invoice_number)
+    ? existing.filter(j => !(j.invoice_number === job.invoice_number && (j.targetSheetId || getSavedSheetId()) === entry.targetSheetId))
     : existing;
   savePendingSheetsOutbox([...filtered, entry]);
 }
 
 async function flushSheetsSyncOutboxInternal(opts?: { keepalive?: boolean; useBeacon?: boolean }): Promise<{ flushed: number; remaining: number }> {
-  const webhookUrl = getSavedWebhookUrl();
+  const defaultWebhook = getSavedWebhookUrl();
   const jobs = getPendingSheetsOutbox();
-  if (!webhookUrl || !webhookUrl.startsWith('http') || jobs.length === 0) {
-    return { flushed: 0, remaining: jobs.length };
+  if (jobs.length === 0) {
+    return { flushed: 0, remaining: 0 };
   }
 
   let flushed = 0;
@@ -935,9 +1059,14 @@ async function flushSheetsSyncOutboxInternal(opts?: { keepalive?: boolean; useBe
 
   for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
+    const webhookUrl = (job.targetWebhookUrl || defaultWebhook || '').trim();
+    if (!webhookUrl || !webhookUrl.startsWith('http')) {
+      remaining.push(job);
+      continue;
+    }
     const body = JSON.stringify({
       action: job.action,
-      spreadsheetId: getSavedSheetId(),
+      spreadsheetId: job.targetSheetId || getSavedSheetId(),
       sheetName: 'الفواتير',
       invoice_number: job.invoice_number,
       previous_invoice_number: job.previous_invoice_number,
@@ -1115,7 +1244,11 @@ export const getCurrentUser = (): User | null => {
   }
 };
 export const setCurrentUser = (u: User) => localStorage.setItem('pharma_user', JSON.stringify(u));
-export const removeCurrentUser = () => localStorage.removeItem('pharma_user');
+export const removeCurrentUser = () => {
+  localStorage.removeItem('pharma_user');
+  localStorage.removeItem('pharma_google_sheet_url');
+  localStorage.removeItem('pharma_webhook_url');
+};
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────
 const authHeaders = (): HeadersInit => {
@@ -1150,82 +1283,100 @@ export const api = {
 
   // ── Auth ──
   async login(email: string, password: string): Promise<{ token: string; user: User }> {
+    const cleanId = email.trim();
+    const cleanPass = normalizeDigits(password.trim());
+
     try {
       const res = await fetchApi('/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password })
+        body: JSON.stringify({ email: cleanId, password: cleanPass })
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(json.error || json.message || 'البريد الإلكتروني أو رمز المرور غير صحيح');
+        throw new Error(json.error || json.message || 'الاسم أو الرمز السري غير متطابق مع قاعدة البيانات');
       }
       const token = json.data?.accessToken || json.data?.token;
       const user: User = json.data?.user;
+      localStorage.removeItem('pharma_google_sheet_url');
+      localStorage.removeItem('pharma_webhook_url');
       setToken(token);
       setCurrentUser(user);
       return { token, user };
     } catch (err: any) {
       if (isNetworkError(err)) {
-        const low = email.toLowerCase().trim();
-        let demoUser: User | null = null;
-
-        // محاولة مزامنة بيانات المستخدم (ومفتاح Gemini الخاص به) من شيت الإدارة
-        try {
-          const sheetUsers = await fetchAdminSheetUsersInBrowser();
-          const matchedSheetUser = sheetUsers.find(u => {
-            const e = (u.email || '').toLowerCase();
-            const n = (u.full_name || '').toLowerCase();
-            if (e === low || e === `${low}@pharma.com` || e.split('@')[0] === low || n === low) return true;
-            if ((low.includes('super') || low.includes('مشرف')) && (e.includes('supervisor') || u.role === 'supervisor')) return true;
-            if ((low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) && (e.includes('karkh') || n.includes('الكرخ'))) return true;
-            if ((low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) && (e.includes('rusafa') || n.includes('الرصافة'))) return true;
-            if ((low.includes('admin') || low.includes('مدير') || low === 'baqer' || low === 'باقر') && (e.includes('admin') || u.role === 'admin')) return true;
-            return false;
-          });
-          if (matchedSheetUser) {
-            const { password_hash: _ph, ...cleanUser } = matchedSheetUser;
-            demoUser = cleanUser;
-          }
-        } catch { /* ignore sheet fallback */ }
-
-        if (!demoUser) {
-          if (low.includes('super') || low.includes('مشرف')) {
-            demoUser = { ...SEED_USERS[1] };
-          } else if (low.includes('karkh') || low.includes('كرخ') || low.includes('احمد') || low.includes('أحمد')) {
-            demoUser = { ...SEED_USERS[3] };
-          } else if (low.includes('rusafa') || low.includes('رصافة') || low.includes('علي') || low.includes('rep')) {
-            demoUser = { ...SEED_USERS[2] };
-          } else {
-            demoUser = { ...SEED_USERS[0] };
-          }
+        // المصادقة المباشرة مع الشيت الرئيسي (قاعدة بيانات Google Sheets)
+        const sheetUsers = await fetchAdminSheetUsersInBrowser();
+        if (sheetUsers.length === 0) {
+          throw new Error('تعذر الاتصال بجدول البيانات الرئيسي (Google Sheet) — يرجى التحقق من اتصال الإنترنت.');
         }
 
-        const token = 'demo-preview-jwt-' + Date.now();
+        const normTarget = normalizePersonName(cleanId);
+        const lowTarget = cleanId.toLowerCase();
+        const matchedUser = sheetUsers.find(u => {
+          const uNormName = normalizePersonName(u.full_name);
+          const uEmail = (u.email || '').toLowerCase();
+          return (
+            u.full_name.trim() === cleanId ||
+            (Boolean(normTarget) && uNormName === normTarget) ||
+            uEmail === lowTarget ||
+            uEmail.split('@')[0] === lowTarget
+          );
+        });
+
+        if (!matchedUser) {
+          throw new Error('الاسم أو الرمز السري غير متطابق مع قاعدة البيانات');
+        }
+
+        const storedPwd = normalizeDigits(String(matchedUser.password_hash || '').trim());
+        let pwdMatch = false;
+        if (storedPwd.startsWith('$2')) {
+          try {
+            const bcrypt = await import('bcryptjs');
+            pwdMatch = await bcrypt.compare(cleanPass, storedPwd);
+          } catch {
+            pwdMatch = false;
+          }
+        } else {
+          pwdMatch = storedPwd !== '' && storedPwd === cleanPass;
+        }
+
+        if (!pwdMatch) {
+          throw new Error('الاسم أو الرمز السري غير متطابق مع قاعدة البيانات');
+        }
+
+        const { password_hash: _ph, username: _un, ...cleanUser } = matchedUser;
+        // مسح أي رابط شيت/ويب هوك قديم لمستخدم آخر حتى يعمل المستخدم بصفحته الخاصة فقط
+        localStorage.removeItem('pharma_google_sheet_url');
+        localStorage.removeItem('pharma_webhook_url');
+
+        const token = 'sheet-jwt-' + Date.now();
         setToken(token);
-        setCurrentUser(demoUser);
-        return { token, user: demoUser };
+        setCurrentUser(cleanUser);
+        return { token, user: cleanUser };
       }
       throw err;
     }
   },
 
-  async register(data: { fullName: string; username: string; pin: string; area?: string; sheetUrl?: string; webhookUrl?: string; geminiApiKey?: string }): Promise<{ token: string; user: User }> {
-    if (data.sheetUrl) {
-      localStorage.setItem('pharma_google_sheet_url', data.sheetUrl.trim());
+  async register(data: { fullName: string; username?: string; pin: string; area?: string; sheetUrl?: string; webhookUrl?: string; geminiApiKey?: string }): Promise<{ token: string; user: User }> {
+    const cleanFullName = data.fullName.trim();
+    const cleanPin = normalizeDigits(data.pin.trim());
+    const rawUser = (data.username || cleanFullName).trim().toLowerCase();
+    const email = rawUser.includes('@') ? rawUser : `${rawUser.replace(/\s+/g, '_')}@pharma.com`;
+
+    if (isBaqerAdmin(cleanFullName, email)) {
+      throw new Error('هذا الاسم محجوز للإدارة الرئيسية ولا يمكن تسجيله كحساب جديد');
     }
-    if (data.webhookUrl) {
-      localStorage.setItem('pharma_webhook_url', data.webhookUrl.trim());
-    }
+
     try {
-      const email = data.username.includes('@') ? data.username.trim().toLowerCase() : `${data.username.trim().toLowerCase()}@pharma.com`;
       const res = await fetchApi('/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fullName: data.fullName.trim(),
+          fullName: cleanFullName,
           email,
-          password: data.pin,
+          password: cleanPin,
           roleName: 'medical_rep',
           sheetUrl: data.sheetUrl?.trim() || undefined,
           webhookUrl: data.webhookUrl?.trim() || undefined,
@@ -1237,25 +1388,157 @@ export const api = {
       if (!res.ok) throw new Error(json.error || json.message || 'فشل تسجيل الحساب');
       const token = json.data?.accessToken || json.data?.token;
       const user: User = json.data?.user;
+      localStorage.removeItem('pharma_google_sheet_url');
+      localStorage.removeItem('pharma_webhook_url');
       setToken(token);
       setCurrentUser(user);
       return { token, user };
     } catch (err: any) {
       if (isNetworkError(err)) {
-        const email = data.username.includes('@') ? data.username.trim().toLowerCase() : `${data.username.trim().toLowerCase()}@pharma.com`;
+        const sheetUsers = await fetchAdminSheetUsersInBrowser();
+        if (sheetUsers.some(u => normalizePersonName(u.full_name) === normalizePersonName(cleanFullName))) {
+          throw new Error('هذا الاسم مسجل مسبقاً في الشيت الرئيسي');
+        }
+        const sheetId = extractGoogleSheetId(data.sheetUrl) || undefined;
+        const webhookUrl = data.webhookUrl?.trim() || undefined;
+        const adminHook = getAdminWebhookUrl();
+        if (adminHook) {
+          await sendWebhookCommand(adminHook, {
+            action: 'add_user',
+            adminSpreadsheetId: ADMIN_SHEET_ID,
+            spreadsheetId: ADMIN_SHEET_ID,
+            user: {
+              full_name: cleanFullName,
+              email,
+              password_hash: cleanPin,
+              role: 'medical_rep',
+              sheet_url: data.sheetUrl?.trim() || '',
+              sheet_id: sheetId || '',
+              webhook_url: webhookUrl || ''
+            }
+          });
+        }
+
         const newUser: User = {
-          id: 'user-' + Date.now(),
-          full_name: data.fullName.trim(),
+          id: 'sheet-usr-' + Date.now(),
+          full_name: cleanFullName,
           email,
           role: 'medical_rep',
-          area: data.area || 'بغداد'
+          area: data.area || 'بغداد',
+          sheet_id: sheetId,
+          sheet_url: data.sheetUrl?.trim() || undefined,
+          webhook_url: webhookUrl
         };
-        const token = 'demo-reg-jwt-' + Date.now();
+        localStorage.removeItem('pharma_google_sheet_url');
+        localStorage.removeItem('pharma_webhook_url');
+        const token = 'sheet-reg-jwt-' + Date.now();
         setToken(token);
         setCurrentUser(newUser);
         return { token, user: newUser };
       }
       throw err;
+    }
+  },
+
+  async updateUserProfile(data: { currentPassword: string; newName?: string; newPassword?: string; confirmPassword?: string }): Promise<{ user: User; verifiedInSheet: boolean }> {
+    const curUser = getCurrentUser();
+    if (!curUser) throw new Error('يرجى تسجيل الدخول أولاً');
+
+    const cleanCurPwd = normalizeDigits(data.currentPassword.trim());
+    const cleanNewName = data.newName?.trim();
+    const cleanNewPwd = data.newPassword ? normalizeDigits(data.newPassword.trim()) : undefined;
+
+    if (cleanNewPwd && data.confirmPassword && cleanNewPwd !== normalizeDigits(data.confirmPassword.trim())) {
+      throw new Error('الرمز السري الجديد وتأكيده غير متطابقين');
+    }
+    if (cleanNewName && isBaqerAdmin(cleanNewName) && curUser.role !== 'admin') {
+      throw new Error('لا يمكن تغيير الاسم إلى اسم الإدارة الرئيسية');
+    }
+
+    try {
+      const res = await fetchApi('/auth/update-profile', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          currentName: curUser.full_name,
+          currentPassword: cleanCurPwd,
+          newName: cleanNewName,
+          newPassword: cleanNewPwd
+        })
+      }, 9000);
+      const dataRes = await handleResponse<{ user: User; accessToken: string }>(res);
+      if (dataRes.accessToken) setToken(dataRes.accessToken);
+      setCurrentUser(dataRes.user);
+      return { user: dataRes.user, verifiedInSheet: true };
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+
+      // وضع المتصفح المباشر: التحقق من الرمز الحالي ثم إرسال تعديل للشيت الرئيسي
+      const sheetUsers = await fetchAdminSheetUsersInBrowser();
+      const matched = sheetUsers.find(
+        u => normalizePersonName(u.full_name) === normalizePersonName(curUser.full_name) || u.email.toLowerCase() === curUser.email.toLowerCase()
+      );
+      if (!matched) {
+        throw new Error('تعذر العثور على سجل حسابك في الشيت الرئيسي');
+      }
+
+      const storedPwd = normalizeDigits(matched.password_hash || '');
+      let curOk = false;
+      if (storedPwd.startsWith('$2')) {
+        try {
+          const bcrypt = await import('bcryptjs');
+          curOk = await bcrypt.compare(cleanCurPwd, storedPwd);
+        } catch { curOk = false; }
+      } else {
+        curOk = storedPwd === cleanCurPwd;
+      }
+      if (!curOk) {
+        throw new Error('الرمز السري الحالي غير صحيح');
+      }
+
+      if (cleanNewName && sheetUsers.some(u => u.id !== matched.id && normalizePersonName(u.full_name) === normalizePersonName(cleanNewName))) {
+        throw new Error('هذا الاسم مستخدم مسبقاً لمندوب آخر في الشيت الرئيسي');
+      }
+
+      const webhookUrl = getAdminWebhookUrl();
+      if (!webhookUrl) {
+        throw new Error('لا يوجد رابط Apps Script للشيت الرئيسي لحفظ التعديلات');
+      }
+
+      const hookRes = await sendWebhookCommand(webhookUrl, {
+        action: 'update_user',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        rowNumber: matched.rowNumber,
+        currentName: matched.full_name,
+        email: matched.email,
+        newName: cleanNewName || undefined,
+        newPassword: cleanNewPwd || undefined
+      });
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || hookRes.parsed.message || 'فشل تعديل البيانات في الشيت الرئيسي');
+      }
+
+      // انتظار قصير ثم التحقق المباشر من قراءة الشيت via GViz
+      await new Promise(r => setTimeout(r, 1200));
+      const refreshedUsers = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+      const verifyRow = refreshedUsers.find(u => u.rowNumber === matched.rowNumber)
+        || refreshedUsers.find(u => cleanNewName && normalizePersonName(u.full_name) === normalizePersonName(cleanNewName));
+
+      const verifiedInSheet = Boolean(
+        verifyRow &&
+        (!cleanNewName || normalizePersonName(verifyRow.full_name) === normalizePersonName(cleanNewName)) &&
+        (!cleanNewPwd || normalizeDigits(verifyRow.password_hash) === cleanNewPwd)
+      );
+
+      const finalName = cleanNewName || curUser.full_name;
+      const updatedUser: User = {
+        ...curUser,
+        full_name: finalName,
+        role: isBaqerAdmin(finalName, curUser.email) ? 'admin' : curUser.role
+      };
+      setCurrentUser(updatedUser);
+      return { user: updatedUser, verifiedInSheet };
     }
   },
 
@@ -1316,23 +1599,46 @@ export const api = {
       const res = await fetchApi('/invoices?sync_sheet=1', { headers: authHeaders() });
       return await handleResponse<Invoice[]>(res);
     } catch (err: any) {
-      if (isNetworkError(err)) return getStoredInvoices();
+      if (isNetworkError(err)) {
+        await api.syncSheetDeletion().catch(() => {});
+        return getStoredInvoices();
+      }
       throw err;
     }
   },
 
-  // حذف فواتير محذوفة من الشيت (مزامنة اتجاهين - offline mode)
+  // حذف فواتير محذوفة من الشيت أو تعبئة الشيت عند الدخول الأول (مزامنة اتجاهين)
   async syncSheetDeletion(): Promise<void> {
     try {
-      // في حالة الاتصال — الـ backend يتعامل مع sync_sheet=1 تلقائياً في getInvoices
-      // في وضع عدم الاتصال: نقرأ الشيت مباشرة ونحذف محلياً
-      const sheetRows = await fetchLiveSheetRowsCompact();
-      if (!sheetRows || sheetRows.length === 0) return;
+      const { reachable, rows: sheetRows } = await fetchLiveSheetRowsStatus();
+      if (!reachable) return;
+
+      const scopedKey = getScopedStorageKey(LS_INVOICES_KEY);
+      const hasInitializedLocal = localStorage.getItem(scopedKey) !== null;
+
+      if (!hasInitializedLocal) {
+        // أول فتح لصفحة هذا المستخدم على هذا المتصفح: استيراد الفواتير الموجودة في شيته الخاص (أو قائمة فارغة إذا شيته فارغ)
+        const hydrated = sheetRows.length > 0
+          ? hydrateLocalInvoicesFromSheetRows(sheetRows)
+          : (getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : []);
+        saveStoredInvoices(hydrated);
+        return;
+      }
+
       const sheetNums = new Set(sheetRows.map((r: any) => String(r.invoice_number || '').trim()).filter(Boolean));
+      const activeSheetId = getSavedSheetId();
+      const pendingUploadNums = new Set(
+        getPendingSheetsOutbox()
+          .filter(j => (j.targetSheetId || activeSheetId) === activeSheetId && j.action !== 'delete_invoice')
+          .map(j => String(j.invoice_number || '').trim())
+          .filter(Boolean)
+      );
+
       const local = getStoredInvoices();
       const filtered = local.filter(inv => {
         const num = String(inv.invoice_number || '').trim();
-        if (!num) return true; // بدون رقم — نحتفظ بها
+        if (!num) return true;
+        if (pendingUploadNums.has(num)) return true; // لا تحذف فاتورة لا تزال بانتظار الرفع
         return sheetNums.has(num);
       });
       if (filtered.length !== local.length) {
@@ -2364,17 +2670,24 @@ export const api = {
     webhook_url: string;
     is_connected: boolean;
   }> {
-    localStorage.setItem('pharma_webhook_url', webhook_url.trim());
+    const cleanUrl = webhook_url.trim();
+    const user = getCurrentUser();
+    if (user) {
+      localStorage.setItem(`pharma_webhook_url::${user.id}`, cleanUrl);
+      setCurrentUser({ ...user, webhook_url: cleanUrl || undefined });
+    } else {
+      localStorage.setItem('pharma_webhook_url', cleanUrl);
+    }
     try {
       const res = await fetchApi('/sheets/config', {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ webhook_url })
+        body: JSON.stringify({ webhook_url: cleanUrl })
       });
       return await handleResponse(res);
     } catch (err: any) {
       if (isNetworkError(err)) {
-        return { webhook_url: webhook_url.trim(), is_connected: Boolean(webhook_url.trim()) };
+        return { webhook_url: cleanUrl, is_connected: Boolean(cleanUrl) };
       }
       throw err;
     }
@@ -2418,13 +2731,173 @@ export const api = {
     }
   },
 
-  // ── Users Management & Admin Google Sheet ──
+  // ── Users Management & Admin Google Sheet (Master DB) ──
+  async getAdminUsersFromSheet(): Promise<AdminSheetUser[]> {
+    return fetchAdminSheetUsersInBrowser();
+  },
+
+  async checkAdminWebhookVersion(): Promise<{ scriptVersion: number; isOutdated: boolean }> {
+    const url = getAdminWebhookUrl();
+    if (!url || !url.startsWith('http')) return { scriptVersion: 0, isOutdated: true };
+    try {
+      const res = await fetch(`${url}?action=users&_t=${Date.now()}`, { method: 'GET' });
+      if (!res.ok) return { scriptVersion: 0, isOutdated: false };
+      const data = await res.json().catch(() => null);
+      if (!data) return { scriptVersion: 0, isOutdated: false };
+      const ver = Number(data.script_version || 1);
+      return { scriptVersion: ver, isOutdated: ver < 5 };
+    } catch {
+      return { scriptVersion: 0, isOutdated: false };
+    }
+  },
+
+  async adminAddSheetUser(data: { full_name: string; password: string; sheet_url?: string; webhook_url?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
+    const cleanName = data.full_name.trim();
+    const cleanPwd = normalizeDigits(data.password.trim());
+    try {
+      const res = await fetchApi('/users/add-to-sheet', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          full_name: cleanName,
+          password: cleanPwd,
+          sheet_url: data.sheet_url?.trim() || '',
+          webhook_url: data.webhook_url?.trim() || '',
+          admin_webhook_url: getAdminWebhookUrl()
+        })
+      }, 10000);
+      await handleResponse(res);
+      return { verifiedInSheet: true, message: 'تمت إضافة المستخدم إلى الشيت الرئيسي بنجاح' };
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('يرجى تحديد رابط Apps Script Webhook للشيت الرئيسي أولاً');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'add_user',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        user: {
+          full_name: cleanName,
+          password_hash: cleanPwd,
+          sheet_url: data.sheet_url?.trim() || '',
+          sheet_id: extractGoogleSheetId(data.sheet_url),
+          webhook_url: data.webhook_url?.trim() || ''
+        }
+      });
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'فشل إضافة المستخدم للشيت الرئيسي');
+      }
+      await new Promise(r => setTimeout(r, 1200));
+      const refreshed = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+      const found = refreshed.some(u => normalizePersonName(u.full_name) === normalizePersonName(cleanName));
+      return {
+        verifiedInSheet: found,
+        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار 5 إذا لم يظهر الصف فوراً).'
+      };
+    }
+  },
+
+  async adminUpdateSheetUser(data: { rowNumber: number; currentName: string; newName?: string; newPassword?: string; newSheetUrl?: string; newWebhookUrl?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
+    const cleanNewName = data.newName?.trim();
+    const cleanNewPwd = data.newPassword !== undefined && data.newPassword.trim() !== '' ? normalizeDigits(data.newPassword.trim()) : undefined;
+    try {
+      const res = await fetchApi('/users/update-in-sheet', {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          rowNumber: data.rowNumber,
+          currentName: data.currentName,
+          newName: cleanNewName,
+          newPassword: cleanNewPwd,
+          newSheetUrl: data.newSheetUrl?.trim(),
+          newWebhookUrl: data.newWebhookUrl?.trim(),
+          admin_webhook_url: getAdminWebhookUrl()
+        })
+      }, 10000);
+      await handleResponse(res);
+      return { verifiedInSheet: true, message: 'تم تعديل المستخدم في الشيت الرئيسي بنجاح' };
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('يرجى تحديد رابط Apps Script Webhook للشيت الرئيسي أولاً');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'update_user',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        rowNumber: data.rowNumber,
+        currentName: data.currentName,
+        newName: cleanNewName,
+        newPassword: cleanNewPwd,
+        newSheetUrl: data.newSheetUrl?.trim(),
+        newWebhookUrl: data.newWebhookUrl?.trim()
+      });
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'فشل تعديل المستخدم في الشيت الرئيسي');
+      }
+      await new Promise(r => setTimeout(r, 1200));
+      const refreshed = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+      const verifyRow = refreshed.find(u => u.rowNumber === data.rowNumber);
+      const verified = Boolean(
+        verifyRow &&
+        (!cleanNewName || normalizePersonName(verifyRow.full_name) === normalizePersonName(cleanNewName)) &&
+        (!cleanNewPwd || normalizeDigits(verifyRow.password_hash) === cleanNewPwd)
+      );
+      return {
+        verifiedInSheet: verified,
+        message: verified ? 'تم تعديل الصف وحفظه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال التعديل للويب هوك (تأكد من نشر Apps Script v5 مع صلاحية الشيت الرئيسي إن لم يتغير الصف).'
+      };
+    }
+  },
+
+  async adminDeleteSheetUser(data: { rowNumber: number; currentName: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
+    try {
+      const res = await fetchApi('/users/delete-from-sheet', {
+        method: 'DELETE',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          rowNumber: data.rowNumber,
+          currentName: data.currentName,
+          admin_webhook_url: getAdminWebhookUrl()
+        })
+      }, 10000);
+      await handleResponse(res);
+      return { verifiedInSheet: true, message: 'تم حذف المستخدم من الشيت الرئيسي بنجاح' };
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('يرجى تحديد رابط Apps Script Webhook للشيت الرئيسي أولاً');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'delete_user',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        rowNumber: data.rowNumber,
+        currentName: data.currentName
+      });
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'فشل حذف المستخدم من الشيت الرئيسي');
+      }
+      await new Promise(r => setTimeout(r, 1200));
+      const refreshed = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+      const stillThere = refreshed.some(u => u.rowNumber === data.rowNumber && normalizePersonName(u.full_name) === normalizePersonName(data.currentName));
+      return {
+        verifiedInSheet: !stillThere,
+        message: !stillThere ? 'تم حذف المستخدم من الشيت الرئيسي بنجاح ✅' : 'تم إرسال أمر الحذف للويب هوك (تحقق من تحديث Apps Script للإصدار 5 على الشيت الرئيسي).'
+      };
+    }
+  },
+
   async getUsers(): Promise<User[]> {
     try {
       const res = await fetchApi('/users', { headers: authHeaders() });
       return await handleResponse<User[]>(res);
     } catch (err: any) {
-      if (isNetworkError(err)) return [...SEED_USERS];
+      if (isNetworkError(err)) {
+        const sheetUsers = await fetchAdminSheetUsersInBrowser();
+        if (sheetUsers.length > 0) {
+          return sheetUsers.map(({ password_hash: _ph, username: _un, ...u }) => u);
+        }
+        return [];
+      }
       throw err;
     }
   },
@@ -2450,10 +2923,15 @@ export const api = {
     } catch (err: any) {
       if (isNetworkError(err)) {
         return {
-          sheet_id: '1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU',
+          sheet_id: ADMIN_SHEET_ID,
           sheet_url: ADMIN_SHEET_URL,
-          sheet_name: 'المستخدمون',
-          columns: []
+          sheet_name: 'الشيت الرئيسي',
+          columns: [
+            { col: 'A', field: 'full_name', title: 'الاسم', example: 'باقر علي' },
+            { col: 'B', field: 'password_hash', title: 'الرمز السري', example: '123456' },
+            { col: 'C', field: 'sheet_url', title: 'صفحة كوكل شيت', example: 'https://docs.google.com/spreadsheets/d/...' },
+            { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' }
+          ]
         };
       }
       throw err;

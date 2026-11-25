@@ -7,11 +7,13 @@ export interface User {
   email: string;
   full_name: string;
   role: UserRole;
+  rowNumber?: number;
   phone?: string;
   area?: string;
   is_active?: boolean;
   gemini_api_key?: string;
   sheet_id?: string;
+  sheet_url?: string;
   webhook_url?: string;
 }
 

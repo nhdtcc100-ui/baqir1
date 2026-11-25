@@ -34,9 +34,13 @@ export const publicRegisterSchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  fullName: z.string().min(3, 'الاسم الكامل يجب أن يحتوي على 3 أحرف على الأقل').optional(),
+  currentName: z.string().optional(),
+  currentPassword: z.string().optional(),
+  newName: z.string().min(2, 'الاسم الجديد يجب أن يحتوي على حرفين على الأقل').optional(),
+  newPassword: z.string().min(4, 'الرمز السري الجديد يجب أن لا يقل عن 4 أحرف أو أرقام').optional(),
+  fullName: z.string().min(2, 'الاسم الكامل يجب أن يحتوي على حرفين على الأقل').optional(),
   phone: z.string().optional(),
-  password: z.string().min(6, 'كلمة المرور الجديدة يجب أن لا تقل عن 6 أحرف').optional()
+  password: z.string().min(4, 'كلمة المرور الجديدة يجب أن لا تقل عن 4 أحرف').optional()
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

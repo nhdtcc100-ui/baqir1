@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { AuthController } from './auth.controller';
 import { validateRequest } from '../../middleware/validate.middleware';
 import { authenticateToken, requireRoles } from '../../middleware/auth.middleware';
-import { loginSchema, registerUserSchema, publicRegisterSchema } from './auth.validation';
+import { loginSchema, registerUserSchema, publicRegisterSchema, updateProfileSchema } from './auth.validation';
 
 const router = Router();
 
@@ -26,6 +26,13 @@ router.post('/register', validateRequest(publicRegisterSchema), AuthController.p
  * @access  Private (Authenticated)
  */
 router.get('/me', authenticateToken, AuthController.getProfile);
+
+/**
+ * @route   POST /api/v1/auth/update-profile
+ * @desc    تعديل الاسم والرمز السري للمستخدم الحالي وتحديث الشيت الرئيسي
+ * @access  Private (Authenticated)
+ */
+router.post('/update-profile', authenticateToken, validateRequest(updateProfileSchema), AuthController.updateProfile);
 
 /**
  * @route   POST /api/v1/auth/users

@@ -53,17 +53,12 @@ router.get('/admin-sheet-config', requireRoles(['admin']), async (req: Request, 
     const config = {
       sheet_id: ENV.ADMIN_SHEET_ID,
       sheet_url: ENV.ADMIN_SHEET_URL,
-      sheet_name: 'المستخدمون',
+      sheet_name: 'الشيت الرئيسي',
       columns: [
-        { col: 'A', field: 'id', title: 'المعرّف', example: 'usr-001' },
-        { col: 'B', field: 'full_name', title: 'الاسم الكامل', example: 'د. باقر (مدير النظام)' },
-        { col: 'C', field: 'email', title: 'البريد الإلكتروني', example: 'admin@pharma.com' },
-        { col: 'D', field: 'password_hash', title: 'تشفير كلمة المرور', example: '$2b$10$yZeibnt29qRbMeYb03IGG.7MOPlyrG9c6A/WmSRPsn/g.5mGaOdXi' },
-        { col: 'E', field: 'role', title: 'الدور (admin / supervisor / medical_rep)', example: 'admin' },
-        { col: 'F', field: 'is_active', title: 'الحالة (TRUE / FALSE)', example: 'TRUE' },
-        { col: 'G', field: 'gemini_api_key', title: 'مفتاح Gemini API الخاص به', example: 'AIzaSy...' },
-        { col: 'H', field: 'sheet_id', title: 'معرف Google Sheet الخاص به', example: '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE' },
-        { col: 'I', field: 'webhook_url', title: 'رابط Webhook الخاص به', example: 'https://script.google.com/macros/s/.../exec' }
+        { col: 'A', field: 'full_name', title: 'الاسم', example: 'باقر علي' },
+        { col: 'B', field: 'password_hash', title: 'الرمز السري', example: '123456' },
+        { col: 'C', field: 'sheet_url', title: 'صفحة كوكل شيت', example: 'https://docs.google.com/spreadsheets/d/.../edit' },
+        { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' }
       ]
     };
     sendSuccess(res, config);
@@ -136,6 +131,87 @@ router.post('/push-to-sheet', requireRoles(['admin']), async (req: Request, res:
       });
     }
     const result = await GoogleSheetsService.pushUsersToAdminSheet(prepared, 'seed_users', admin_webhook_url);
+    sendSuccess(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
+ * @route   POST /api/v1/users/add-to-sheet
+ * @access  admin (باقر فقط)
+ * @desc    إضافة مستخدم جديد مباشرة إلى الشيت الرئيسي
+ */
+router.post('/add-to-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { full_name, password, sheet_url, webhook_url, admin_webhook_url } = req.body;
+    if (!full_name || !password) {
+      sendError(res, 'الاسم والرمز السري مطلوبان', 400);
+      return;
+    }
+    const result = await GoogleSheetsService.manageAdminSheetUser('add_user', {
+      user: {
+        full_name: String(full_name).trim(),
+        password_hash: String(password).trim(),
+        sheet_url: String(sheet_url || '').trim(),
+        sheet_id: extractGoogleSheetId(sheet_url),
+        webhook_url: String(webhook_url || '').trim()
+      }
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
+    sendCreated(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
+ * @route   PUT /api/v1/users/update-in-sheet
+ * @access  admin (باقر فقط)
+ * @desc    تعديل أي صف مستخدم مباشرة في الشيت الرئيسي
+ */
+router.put('/update-in-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rowNumber, currentName, newName, newPassword, newSheetUrl, newWebhookUrl, admin_webhook_url } = req.body;
+    if (!rowNumber && !currentName) {
+      sendError(res, 'معرف الصف أو الاسم الحالي مطلوب للتعديل', 400);
+      return;
+    }
+    const result = await GoogleSheetsService.manageAdminSheetUser('update_user', {
+      rowNumber,
+      currentName,
+      newName,
+      newPassword,
+      newSheetUrl,
+      newWebhookUrl
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
+    sendSuccess(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
+ * @route   DELETE /api/v1/users/delete-from-sheet
+ * @access  admin (باقر فقط)
+ * @desc    حذف مستخدم من الشيت الرئيسي
+ */
+router.delete('/delete-from-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rowNumber, currentName, admin_webhook_url } = req.body;
+    if (!rowNumber && !currentName) {
+      sendError(res, 'معرف الصف أو الاسم مطلوب للحذف', 400);
+      return;
+    }
+    const result = await GoogleSheetsService.manageAdminSheetUser('delete_user', {
+      rowNumber,
+      currentName
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
     sendSuccess(res, result, result.message);
   } catch (e) { next(e); }
 });

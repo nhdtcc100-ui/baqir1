@@ -12,10 +12,52 @@ export function extractGoogleSheetId(raw?: string): string {
   if (!s) return '';
   const m = s.match(/\/d\/([a-zA-Z0-9-_]+)/);
   if (m && m[1]) return m[1];
-  return s;
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(s)) return s;
+  return '';
+}
+
+function normalizeDigitsBackend(str: string): string {
+  const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  const persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  return String(str || '')
+    .replace(/[٠-٩]/g, w => String(arabicDigits.indexOf(w)))
+    .replace(/[۰-۹]/g, w => String(persianDigits.indexOf(w)));
+}
+
+export function normalizePersonNameBackend(raw: string): string {
+  return normalizeDigitsBackend(String(raw || ''))
+    .toLowerCase()
+    .replace(/[\u064B-\u0652\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/^(د\.|دكتور)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isBaqerAdminBackend(name: string, email?: string): boolean {
+  const n = normalizePersonNameBackend(name);
+  const e = String(email || '').trim().toLowerCase();
+  if (n === 'باقر' || n === 'باقر علي' || n.startsWith('باقر ') || n === 'baqer' || n === 'baqir') {
+    return true;
+  }
+  return e === 'baqer@pharma.com' || e === 'admin@pharma.com';
+}
+
+function readGvizCellBackend(cell: any): string {
+  if (!cell) return '';
+  if (cell.f !== undefined && cell.f !== null && String(cell.f).trim() !== '') {
+    return String(cell.f).trim();
+  }
+  if (cell.v !== undefined && cell.v !== null) {
+    return String(cell.v).trim();
+  }
+  return '';
 }
 
 export interface SheetUser {
+  rowNumber?: number;
   id: string;
   full_name: string;
   email: string;
@@ -24,23 +66,22 @@ export interface SheetUser {
   is_active: boolean;
   gemini_api_key?: string;
   sheet_id?: string;
+  sheet_url?: string;
   webhook_url?: string;
 }
 
 /**
- * جلب قائمة المستخدمين من جدول جوجل شيت الإدارة المخصص كقاعدة بيانات
+ * جلب قائمة المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم الأعمدة العربية الأربعة أو النموذج الموسع)
  */
 export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
-  const candidateSheetIds = Array.from(new Set([ENV.ADMIN_SHEET_ID, ENV.GOOGLE_SHEET_ID].filter(Boolean)));
-  const candidateUrls: string[] = [];
-  for (const sid of candidateSheetIds) {
-    candidateUrls.push(`https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}`);
-    if (sid === ENV.ADMIN_SHEET_ID) {
-      candidateUrls.push(`https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json`);
-    }
-  }
+  const sid = ENV.ADMIN_SHEET_ID;
+  if (!sid) return [];
+  const urls = [
+    `https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&_t=${Date.now()}`,
+    `https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}&_t=${Date.now()}`
+  ];
 
-  for (const url of candidateUrls) {
+  for (const url of urls) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
       if (!res.ok) continue;
@@ -50,43 +91,91 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
       if (!jsonMatch || !jsonMatch[1]) continue;
 
       const data = JSON.parse(jsonMatch[1]);
+      const cols: any[] = data.table?.cols || [];
       const rows: any[] = data.table?.rows || [];
       if (!Array.isArray(rows) || rows.length === 0) continue;
 
+      const colLabels = cols.map((col: any) => String(col?.label || '').trim());
+      const parsedNumHeaders = Number(data.table?.parsedNumHeaders || 0);
+      const firstRowCells = (rows[0]?.c || []).map((cell: any) => readGvizCellBackend(cell));
+      const labelsHaveHeader = colLabels.some(l => {
+        const nl = normalizePersonNameBackend(l);
+        return nl.includes('الاسم') || nl.includes('الرمز') || nl === 'id' || nl === 'full_name' || nl === 'email';
+      });
+
+      let headers = colLabels;
+      let startIdx = 0;
+      if (!labelsHaveHeader && firstRowCells.some((cell: string) => {
+        const nl = normalizePersonNameBackend(cell);
+        return nl.includes('الاسم') || nl.includes('الرمز') || nl === 'id' || nl === 'full_name';
+      })) {
+        headers = firstRowCells;
+        startIdx = 1;
+      }
+
+      const normHeaders = headers.map(h => normalizePersonNameBackend(h));
+      const findIdx = (patterns: string[]) => normHeaders.findIndex(h => h && patterns.some(p => h.includes(p)));
+      const isLegacy = normHeaders[0] === 'id' || normHeaders[0]?.includes('معرف');
+
+      const nameCol = isLegacy ? 1 : (findIdx(['الاسم', 'full_name', 'name']) >= 0 ? findIdx(['الاسم', 'full_name', 'name']) : 0);
+      const passCol = isLegacy ? 3 : (findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) >= 0 ? findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) : 1);
+      const sheetCol = isLegacy ? 7 : (findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) >= 0 ? findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) : 2);
+      const webhookCol = isLegacy ? 8 : (findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) >= 0 ? findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) : 3);
+      const emailCol = isLegacy ? 2 : findIdx(['email', 'بريد', 'username']);
+      const idCol = isLegacy ? 0 : findIdx(['معرف']);
+      const activeCol = isLegacy ? 5 : findIdx(['is_active', 'الحاله']);
+      const geminiCol = isLegacy ? 6 : findIdx(['gemini', 'مفتاح']);
+
       const parsedUsers: SheetUser[] = [];
-      for (const r of rows) {
-        const c = r.c || [];
-        const col0 = String(c[0]?.v ?? '').trim();
-        const col2 = String(c[2]?.v ?? '').trim();
-        if (!col0 && !col2) continue;
-        const col0Lower = col0.toLowerCase();
-        const col2Lower = col2.toLowerCase();
-        if (col0Lower === 'id' || col0Lower === 'a' || col2Lower === 'email' || col2Lower === 'c' || col0.includes('معرف')) continue;
+      for (let i = startIdx; i < rows.length; i++) {
+        const c = rows[i]?.c || [];
+        const get = (ci: number) => (ci >= 0 ? readGvizCellBackend(c[ci]) : '');
+        const rawName = get(nameCol);
+        const rawPass = normalizeDigitsBackend(get(passCol));
+        const rawEmailCol = get(emailCol);
+        const rawSheet = get(sheetCol);
+        const rawWebhook = get(webhookCol);
+        const rawId = get(idCol);
+        const rawActive = get(activeCol);
+        const rawGemini = get(geminiCol);
 
-        const email = (String(c[2]?.v ?? '') || String(c[1]?.v ?? '')).trim().toLowerCase();
-        const hash  = String(c[3]?.v ?? '').trim();
-        if (!email || !hash || !email.includes('@')) continue;
+        if (!rawName && !rawEmailCol) continue;
+        const nName = normalizePersonNameBackend(rawName);
+        if (nName === 'الاسم' || nName === 'full_name' || nName === 'a' || rawId.toLowerCase() === 'id') continue;
+        if (rawActive) {
+          const act = rawActive.trim().toUpperCase();
+          if (act === 'FALSE' || act === '0' || act === 'معطل') continue;
+        }
 
-        const roleRaw = String(c[4]?.v ?? 'medical_rep').trim().toLowerCase();
-        const role: UserRole = (roleRaw === 'admin' || roleRaw === 'supervisor') ? roleRaw : 'medical_rep';
-        const activeStr = String(c[5]?.v ?? 'TRUE').trim().toUpperCase();
-        const isActive = activeStr !== 'FALSE' && activeStr !== '0' && activeStr !== 'معطل';
+        const displayName = rawName || rawEmailCol.split('@')[0];
+        const safeSlug = displayName.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_\u0621-\u064a-]/gi, '') || `rep_${i}`;
+        const email = rawEmailCol.includes('@') ? rawEmailCol.toLowerCase() : `${safeSlug}@pharma.com`;
+        const isAdmin = isBaqerAdminBackend(displayName, email);
+        const role: UserRole = isAdmin ? 'admin' : 'medical_rep';
+        const rowNum = parsedNumHeaders > 0 ? i + parsedNumHeaders + 1 : i + 1;
+        const sheetId = extractGoogleSheetId(rawSheet) || undefined;
+        let webhookUrl = rawWebhook && rawWebhook.startsWith('http') ? rawWebhook : undefined;
+        if (!webhookUrl && isAdmin) {
+          webhookUrl = ENV.GOOGLE_SHEETS_WEBHOOK_URL;
+        }
 
         parsedUsers.push({
-          id: col0 || `usr-${crypto.randomUUID().slice(0, 8)}`,
-          full_name: String(c[1]?.v ?? '').trim() || email.split('@')[0],
+          rowNumber: rowNum,
+          id: rawId || `sheet-usr-${rowNum}`,
+          full_name: displayName,
           email,
-          password_hash: hash,
+          password_hash: rawPass,
           role,
-          is_active: isActive,
-          gemini_api_key: String(c[6]?.v ?? '').trim() || undefined,
-          sheet_id: extractGoogleSheetId(String(c[7]?.v ?? '')) || undefined,
-          webhook_url: String(c[8]?.v ?? '').trim() || undefined,
+          is_active: true,
+          gemini_api_key: rawGemini || undefined,
+          sheet_id: sheetId,
+          sheet_url: sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing` : (rawSheet.startsWith('http') ? rawSheet : undefined),
+          webhook_url: webhookUrl
         });
       }
 
       if (parsedUsers.length > 0) {
-        console.log(`✅ Loaded ${parsedUsers.length} users successfully from Admin Google Sheet (${url})`);
+        console.log(`✅ Loaded ${parsedUsers.length} users successfully from Admin Google Sheet (${sid})`);
         return parsedUsers;
       }
     } catch {
@@ -98,70 +187,42 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
 }
 
 export class AuthService {
-  // 1. تسجيل الدخول والتحقق من كلمة المرور مع ربط قاعدة بيانات كوكل شيت
+  // 1. تسجيل الدخول والتحقق التام (Database-Exact) من الشيت الرئيسي
   static async login(input: LoginInput): Promise<AuthTokens> {
     const rawTarget = input.email.trim();
     const emailLower = rawTarget.toLowerCase();
+    const cleanPass = normalizeDigitsBackend(input.password.trim());
 
-    // دالة مساعدة للمطابقة المرنة والدقيقة للحسابات الأربعة
-    const matchesUser = (uEmail: string, uName?: string, uRole?: string) => {
-      const e = (uEmail || '').toLowerCase().trim();
-      const n = (uName || '').toLowerCase().trim();
-      const target = rawTarget.toLowerCase();
-
-      // 1. التطابق التام بالبريد أو اسم المستخدم
-      if (e === target || e === `${target}@pharma.com` || e.split('@')[0] === target) return true;
-
-      // 2. التطابق التام بالاسم الكامل
-      if (n === target) return true;
-
-      // 3. مطابقة حساب المشرف (supervisor)
-      if (target.includes('super') || target.includes('مشرف')) {
-        return e.includes('supervisor') || n.includes('مشرف') || uRole === 'supervisor';
-      }
-
-      // 4. مطابقة مندوب الكرخ (karkh)
-      if (target.includes('karkh') || target.includes('كرخ') || target.includes('احمد') || target.includes('أحمد')) {
-        return e.includes('karkh') || n.includes('الكرخ') || n.includes('أحمد');
-      }
-
-      // 5. مطابقة مندوب الرصافة (rusafa)
-      if (target.includes('rusafa') || target.includes('رصافة') || target.includes('علي')) {
-        return e.includes('rusafa') || e.includes('rep') || n.includes('الرصافة') || n.includes('علي حسن');
-      }
-
-      // 6. إذا كان الإدخال موجهاً للإدارة (admin / مدير / baqer)
-      const isAdminInput = target.includes('admin') || target.includes('مدير') || target === 'baqer' || target === 'باقر';
-      if (isAdminInput) {
-        return e.includes('admin') || n.includes('مدير') || uRole === 'admin';
-      }
-
-      // 7. مطابقة جزئية في الاسم (دون الخلط مع الأدمن)
-      if (n.includes(target) && !n.includes('مدير')) return true;
-
-      return false;
+    const matchesSheetAccount = (u: SheetUser): boolean => {
+      const targetNorm = normalizePersonNameBackend(rawTarget);
+      const uNorm = normalizePersonNameBackend(u.full_name);
+      const uEmail = u.email.toLowerCase();
+      return (
+        u.full_name.trim() === rawTarget ||
+        (Boolean(targetNorm) && uNorm === targetNorm) ||
+        uEmail === emailLower ||
+        uEmail.split('@')[0] === emailLower
+      );
     };
 
-    // ── المحاولة الأولى: التحقق من وجود المستخدم في شيت الإدارة ──
-    try {
-      const sheetUsers = await fetchUsersFromAdminSheet();
-      const sheetUser = sheetUsers.find(u => matchesUser(u.email, u.full_name, u.role));
-
+    // ── المحاولة الأولى: قاعدة بيانات Google Sheet الرئيسية ──
+    const sheetUsers = await fetchUsersFromAdminSheet().catch(() => [] as SheetUser[]);
+    if (sheetUsers.length > 0) {
+      const sheetUser = sheetUsers.find(matchesSheetAccount);
       if (sheetUser) {
         if (!sheetUser.is_active) {
-          throw { statusCode: 403, message: 'هذا الحساب معطل حالياً في شيت الإدارة، يرجى مراجعة إدارة النظام' };
+          throw { statusCode: 403, message: 'هذا الحساب معطل حالياً في الشيت الرئيسي، يرجى مراجعة إدارة النظام' };
         }
 
-        // مقارنة كلمة المرور المشفرة بـ bcrypt (أو مطابقة نصية فقط إذا وضع الأدمن نصاً مباشراً في الخلية)
         let isMatch = false;
         if (sheetUser.password_hash.startsWith('$2')) {
-          isMatch = await bcrypt.compare(input.password, sheetUser.password_hash).catch(() => false);
+          isMatch = await bcrypt.compare(cleanPass, sheetUser.password_hash).catch(() => false);
         } else {
-          isMatch = input.password === sheetUser.password_hash;
+          isMatch = cleanPass === normalizeDigitsBackend(sheetUser.password_hash.trim());
         }
 
         if (!isMatch) {
-          throw { statusCode: 401, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' };
+          throw { statusCode: 401, message: 'الاسم أو الرمز السري غير متطابق مع قاعدة البيانات' };
         }
 
         const payload = {
@@ -197,12 +258,9 @@ export class AuthService {
           user: userResponse
         };
       }
-    } catch (sheetErr: any) {
-      if (sheetErr.statusCode) throw sheetErr;
-      console.warn('Admin Google Sheet user check fallback:', sheetErr.message);
     }
 
-    // ── المحاولة الثانية: الاحتياطي (قاعدة البيانات المحلية / In-Memory) ──
+    // ── المحاولة الثانية: قاعدة البيانات المحلية (لحسابات النظام والاختبارات التكاملية) ──
     let user: UserEntity | null = null;
 
     if (isUsingPostgres()) {
@@ -210,16 +268,19 @@ export class AuthService {
         `SELECT u.*, r.name as role_name 
          FROM users u 
          JOIN roles r ON u.role_id = r.id 
-         WHERE u.email = $1`,
+         WHERE LOWER(u.email) = $1 OR LOWER(u.full_name) = $1`,
         [emailLower]
       );
       if (res.rows.length > 0) user = res.rows[0];
     } else {
-      user = inMemoryStore.users.find(u => matchesUser(u.email, u.full_name, u.role_name)) || null;
+      user = inMemoryStore.users.find(u =>
+        u.email.toLowerCase() === emailLower ||
+        normalizePersonNameBackend(u.full_name) === normalizePersonNameBackend(rawTarget)
+      ) || null;
     }
 
     if (!user) {
-      throw { statusCode: 401, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' };
+      throw { statusCode: 401, message: 'الاسم أو الرمز السري غير متطابق مع قاعدة البيانات' };
     }
 
     if (!user.is_active) {
@@ -228,20 +289,13 @@ export class AuthService {
 
     let isMatch = false;
     try {
-      isMatch = await bcrypt.compare(input.password, user.password_hash);
+      isMatch = await bcrypt.compare(cleanPass, user.password_hash);
     } catch {
-      isMatch = input.password === user.password_hash;
-    }
-    if (!isMatch) {
-      if (user.role_name === 'admin' && input.password === 'admin123456') {
-        isMatch = true;
-      } else if (user.role_name !== 'admin' && input.password === '123456') {
-        isMatch = true;
-      }
+      isMatch = cleanPass === user.password_hash;
     }
 
     if (!isMatch) {
-      throw { statusCode: 401, message: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' };
+      throw { statusCode: 401, message: 'الاسم أو الرمز السري غير متطابق مع قاعدة البيانات' };
     }
 
     const roleName = (user.role_name || 'medical_rep') as UserRole;
@@ -278,34 +332,125 @@ export class AuthService {
     };
   }
 
-    // 2 ب. تسجيل حساب عام مع حفظه في جدول المستخدمين على كوكل شيت وقاعدة بياناته الخاصة
+  // 1 ب. تعديل الاسم والرمز السري للمستخدم الحالي وتحديث الشيت الرئيسي
+  static async updateOwnProfile(
+    authUser: { userId: string; email: string; fullName: string; role: UserRole; sheetId?: string; webhookUrl?: string },
+    input: UpdateProfileInput
+  ): Promise<{ user: UserResponse; accessToken: string }> {
+    const newName = String(input.newName || input.fullName || '').trim();
+    const newPassword = String(input.newPassword || input.password || '').trim();
+    const currentPassword = String(input.currentPassword || '').trim();
+    const currentName = String(input.currentName || authUser.fullName || '').trim();
+
+    if (!newName && !newPassword) {
+      throw { statusCode: 400, message: 'يرجى إدخال الاسم الجديد أو الرمز السري الجديد' };
+    }
+
+    if (newName && isBaqerAdminBackend(newName) && authUser.role !== 'admin') {
+      throw { statusCode: 403, message: 'لا يمكن تغيير الاسم إلى اسم المدير الرئيسي' };
+    }
+
+    const sheetUsers = await fetchUsersFromAdminSheet().catch(() => [] as SheetUser[]);
+    const matched = sheetUsers.find(
+      u => normalizePersonNameBackend(u.full_name) === normalizePersonNameBackend(currentName) || u.email.toLowerCase() === authUser.email.toLowerCase()
+    );
+
+    if (matched) {
+      if (currentPassword) {
+        const cleanCur = normalizeDigitsBackend(currentPassword);
+        const curOk = matched.password_hash.startsWith('$2')
+          ? await bcrypt.compare(cleanCur, matched.password_hash).catch(() => false)
+          : cleanCur === normalizeDigitsBackend(matched.password_hash);
+        if (!curOk) {
+          throw { statusCode: 401, message: 'الرمز السري الحالي غير صحيح' };
+        }
+      }
+
+      if (newName) {
+        const nameTaken = sheetUsers.some(
+          u => u.id !== matched.id && normalizePersonNameBackend(u.full_name) === normalizePersonNameBackend(newName)
+        );
+        if (nameTaken) {
+          throw { statusCode: 409, message: 'هذا الاسم مستخدم بالفعل في الشيت الرئيسي' };
+        }
+      }
+
+      const hookRes = await GoogleSheetsService.manageAdminSheetUser('update_user', {
+        rowNumber: matched.rowNumber,
+        currentName: matched.full_name,
+        email: matched.email,
+        newName: newName || undefined,
+        newPassword: newPassword ? normalizeDigitsBackend(newPassword) : undefined
+      });
+      if (!hookRes.success) {
+        throw { statusCode: 502, message: hookRes.message };
+      }
+    }
+
+    const updatedFullName = newName || authUser.fullName;
+    const role: UserRole = isBaqerAdminBackend(updatedFullName, authUser.email) ? 'admin' : authUser.role;
+    const payload = {
+      userId: authUser.userId,
+      email: authUser.email,
+      role,
+      fullName: updatedFullName,
+      sheetId: matched?.sheet_id || authUser.sheetId || '',
+      webhookUrl: matched?.webhook_url || authUser.webhookUrl || ''
+    };
+    const accessToken = jwt.sign(payload, ENV.JWT_SECRET, { expiresIn: ENV.JWT_EXPIRES_IN as any });
+
+    return {
+      accessToken,
+      user: {
+        id: authUser.userId,
+        email: authUser.email,
+        full_name: updatedFullName,
+        role,
+        is_active: true,
+        created_at: new Date(),
+        sheet_id: matched?.sheet_id || authUser.sheetId,
+        webhook_url: matched?.webhook_url || authUser.webhookUrl
+      }
+    };
+  }
+
+    // 2 ب. تسجيل حساب عام مع حفظه في الشيت الرئيسي (كمندوب فقط، ويُمنع حجز اسم المدير)
   static async publicRegister(input: PublicRegisterInput): Promise<AuthTokens> {
+    const cleanFullName = input.fullName.trim();
     const rawUser = input.email.trim().toLowerCase();
     const emailLower = rawUser.includes('@') ? rawUser : `${rawUser}@pharma.com`;
+    if (isBaqerAdminBackend(cleanFullName, emailLower)) {
+      throw { statusCode: 403, message: 'هذا الاسم محجوز للإدارة الرئيسية ولا يمكن تسجيله كحساب جديد' };
+    }
+
     const sheetId = extractGoogleSheetId(input.sheetUrl || input.sheetId) || undefined;
     const webhookUrl = (input.webhookUrl || '').trim() || undefined;
     const geminiApiKey = (input.geminiApiKey || '').trim() || undefined;
-    const roleName: UserRole = (input.roleName === 'admin' || input.roleName === 'supervisor') ? input.roleName : 'medical_rep';
+    const roleName: UserRole = 'medical_rep';
 
-    // تحقق من عدم تكرار المستخدم في شيت المستخدمين
+    // تحقق من عدم تكرار المستخدم في الشيت الرئيسي
     const existingSheetUsers = await fetchUsersFromAdminSheet().catch(() => []);
-    if (existingSheetUsers.some(u => u.email.toLowerCase() === emailLower)) {
-      throw { statusCode: 409, message: 'اسم المستخدم أو البريد الإلكتروني مسجل مسبقاً في جدول المستخدمين' };
+    if (existingSheetUsers.some(u =>
+      normalizePersonNameBackend(u.full_name) === normalizePersonNameBackend(cleanFullName) ||
+      u.email.toLowerCase() === emailLower
+    )) {
+      throw { statusCode: 409, message: 'الاسم أو المعرف مسجل مسبقاً في الشيت الرئيسي' };
     }
 
-    const passwordHash = await bcrypt.hash(input.password, 10);
+    const cleanPin = normalizeDigitsBackend(input.password.trim());
     const userId = `usr-${crypto.randomUUID().slice(0, 8)}`;
     const createdUser = await this.registerUser({
-      fullName: input.fullName.trim(),
+      fullName: cleanFullName,
       email: emailLower,
-      password: input.password,
+      password: cleanPin,
       phone: input.phone,
       roleName,
       sheetId,
+      sheetUrl: input.sheetUrl,
       webhookUrl,
       geminiApiKey,
       area: input.area
-    }, { precomputedHash: passwordHash, customId: userId });
+    }, { precomputedHash: cleanPin, customId: userId });
 
     const payload = {
       userId: createdUser.id,
@@ -417,6 +562,7 @@ export class AuthService {
         is_active: true,
         gemini_api_key: geminiApiKey || '',
         sheet_id: sheetId || '',
+        sheet_url: input.sheetUrl || (sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing` : ''),
         webhook_url: webhookUrl || '',
         area: input.area || '',
         created_at: now.toISOString()

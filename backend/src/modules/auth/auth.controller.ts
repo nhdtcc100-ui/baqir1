@@ -41,6 +41,15 @@ export class AuthController {
     }
   }
 
+  static async updateProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await AuthService.updateOwnProfile(req.user!, req.body);
+      sendSuccess(res, result, 'تم تحديث الاسم والرمز السري وحفظهما في الشيت الرئيسي بنجاح');
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async listUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const role = req.query.role as UserRole | undefined;

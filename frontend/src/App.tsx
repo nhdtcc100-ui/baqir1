@@ -9,12 +9,13 @@ import { PharmacyProfile } from './pages/PharmacyProfile';
 import { BillingLedger } from './pages/BillingLedger';
 import { GoogleSheetsSync } from './pages/GoogleSheetsSync';
 import { UsersManagement } from './pages/UsersManagement';
+import { ProfileSettings } from './pages/ProfileSettings';
 import {
   LayoutDashboard, Calendar, FilePlus, Building2,
-  FileText, LogOut, Pill, Menu, X, CheckCircle, AlertCircle, FileSpreadsheet, Users
+  FileText, LogOut, Pill, Menu, X, CheckCircle, AlertCircle, FileSpreadsheet, Users, KeyRound
 } from 'lucide-react';
 
-type Tab = 'dashboard' | 'visits' | 'add-invoice' | 'pharmacies' | 'billing' | 'sheets' | 'users';
+type Tab = 'dashboard' | 'visits' | 'add-invoice' | 'pharmacies' | 'billing' | 'sheets' | 'users' | 'profile';
 
 interface Toast {
   id: string;
@@ -94,6 +95,20 @@ export function App() {
       api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
       loadData();
     }
+  }, [currentUser]);
+
+  // مزامنة تلقائية عند العودة للتطبيق حتى يُحذف من التطبيق أي صف حُذف من كوكل شيت
+  useEffect(() => {
+    if (!currentUser) return;
+    let lastSyncAt = 0;
+    const syncOnFocus = () => {
+      const now = Date.now();
+      if (now - lastSyncAt < 15000) return;
+      lastSyncAt = now;
+      loadData();
+    };
+    window.addEventListener('focus', syncOnFocus);
+    return () => window.removeEventListener('focus', syncOnFocus);
   }, [currentUser]);
 
   // Ensure pending Google Sheets syncs flush on reconnect, page return, or exit
@@ -200,8 +215,9 @@ export function App() {
     { id: 'pharmacies', label: 'الصيدليات', icon: <Building2 size={19} /> },
     { id: 'billing', label: 'الفواتير', icon: <FileText size={19} /> },
     { id: 'sheets', label: 'كوكل شيت', icon: <FileSpreadsheet size={19} /> },
-    ...(currentUser?.role === 'admin' || currentUser?.role === 'supervisor' ? [
-      { id: 'users' as Tab, label: 'المستخدمون', icon: <Users size={19} /> }
+    { id: 'profile', label: 'حسابي', icon: <KeyRound size={19} /> },
+    ...(currentUser?.role === 'admin' ? [
+      { id: 'users' as Tab, label: 'الشيت الرئيسي', icon: <Users size={19} /> }
     ] : [])
   ] as { id: Tab; label: string; icon: React.ReactNode }[];
 
@@ -282,7 +298,7 @@ export function App() {
             </button>
           )}
 
-          <button className="topbar-user-pill" title={currentUser.email}>
+          <button className="topbar-user-pill" onClick={() => navigate('profile')} title="إعدادات الحساب وتغيير الاسم أو الرمز">
             <div className="topbar-user-avatar" style={{ background: avatarColor }}>
               {currentUser.full_name.charAt(0)}
             </div>
@@ -495,8 +511,15 @@ export function App() {
             <GoogleSheetsSync />
           )}
 
-          {activeTab === 'users' && (
+          {activeTab === 'users' && currentUser?.role === 'admin' && (
             <UsersManagement />
+          )}
+
+          {activeTab === 'profile' && (
+            <ProfileSettings
+              user={currentUser}
+              onUserUpdated={updated => setCurrentUser(updated)}
+            />
           )}
 
         </div>

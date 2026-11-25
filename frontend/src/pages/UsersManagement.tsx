@@ -1,47 +1,54 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../services/api';
+import { api, getAdminWebhookUrl, setAdminWebhookUrl } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
-import { User } from '../types';
+import { AdminSheetUser, ADMIN_SHEET_URL, isBaqerAdmin } from '../utils/adminUsersSheet';
+import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
 import {
-  Users, Plus, RefreshCw, Key, ExternalLink, ShieldCheck,
-  AlertCircle, CheckCircle2, Copy, Check, Lock, Sparkles, FileSpreadsheet
+  Users, Plus, RefreshCw, ExternalLink, ShieldCheck,
+  AlertCircle, CheckCircle2, Copy, Check, FileSpreadsheet,
+  Edit3, Trash2, Eye, EyeOff, Settings, Sparkles, AlertTriangle
 } from 'lucide-react';
 
-const ADMIN_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU/edit?usp=sharing';
-
 export const UsersManagement: React.FC = () => {
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<AdminSheetUser[]>([]);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // أدوات التشفير والإضافة
-  const [pwdInput, setPwdInput] = useState('');
-  const [generatedHash, setGeneratedHash] = useState('');
-  const [hashCopied, setHashCopied] = useState(false);
-  const [generatingHash, setGeneratingHash] = useState(false);
+  const [revealedRows, setRevealedRows] = useState<Record<number, boolean>>({});
+  const [adminWebhookInput, setAdminWebhookInput] = useState(() => getAdminWebhookUrl());
+  const [webhookSavedMsg, setWebhookSavedMsg] = useState(false);
+  const [showScriptCode, setShowScriptCode] = useState(false);
+  const [copiedScript, setCopiedScript] = useState(false);
+  const [adminScriptOutdated, setAdminScriptOutdated] = useState(false);
 
-  // نموذج إضافة مستخدم جديد
+  // Add Modal
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newFullName, setNewFullName] = useState('');
-  const [newEmail, setNewEmail] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newRole, setNewRole] = useState<'medical_rep' | 'supervisor' | 'admin'>('medical_rep');
-  const [newGeminiKey, setNewGeminiKey] = useState('');
-  const [newSheetId, setNewSheetId] = useState('');
-  const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  const [addName, setAddName] = useState('');
+  const [addPassword, setAddPassword] = useState('');
+  const [addSheetUrl, setAddSheetUrl] = useState('');
+  const [addWebhookUrl, setAddWebhookUrl] = useState('');
 
-  const [formattedRow, setFormattedRow] = useState<string[] | null>(null);
-  const [rowCopied, setRowCopied] = useState(false);
+  // Edit Modal
+  const [editingUser, setEditingUser] = useState<AdminSheetUser | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editSheetUrl, setEditSheetUrl] = useState('');
+  const [editWebhookUrl, setEditWebhookUrl] = useState('');
 
   const loadUsers = async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getUsers();
-      setUsers(data);
+      const [list, verStatus] = await Promise.all([
+        api.getAdminUsersFromSheet(),
+        api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }))
+      ]);
+      setUsers(list);
+      setAdminScriptOutdated(Boolean(verStatus?.isOutdated));
     } catch (e: any) {
-      setError(e.message || 'تعذر جلب قائمة المستخدمين');
+      setError(e?.message || 'تعذر قراءة الشيت الرئيسي للمستخدمين');
     } finally {
       setLoading(false);
     }
@@ -51,72 +58,137 @@ export const UsersManagement: React.FC = () => {
     loadUsers();
   }, []);
 
-  const handleGenerateHash = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pwdInput.trim()) return;
-    setGeneratingHash(true);
-    setError(null);
-    try {
-      const res = await api.generatePasswordHash(pwdInput.trim());
-      setGeneratedHash(res.hash);
-      setSuccessMsg(`تم توليد الـ Hash بنجاح! انسخه وضعه في عمود password_hash (العمود D) في شيت الإدارة.`);
-    } catch (e: any) {
-      setError(e.message || 'فشل توليد التشفير');
-    } finally {
-      setGeneratingHash(false);
-    }
+  const toggleRevealPwd = (rowNum: number) => {
+    setRevealedRows(prev => ({ ...prev, [rowNum]: !prev[rowNum] }));
   };
 
-  const copyToClipboard = (text: string, setCopied: (v: boolean) => void) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+  const handleSaveAdminWebhook = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminWebhookUrl(adminWebhookInput);
+    setWebhookSavedMsg(true);
+    setTimeout(() => setWebhookSavedMsg(false), 2500);
+    loadUsers();
   };
 
-  const handleFormatRow = async (e: React.FormEvent) => {
+  const handleCopyScript = () => {
+    navigator.clipboard.writeText(APPS_SCRIPT_V2_CODE);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2500);
+  };
+
+  const handleAddUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFullName || !newEmail || !newPassword) {
-      setError('يرجى ملء الاسم والبريد وكلمة المرور');
+    if (!addName.trim() || !addPassword.trim()) {
+      setError('الاسم والرمز السري مطلوبان');
       return;
     }
+    setSaving(true);
     setError(null);
+    setSuccessMsg(null);
     try {
-      const res = await api.formatUserRow({
-        full_name: newFullName,
-        email: newEmail,
-        password: newPassword,
-        role: newRole,
-        gemini_api_key: newGeminiKey,
-        sheet_id: newSheetId,
-        webhook_url: newWebhookUrl
+      const res = await api.adminAddSheetUser({
+        full_name: addName.trim(),
+        password: addPassword.trim(),
+        sheet_url: addSheetUrl.trim(),
+        webhook_url: addWebhookUrl.trim()
       });
-      setFormattedRow(res.rowValues);
-      setSuccessMsg('تم تجهيز سطر المستخدم بنجاح! يمكنك نسخه ولصقه مباشرة في شيت الإدارة.');
+      setSuccessMsg(res.message);
+      setShowAddModal(false);
+      setAddName('');
+      setAddPassword('');
+      setAddSheetUrl('');
+      setAddWebhookUrl('');
+      await loadUsers();
     } catch (e: any) {
-      setError(e.message || 'فشل تجهيز بيانات المستخدم');
+      setError(e?.message || 'تعذر إضافة المستخدم للشيت الرئيسي');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openEditModal = (u: AdminSheetUser) => {
+    setEditingUser(u);
+    setEditName(u.full_name || '');
+    setEditPassword(u.password_hash || '');
+    setEditSheetUrl(u.sheet_url || u.sheet_id || '');
+    setEditWebhookUrl(u.webhook_url || '');
+    setError(null);
+  };
+
+  const handleEditUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    if (!editName.trim() || !editPassword.trim()) {
+      setError('لا يمكن ترك الاسم أو الرمز السري فارغاً');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminUpdateSheetUser({
+        rowNumber: editingUser.rowNumber,
+        currentName: editingUser.full_name,
+        newName: editName.trim(),
+        newPassword: editPassword.trim(),
+        newSheetUrl: editSheetUrl.trim(),
+        newWebhookUrl: editWebhookUrl.trim()
+      });
+      setSuccessMsg(res.message);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر تعديل السجل في الشيت الرئيسي');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteUser = async (u: AdminSheetUser) => {
+    if (isBaqerAdmin(u.full_name, u.email)) {
+      setError('لا يمكن حذف حساب الأدمن الرئيسي (باقر)');
+      return;
+    }
+    const ok = window.confirm(`⚠️ هل تريد حذف المستخدم "${u.full_name}" (الصف ${u.rowNumber}) من الشيت الرئيسي؟`);
+    if (!ok) return;
+
+    setSaving(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminDeleteSheetUser({
+        rowNumber: u.rowNumber,
+        currentName: u.full_name
+      });
+      setSuccessMsg(res.message);
+      await loadUsers();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر حذف المستخدم');
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
 
-      {/* ترويسة الصفحة */}
+      {/* Header */}
       <div className="page-header" style={{ marginBottom: 0 }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
             <span className="badge badge-primary" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <FileSpreadsheet size={13} /> Google Sheets كقاعدة بيانات المستخدمين
+              <FileSpreadsheet size={13} /> الشيت الرئيسي — صلاحيات الأدمن فقط
             </span>
             <span className="badge badge-success" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <ShieldCheck size={13} /> نظام متعدد المستخدمين والـ APIs
+              <ShieldCheck size={13} /> تحكم كامل بالإضافة والتعديل والحذف
             </span>
           </div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <Users size={28} style={{ color: 'var(--primary)' }} />
-            إدارة المستخدمين وقاعدة بيانات شيت الإدارة
+            إدارة الشيت الرئيسي وقاعدة بيانات المستخدمين
           </h1>
           <p className="page-subtitle">
-            قاعدة بيانات المستخدمين وتراخيص الدخول مسجلة في Google Sheet الإدارة. كل مستخدم له مفتاح Gemini منفصل وشيت فواتير مستقل.
+            فقط حساب باقر يملك صلاحية التلاعب أو تعديل الشيت الرئيسي؛ يدخل كل مستخدم آخر كمندوب إلى صفحة كوكل شيت الخاصة به.
           </p>
         </div>
 
@@ -128,29 +200,27 @@ export const UsersManagement: React.FC = () => {
             className="btn-clay btn-secondary"
             style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700 }}
           >
-            <ExternalLink size={16} /> فتح شيت قاعدة بيانات المستخدمين
+            <ExternalLink size={16} /> فتح الشيت الرئيسي في كوكل
           </a>
 
           <button
             onClick={loadUsers}
             disabled={loading}
             className="btn-clay btn-secondary"
-            title="إعادة قراءة المستخدمين من الشيت"
           >
             <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> تحديث
           </button>
 
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => { setShowAddModal(true); setError(null); }}
             className="btn-clay btn-primary"
             style={{ fontWeight: 800 }}
           >
-            <Plus size={18} /> إضافة مستخدم جديد للشيت
+            <Plus size={18} /> إضافة مستخدم للشيت الرئيسي
           </button>
         </div>
       </div>
 
-      {/* التنبيهات والرسائل */}
       {error && (
         <div className="alert-danger" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <AlertCircle size={20} />
@@ -165,81 +235,40 @@ export const UsersManagement: React.FC = () => {
         </div>
       )}
 
-      {/* بطاقة توضيح آلية العمل وأداة تشفير كلمات المرور */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
-
-        {/* بطاقة آلية الربط مع شيت الإدارة */}
-        <div className="card" style={{ padding: '1.25rem' }}>
-          <h4 style={{ fontWeight: 800, margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <FileSpreadsheet size={18} style={{ color: '#10b981' }} />
-            كيف يعمل تسجيل الدخول وقاعدة بيانات الشيت؟
-          </h4>
-          <p style={{ fontSize: '0.82rem', color: 'var(--gray-600)', lineHeight: 1.6, margin: '0 0 0.75rem 0' }}>
-            عند محاولة أي مستخدم تسجيل الدخول، يقرأ النظام مباشرة ورقة <strong>"المستخدمون"</strong> في شيت الإدارة للتأكد من وجود البريد، وكون الحساب نشطاً (TRUE)، وتطابق كلمة المرور المشفرة.
-          </p>
-          <div style={{ background: 'var(--gray-50)', padding: '0.65rem 0.85rem', borderRadius: 8, fontSize: '0.78rem', color: 'var(--gray-700)' }}>
-            <strong>ترتيب أعمدة ورقة "المستخدمون" في الشيت:</strong><br />
-            <code>A: id | B: full_name | C: email | D: password_hash | E: role | F: is_active | G: gemini_api_key | H: sheet_id | I: webhook_url</code>
+      {adminScriptOutdated && (
+        <div className="card" style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', padding: '1rem 1.2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+            <div style={{ flex: '1 1 280px' }}>
+              <div style={{ fontWeight: 900, color: '#92400e', fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <AlertTriangle size={18} style={{ color: '#d97706' }} />
+                ترقية سكربت الشيت الرئيسي إلى الإصدار 5 (v5)
+              </div>
+              <div style={{ fontSize: '0.78rem', color: '#78350f', marginTop: 4, lineHeight: 1.55 }}>
+                لكي يتمكن الأدمن والمندوبون من تعديل الأسماء والرموز السرية وحذف الصفوف مباشرة داخل الشيت الرئيسي (4 أعمدة)، انسخ كود <strong>Apps Script v5</strong> أدناه وانشره كإصدار جديد.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { handleCopyScript(); setShowScriptCode(true); }}
+              className="btn-clay btn-primary btn-sm"
+              style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309' }}
+            >
+              {copiedScript ? <Check size={15} /> : <Copy size={15} />}
+              {copiedScript ? 'تم نسخ كود v5!' : 'نسخ كود Apps Script v5'}
+            </button>
           </div>
         </div>
+      )}
 
-        {/* بطاقة أداة توليد تشفير كلمة المرور (Bcrypt Hash Generator) */}
-        <div className="card" style={{ padding: '1.25rem' }}>
-          <h4 style={{ fontWeight: 800, margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Key size={18} style={{ color: 'var(--primary)' }} />
-            أداة تشفير كلمة المرور (Bcrypt Hash)
-          </h4>
-          <p style={{ fontSize: '0.8rem', color: 'var(--gray-500)', margin: '0 0 0.75rem 0' }}>
-            اكتب كلمة مرور لتوليد التشفير الآمن لوضعها في عمود <code>password_hash</code> (العمود D) في الشيت:
-          </p>
-
-          <form onSubmit={handleGenerateHash} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-            <input
-              type="text"
-              className="clay-input"
-              placeholder="اكتب كلمة المرور..."
-              style={{ flex: 1, fontSize: '0.85rem' }}
-              value={pwdInput}
-              onChange={e => setPwdInput(e.target.value)}
-            />
-            <button
-              type="submit"
-              disabled={generatingHash || !pwdInput.trim()}
-              className="btn-clay btn-primary btn-sm"
-              style={{ padding: '0.5rem 1rem', fontWeight: 700, whiteSpace: 'nowrap' }}
-            >
-              {generatingHash ? 'جارِ التشفير...' : 'توليد الـ Hash 🔐'}
-            </button>
-          </form>
-
-          {generatedHash && (
-            <div style={{ background: '#f8fafc', padding: '0.6rem 0.8rem', borderRadius: 8, border: '1px solid #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-              <code style={{ fontSize: '0.75rem', color: '#1e293b', wordBreak: 'break-all', direction: 'ltr' }}>
-                {generatedHash}
-              </code>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(generatedHash, setHashCopied)}
-                className="btn-clay btn-secondary btn-sm"
-                style={{ padding: '3px 8px', flexShrink: 0 }}
-                title="نسخ التشفير"
-              >
-                {hashCopied ? <Check size={14} style={{ color: '#059669' }} /> : <Copy size={14} />}
-                <span style={{ fontSize: '0.72rem', marginRight: 4 }}>{hashCopied ? 'تم!' : 'نسخ'}</span>
-              </button>
-            </div>
-          )}
-        </div>
-
-      </div>
-
-      {/* جدول عرض المستخدمين الحاليين من الشيت والنظام */}
-      <div className="card" style={{ padding: '1.25rem' }}>
+      {/* جدول المستخدمين الحي من الشيت الرئيسي */}
+      <div className="card" style={{ padding: '1.2rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div>
-            <h4 style={{ fontWeight: 800, margin: '0 0 0.25rem 0' }}>قائمة المستخدمين والمندوبين المسجلين ({users.length})</h4>
-            <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>
-              يتم قراءة بياناتهم من جدول Google Sheet الإدارة وقاعدة البيانات
+            <h4 style={{ fontWeight: 800, margin: '0 0 0.2rem 0' }}>
+              جدول الحسابات في الشيت الرئيسي ({users.length} مستخدم)
+            </h4>
+            <span style={{ fontSize: '0.76rem', color: 'var(--gray-500)' }}>
+              الأعمدة الحقيقية: A: الاسم | B: الرمز السري | C: صفحة كوكل شيت | D: اي بي اي سكربت
             </span>
           </div>
         </div>
@@ -247,14 +276,14 @@ export const UsersManagement: React.FC = () => {
         {loading ? (
           <div style={{ textAlign: 'center', padding: '3rem' }}>
             <RefreshCw size={32} className="animate-spin" style={{ color: 'var(--primary)', marginBottom: 10 }} />
-            <div style={{ fontWeight: 700, color: 'var(--gray-600)' }}>جارِ قراءة المستخدمين من شيت الإدارة...</div>
+            <div style={{ fontWeight: 700, color: 'var(--gray-600)' }}>جارِ قراءة الشيت الرئيسي مباشرة...</div>
           </div>
         ) : users.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '3rem', background: 'var(--gray-50)', borderRadius: 12 }}>
             <Users size={48} style={{ color: 'var(--gray-300)', marginBottom: 10 }} />
-            <h5 style={{ fontWeight: 800, color: 'var(--gray-700)' }}>لم يتم العثور على مستخدمين مسجلين</h5>
+            <h5 style={{ fontWeight: 800, color: 'var(--gray-700)' }}>لم يتم العثور على مستخدمين</h5>
             <p style={{ fontSize: '0.82rem', color: 'var(--gray-500)' }}>
-              افتح جدول الإدارة وتأكد من وجود ورقة "المستخدمون" أو استخدم نموذج الإضافة أدناه.
+              تأكد من مشاركة الشيت الرئيسي كـ (Anyone with the link can view) أو أضف أول مستخدم من الزر أعلاه.
             </p>
           </div>
         ) : (
@@ -262,220 +291,291 @@ export const UsersManagement: React.FC = () => {
             <table className="clay-table" style={{ width: '100%', fontSize: '0.82rem' }}>
               <thead>
                 <tr>
-                  <th style={{ width: 40, textAlign: 'center' }}>#</th>
-                  <th>الاسم الكامل</th>
-                  <th>البريد الإلكتروني</th>
-                  <th style={{ textAlign: 'center' }}>الدور والصفة</th>
-                  <th style={{ textAlign: 'center' }}>الحالة</th>
-                  <th style={{ textAlign: 'center' }}>مفتاح Gemini الذاتي</th>
-                  <th>Google Sheet المخصص</th>
-                  <th>Webhook الخاص به</th>
+                  <th style={{ width: 52, textAlign: 'center' }}>الصف</th>
+                  <th>الاسم</th>
+                  <th style={{ textAlign: 'center' }}>الرمز السري</th>
+                  <th style={{ textAlign: 'center' }}>الدور</th>
+                  <th>صفحة كوكل شيت الخاصة</th>
+                  <th>رابط اي بي اي سكربت</th>
+                  <th style={{ textAlign: 'center' }}>إجراءات</th>
                 </tr>
               </thead>
               <tbody>
-                {users.map((u, idx) => (
-                  <tr key={u.id || idx}>
-                    <td style={{ textAlign: 'center', color: 'var(--gray-400)', fontWeight: 700 }}>{idx + 1}</td>
-                    <td style={{ fontWeight: 800, color: 'var(--gray-800)' }}>{u.full_name}</td>
-                    <td style={{ direction: 'ltr', textAlign: 'right', fontWeight: 600 }}>{u.email}</td>
-                    <td style={{ textAlign: 'center' }}>
-                      <span className={`badge ${u.role === 'admin' ? 'badge-primary' : u.role === 'supervisor' ? 'badge-purple' : 'badge-gray'}`}>
-                        {u.role === 'admin' ? 'مدير النظام' : u.role === 'supervisor' ? 'مشرف مبيعات' : 'مندوب علمي'}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'center' }}>
-                      <span className={`badge ${u.is_active !== false ? 'badge-success' : 'badge-danger'}`}>
-                        {u.is_active !== false ? 'نشط ✓' : 'معطل ✕'}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'center' }}>
-                      {u.gemini_api_key ? (
-                        <span className="badge badge-success" title={u.gemini_api_key}>
-                          مفتاح خاص مفعل ✓
+                {users.map((u) => {
+                  const isRevealed = Boolean(revealedRows[u.rowNumber]);
+                  const isAdminRow = u.role === 'admin';
+                  return (
+                    <tr key={`${u.rowNumber}-${u.full_name}`}>
+                      <td style={{ textAlign: 'center', color: 'var(--gray-500)', fontWeight: 800 }}>
+                        {u.rowNumber}
+                      </td>
+                      <td style={{ fontWeight: 900, color: 'var(--gray-900)' }}>{u.full_name}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, direction: 'ltr' }}>
+                          <code style={{ fontWeight: 700, background: '#f1f5f9', padding: '2px 8px', borderRadius: 6 }}>
+                            {isRevealed ? (u.password_hash || '—') : '••••••'}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => toggleRevealPwd(u.rowNumber)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--gray-500)', padding: 2 }}
+                            title={isRevealed ? 'إخفاء الرمز' : 'إظهار الرمز'}
+                          >
+                            {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        </div>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <span className={`badge ${isAdminRow ? 'badge-primary' : 'badge-success'}`}>
+                          {isAdminRow ? 'أدمن (باقر)' : 'مندوب'}
                         </span>
-                      ) : (
-                        <span className="badge badge-gray" title="يستخدم مفتاح النظام العام الافتراضي">
-                          عام (النظام)
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ fontSize: '0.75rem', direction: 'ltr', textAlign: 'left', color: 'var(--gray-600)' }}>
-                      {u.sheet_id ? (
-                        <span title={u.sheet_id}>{u.sheet_id.substring(0, 14)}...</span>
-                      ) : (
-                        <span style={{ color: 'var(--gray-400)' }}>الشيت الافتراضي</span>
-                      )}
-                    </td>
-                    <td style={{ fontSize: '0.75rem', direction: 'ltr', textAlign: 'left', color: 'var(--gray-600)' }}>
-                      {u.webhook_url ? (
-                        <span title={u.webhook_url}>Webhook خاص ✓</span>
-                      ) : (
-                        <span style={{ color: 'var(--gray-400)' }}>الرابط العام</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td style={{ fontSize: '0.76rem' }}>
+                        {u.sheet_url ? (
+                          <a
+                            href={u.sheet_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: 'var(--primary)', fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                          >
+                            <ExternalLink size={12} /> {u.sheet_id ? `${u.sheet_id.slice(0, 14)}...` : 'فتح الشيت'}
+                          </a>
+                        ) : (
+                          <span style={{ color: 'var(--gray-400)' }}>غير محدد</span>
+                        )}
+                      </td>
+                      <td style={{ fontSize: '0.75rem', direction: 'ltr', textAlign: 'left', color: 'var(--gray-600)' }}>
+                        {u.webhook_url ? (
+                          <span className="badge badge-success" title={u.webhook_url}>مربوط ✓</span>
+                        ) : (
+                          <span className="badge badge-gray">افتراضي</span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(u)}
+                            disabled={saving}
+                            className="btn-clay btn-secondary btn-sm"
+                            style={{ padding: '0.3rem 0.65rem', fontWeight: 700 }}
+                          >
+                            <Edit3 size={13} /> تعديل
+                          </button>
+                          {!isAdminRow && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUser(u)}
+                              disabled={saving}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{ padding: '0.3rem 0.65rem', background: '#fee2e2', color: '#b91c1c', borderColor: '#fecaca', fontWeight: 700 }}
+                            >
+                              <Trash2 size={13} /> حذف
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {/* نافذة / بطاقة إضافة مستخدم وتجهيز السطر لشيت الإدارة */}
+      {/* إعداد رابط سكربت الشيت الرئيسي وعرض الكود */}
+      <div className="card" style={{ padding: '1.2rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem' }}>
+          <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Settings size={18} style={{ color: 'var(--primary)' }} />
+            رابط سكربت التحكم بالشيت الرئيسي (Admin Apps Script Webhook)
+          </h4>
+          {webhookSavedMsg && (
+            <span className="badge badge-success">تم حفظ رابط الأدمن ✓</span>
+          )}
+        </div>
+
+        <form onSubmit={handleSaveAdminWebhook} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+          <input
+            type="url"
+            className="clay-input"
+            style={{ flex: '1 1 260px', fontSize: '0.8rem', direction: 'ltr' }}
+            placeholder="https://script.google.com/macros/s/.../exec"
+            value={adminWebhookInput}
+            onChange={e => setAdminWebhookInput(e.target.value)}
+          />
+          <button type="submit" className="btn-clay btn-primary btn-sm" style={{ fontWeight: 700 }}>
+            حفظ رابط السكربت الرئيسي
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowScriptCode(!showScriptCode)}
+            className="btn-clay btn-secondary btn-sm"
+            style={{ fontWeight: 700 }}
+          >
+            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v5' : 'عرض كود Apps Script v5'}
+          </button>
+        </form>
+
+        {showScriptCode && (
+          <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 12, padding: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#1e293b' }}>
+                الصق هذا الكود في Extensions ← Apps Script ثم Deploy ← Manage deployments ← Edit ← New version
+              </span>
+              <button type="button" onClick={handleCopyScript} className="btn-clay btn-primary btn-sm" style={{ fontWeight: 700 }}>
+                {copiedScript ? <Check size={14} /> : <Copy size={14} />}
+                {copiedScript ? 'تم النسخ!' : 'نسخ الكود بالكامل'}
+              </button>
+            </div>
+            <pre style={{
+              background: '#0f172a',
+              color: '#38bdf8',
+              padding: '0.9rem',
+              borderRadius: 10,
+              fontSize: '0.72rem',
+              maxHeight: 220,
+              overflowY: 'auto',
+              direction: 'ltr',
+              textAlign: 'left',
+              margin: 0
+            }}>
+              {APPS_SCRIPT_V2_CODE}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      {/* Add User Modal */}
       {showAddModal && (
-        <FloatingModal maxWidth={640} onClose={() => setShowAddModal(false)}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--gray-200)', paddingBottom: '0.75rem' }}>
-              <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Plus size={20} style={{ color: 'var(--primary)' }} />
-                إضافة مستخدم جديد وتجهيزه لشيت الإدارة
-              </h4>
-              <button onClick={() => setShowAddModal(false)} className="btn-clay btn-secondary btn-sm">✕</button>
+        <FloatingModal maxWidth={560} onClose={() => setShowAddModal(false)}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--gray-200)', paddingBottom: '0.75rem' }}>
+            <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Plus size={20} style={{ color: 'var(--primary)' }} />
+              إضافة مستخدم جديد للشيت الرئيسي
+            </h4>
+            <button type="button" onClick={() => setShowAddModal(false)} className="btn-clay btn-secondary btn-sm">✕</button>
+          </div>
+
+          <form onSubmit={handleAddUserSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الاسم (العمود A) *</label>
+              <input
+                type="text"
+                className="clay-input"
+                placeholder="مثال: keko3"
+                value={addName}
+                onChange={e => setAddName(e.target.value)}
+                required
+              />
             </div>
 
-            <form onSubmit={handleFormatRow} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem' }}>
-                <div>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الاسم الكامل *</label>
-                  <input
-                    type="text"
-                    className="clay-input"
-                    placeholder="مثال: د. كرار حيدر"
-                    value={newFullName}
-                    onChange={e => setNewFullName(e.target.value)}
-                    required
-                  />
-                </div>
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الرمز السري (العمود B) *</label>
+              <input
+                type="text"
+                className="clay-input"
+                placeholder="123456"
+                value={addPassword}
+                onChange={e => setAddPassword(e.target.value)}
+                required
+              />
+            </div>
 
-                <div>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>البريد الإلكتروني *</label>
-                  <input
-                    type="email"
-                    className="clay-input"
-                    placeholder="karrar@pharma.com"
-                    value={newEmail}
-                    onChange={e => setNewEmail(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>رابط صفحة كوكل شيت الخاصة به (العمود C)</label>
+              <input
+                type="url"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                value={addSheetUrl}
+                onChange={e => setAddSheetUrl(e.target.value)}
+              />
+            </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem' }}>
-                <div>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>كلمة المرور *</label>
-                  <input
-                    type="password"
-                    className="clay-input"
-                    placeholder="كلمة المرور للدخول..."
-                    value={newPassword}
-                    onChange={e => setNewPassword(e.target.value)}
-                    required
-                  />
-                </div>
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>رابط اي بي اي سكربت الخاص به (العمود D)</label>
+              <input
+                type="url"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                value={addWebhookUrl}
+                onChange={e => setAddWebhookUrl(e.target.value)}
+              />
+            </div>
 
-                <div>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الدور والصلاحية *</label>
-                  <select
-                    className="clay-input"
-                    value={newRole}
-                    onChange={e => setNewRole(e.target.value as any)}
-                  >
-                    <option value="medical_rep">مندوب مبيعات علمي (medical_rep)</option>
-                    <option value="supervisor">مشرف مبيعات (supervisor)</option>
-                    <option value="admin">مدير نظام (admin)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div style={{ borderTop: '1px dashed var(--gray-200)', paddingTop: '0.75rem' }}>
-                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--primary)', display: 'block', marginBottom: '0.5rem' }}>
-                  ⚙️ إعدادات الذكاء الاصطناعي وكوكل شيت الخاصة بهذا المستخدم (اختياري):
-                </span>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                  <div>
-                    <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)', display: 'block', marginBottom: 2 }}>
-                      مفتاح Gemini API الخاص به (اختياري — لحساب استهلاكه بشكل مستقل):
-                    </label>
-                    <input
-                      type="text"
-                      className="clay-input"
-                      placeholder="AIzaSy..."
-                      value={newGeminiKey}
-                      onChange={e => setNewGeminiKey(e.target.value)}
-                      style={{ fontSize: '0.8rem', direction: 'ltr' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)', display: 'block', marginBottom: 2 }}>
-                      معرف Google Sheet الخاص به (Google Sheet ID):
-                    </label>
-                    <input
-                      type="text"
-                      className="clay-input"
-                      placeholder="1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE"
-                      value={newSheetId}
-                      onChange={e => setNewSheetId(e.target.value)}
-                      style={{ fontSize: '0.8rem', direction: 'ltr' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)', display: 'block', marginBottom: 2 }}>
-                      رابط Webhook الخاص به (Google Apps Script Webhook URL):
-                    </label>
-                    <input
-                      type="url"
-                      className="clay-input"
-                      placeholder="https://script.google.com/macros/s/.../exec"
-                      value={newWebhookUrl}
-                      onChange={e => setNewWebhookUrl(e.target.value)}
-                      style={{ fontSize: '0.8rem', direction: 'ltr' }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="btn-clay btn-primary"
-                style={{ fontWeight: 800, marginTop: '0.5rem' }}
-              >
-                تجهيز وتشفير سطر المستخدم للشيت 🚀
-              </button>
-            </form>
-
-            {formattedRow && (
-              <div style={{ marginTop: '1rem', background: '#f0fdf4', padding: '0.85rem', borderRadius: 10, border: '1.5px solid #86efac' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                  <span style={{ fontWeight: 800, fontSize: '0.82rem', color: '#166534' }}>
-                    ✅ السطر المنسق الجاهز للّصق في جدول كوكل شيت:
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(formattedRow.join('\t'), setRowCopied)}
-                    className="btn-clay btn-primary btn-sm"
-                    style={{ padding: '4px 10px', fontSize: '0.78rem' }}
-                  >
-                    {rowCopied ? <Check size={14} /> : <Copy size={14} />}
-                    {rowCopied ? 'تم النسخ بنجاح!' : 'نسخ السطر بالكامل'}
-                  </button>
-                </div>
-                <div style={{
-                  background: '#0f172a', color: '#38bdf8', padding: '0.6rem', borderRadius: 6,
-                  fontSize: '0.72rem', overflowX: 'auto', direction: 'ltr', fontFamily: 'monospace'
-                }}>
-                  {formattedRow.join('  |  ')}
-                </div>
-                <p style={{ fontSize: '0.75rem', color: '#15803d', margin: '0.5rem 0 0 0' }}>
-                  📌 افتح ورقة "المستخدمون" في شيت الإدارة، واضغط على أول سطر فارغ في العمود A ثم الصق (Ctrl+V). سيتوزع تلقائياً على الأعمدة التسعة بشكل صحيح!
-                </p>
-              </div>
-            )}
+            <button type="submit" disabled={saving} className="btn-clay btn-primary" style={{ fontWeight: 800, marginTop: '0.35rem' }}>
+              {saving ? 'جارِ الحفظ في الشيت الرئيسي...' : 'حفظ وإضافة للشيت الرئيسي'}
+            </button>
+          </form>
         </FloatingModal>
       )}
 
+      {/* Edit User Modal */}
+      {editingUser && (
+        <FloatingModal maxWidth={560} onClose={() => setEditingUser(null)}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--gray-200)', paddingBottom: '0.75rem' }}>
+            <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Edit3 size={19} style={{ color: 'var(--primary)' }} />
+              تعديل بيانات الصف #{editingUser.rowNumber} ({editingUser.full_name})
+            </h4>
+            <button type="button" onClick={() => setEditingUser(null)} className="btn-clay btn-secondary btn-sm">✕</button>
+          </div>
+
+          <form onSubmit={handleEditUserSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الاسم (العمود A) *</label>
+              <input
+                type="text"
+                className="clay-input"
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>الرمز السري (العمود B) *</label>
+              <input
+                type="text"
+                className="clay-input"
+                value={editPassword}
+                onChange={e => setEditPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>صفحة كوكل شيت الخاصة به (العمود C)</label>
+              <input
+                type="text"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                value={editSheetUrl}
+                onChange={e => setEditSheetUrl(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>اي بي اي سكربت (العمود D)</label>
+              <input
+                type="text"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                value={editWebhookUrl}
+                onChange={e => setEditWebhookUrl(e.target.value)}
+              />
+            </div>
+
+            <button type="submit" disabled={saving} className="btn-clay btn-primary" style={{ fontWeight: 800, marginTop: '0.35rem' }}>
+              {saving ? 'جارِ حفظ التعديلات...' : 'حفظ التعديلات في الشيت الرئيسي'}
+            </button>
+          </form>
+        </FloatingModal>
+      )}
     </div>
   );
 };
-

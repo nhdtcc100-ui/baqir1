@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { User } from '../types';
 import { api } from '../services/api';
+import { normalizeDigits } from '../utils/adminUsersSheet';
 import {
-  ShieldCheck, LogIn, Sparkles, UserCheck, Pill, Lock,
-  Mail, Eye, EyeOff, Database, FileSpreadsheet, UserPlus,
-  ExternalLink, CheckCircle2, MapPin
+  ShieldCheck, LogIn, UserCheck, Pill, Lock,
+  Eye, EyeOff, Database, FileSpreadsheet, UserPlus,
+  CheckCircle2, KeyRound
 } from 'lucide-react';
 
 interface LoginProps {
@@ -15,50 +16,42 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [activeTab, setActiveTab] = useState<'login' | 'register'>('login');
 
   // Sign in state
-  const [identifier, setIdentifier] = useState('baqer');
-  const [password, setPassword] = useState('123456');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem('pharma_google_sheet_url') || '');
 
-  // Registration state
+  // Registration state (medical_rep only)
   const [regFullName, setRegFullName] = useState('');
-  const [regUsername, setRegUsername] = useState('');
   const [regPin, setRegPin] = useState('');
   const [regArea, setRegArea] = useState('الرصافة');
   const [regSheetUrl, setRegSheetUrl] = useState('');
+  const [regWebhookUrl, setRegWebhookUrl] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const normalizeDigits = (str: string): string => {
-    const arabicDigits = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-    return str.replace(/[٠-٩]/g, (w) => arabicDigits.indexOf(w).toString());
-  };
-
-  const executeLogin = async (loginId: string, loginPass: string) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError(null);
     setSuccessMsg(null);
-    setLoading(true);
 
+    const cleanId = identifier.trim();
+    const cleanPass = normalizeDigits(password.trim());
+    if (!cleanId || !cleanPass) {
+      setError('يرجى إدخال الاسم والرمز السري المطابقين للشيت الرئيسي');
+      return;
+    }
+
+    setLoading(true);
     try {
-      if (sheetUrl.trim()) {
-        localStorage.setItem('pharma_google_sheet_url', sheetUrl.trim());
-      }
-      const cleanId = loginId.trim();
-      const cleanPass = normalizeDigits(loginPass.trim());
       const res = await api.login(cleanId, cleanPass);
       onLoginSuccess(res.user);
     } catch (err: any) {
-      setError(err.message || 'الاسم أو رمز المرور غير صحيح');
+      setError(err.message || 'الاسم أو الرمز السري غير متطابق مع قاعدة البيانات');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleLoginSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    executeLogin(identifier, password);
   };
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
@@ -70,26 +63,23 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       setError('يرجى إدخال الاسم الكامل للمندوب');
       return;
     }
-    if (!regUsername.trim()) {
-      setError('يرجى إدخال اسم المستخدم أو المعرف');
-      return;
-    }
-    if (!regPin.trim() || regPin.trim().length < 6) {
-      setError('الرمز السري (PIN) يجب أن يتكون من 6 أرقام أو أحرف على الأقل');
+    const cleanPin = normalizeDigits(regPin.trim());
+    if (!cleanPin || cleanPin.length < 4) {
+      setError('الرمز السري (PIN) يجب أن يتكون من 4 أرقام أو أحرف على الأقل');
       return;
     }
 
     setLoading(true);
     try {
-      const cleanPin = normalizeDigits(regPin.trim());
       const res = await api.register({
         fullName: regFullName.trim(),
-        username: regUsername.trim(),
+        username: regFullName.trim(),
         pin: cleanPin,
         area: regArea,
-        sheetUrl: regSheetUrl.trim()
+        sheetUrl: regSheetUrl.trim(),
+        webhookUrl: regWebhookUrl.trim()
       });
-      setSuccessMsg('تم تسجيل الحساب بنجاح! جاري تحويلك للمنظومة...');
+      setSuccessMsg('تم تسجيل حساب المندوب في الشيت الرئيسي بنجاح! جاري الدخول...');
       setTimeout(() => {
         onLoginSuccess(res.user);
       }, 500);
@@ -100,41 +90,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const quickAccounts = [
-    {
-      title: 'د. باقر (مدير عام)',
-      role: 'admin',
-      id: 'baqer',
-      pass: '123456',
-      icon: <ShieldCheck size={14} style={{ color: 'var(--primary)' }} />,
-      desc: 'صلاحيات كاملة + اعتماد الفواتير'
-    },
-    {
-      title: 'مشرف المبيعات',
-      role: 'supervisor',
-      id: 'supervisor',
-      pass: '123456',
-      icon: <UserCheck size={14} style={{ color: '#059669' }} />,
-      desc: 'متابعة شبكة التوزيع'
-    },
-    {
-      title: 'علي حسن (الرصافة)',
-      role: 'medical_rep',
-      id: 'rusafa',
-      pass: '123456',
-      icon: <MapPin size={14} style={{ color: '#0284c7' }} />,
-      desc: 'مندوب قاطع الرصافة'
-    },
-    {
-      title: 'أحمد خليل (الكرخ)',
-      role: 'medical_rep',
-      id: 'karkh',
-      pass: '123456',
-      icon: <MapPin size={14} style={{ color: '#d97706' }} />,
-      desc: 'مندوب قاطع الكرخ'
-    }
-  ];
-
   return (
     <div style={{
       minHeight: '100vh',
@@ -144,7 +99,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
       padding: '1.5rem 1rem',
       background: 'linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%)'
     }}>
-      <div style={{ maxWidth: 480, width: '100%' }}>
+      <div style={{ maxWidth: 460, width: '100%' }}>
         <div className="card animate-in" style={{ padding: '2rem 1.75rem', borderRadius: 20 }}>
 
           {/* Brand Icon & Title */}
@@ -163,18 +118,18 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
             }}>
               <Pill size={34} />
             </div>
-            <h2 style={{ fontWeight: 900, color: 'var(--gray-900)', fontSize: '1.35rem', margin: '0 0 0.35rem' }}>
+            <h2 style={{ fontWeight: 900, color: 'var(--gray-900)', fontSize: '1.32rem', margin: '0 0 0.35rem' }}>
               منظومة مبيعات المندوبين وفواتير الصيدليات
             </h2>
             <p style={{ fontSize: '0.8rem', color: 'var(--gray-500)', margin: 0 }}>
-              استخراج ذكي لبيانات الفواتير (AI OCR) ومزامنة سحابية مع Google Sheets & Supabase
+              تحقق مباشر من قاعدة بيانات Google Sheets الرئيسية — لكل مستخدم صفحته الخاصة
             </p>
-            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
+            <div style={{ marginTop: '0.55rem', display: 'flex', gap: '0.4rem', justifyContent: 'center', flexWrap: 'wrap' }}>
               <span className="badge badge-primary" style={{ fontSize: '0.72rem' }}>
-                <Database size={11} /> سوبا بيس & كيت هاب
+                <Database size={11} /> تطابق تام مع الشيت الرئيسي
               </span>
               <span className="badge badge-success" style={{ fontSize: '0.72rem' }}>
-                <FileSpreadsheet size={11} /> ربط كوكل شيت المباشر
+                <FileSpreadsheet size={11} /> عزل صفحة كل مندوب
               </span>
             </div>
           </div>
@@ -195,7 +150,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               className={`tab-pill ${activeTab === 'register' ? 'active' : ''}`}
               style={{ fontWeight: 800, fontSize: '0.85rem' }}
             >
-              <UserPlus size={15} /> تسجيل حساب جديد
+              <UserPlus size={15} /> تسجيل مندوب جديد
             </button>
           </div>
 
@@ -213,65 +168,38 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
           {activeTab === 'login' ? (
             <>
-              {/* 1-Click Quick Login Buttons for the 4 Accounts */}
               <div style={{
-                background: 'var(--gray-50)',
-                border: '1px solid var(--gray-200)',
-                borderRadius: 14,
-                padding: '0.85rem',
-                marginBottom: '1.25rem'
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: 12,
+                padding: '0.75rem 0.9rem',
+                marginBottom: '1.1rem',
+                fontSize: '0.76rem',
+                color: '#334155',
+                lineHeight: 1.6
               }}>
-                <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--gray-700)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <Sparkles size={14} style={{ color: 'var(--primary)' }} />
-                  دخول سريع بنقرة واحدة (حسابات النظام الـ 4):
+                <div style={{ fontWeight: 800, color: '#0f172a', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <ShieldCheck size={14} style={{ color: 'var(--primary)' }} />
+                  آلية الدخول وصلاحيات قاعدة البيانات:
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
-                  {quickAccounts.map((acc) => (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      disabled={loading}
-                      onClick={() => {
-                        setIdentifier(acc.id);
-                        setPassword(acc.pass);
-                        executeLogin(acc.id, acc.pass);
-                      }}
-                      className="btn-clay btn-secondary btn-sm"
-                      style={{
-                        fontSize: '0.76rem',
-                        fontWeight: 800,
-                        padding: '0.45rem 0.6rem',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gap: 2,
-                        textAlign: 'right'
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}>
-                        {acc.icon}
-                        <span style={{ color: 'var(--gray-900)' }}>{acc.title}</span>
-                      </div>
-                      <span style={{ fontSize: '0.66rem', color: 'var(--gray-500)', fontWeight: 600 }}>{acc.desc}</span>
-                    </button>
-                  ))}
-                </div>
+                <div>• يجب تطابق <strong>الاسم</strong> و<strong>الرمز السري</strong> مع السجل المسجل في الشيت الرئيسي.</div>
+                <div>• يفتح حساب <strong>باقر</strong> كأدمن مع صلاحية إدارة الشيت الرئيسي، ويدخل البقية كمندوبين بصفحاتهم الخاصة.</div>
               </div>
 
-              {/* Login Form */}
               <form onSubmit={handleLoginSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.95rem' }}>
                 <div>
                   <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.35rem' }}>
-                    الاسم أو اسم المستخدم (Username / Name)
+                    الاسم المسجل في الشيت
                   </label>
                   <div style={{ position: 'relative' }}>
                     <input
                       type="text"
                       className="clay-input"
-                      style={{ paddingRight: '2.5rem', fontSize: '0.9rem' }}
-                      placeholder="مثال: baqer أو علي حسن أو supervisor"
+                      style={{ paddingRight: '2.5rem', fontSize: '0.92rem' }}
+                      placeholder="مثال: باقر علي أو keko1"
                       value={identifier}
                       onChange={(e) => setIdentifier(e.target.value)}
+                      autoComplete="username"
                       required
                     />
                     <UserCheck size={18} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--gray-400)' }} />
@@ -281,14 +209,14 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                     <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--gray-700)', margin: 0 }}>
-                      الرمز السري (PIN / Password)
+                      الرمز السري
                     </label>
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.74rem', fontWeight: 700 }}
+                      style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.74rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}
                     >
-                      {showPassword ? 'إخفاء' : 'إظهار الرمز'}
+                      {showPassword ? <><EyeOff size={13} /> إخفاء</> : <><Eye size={13} /> إظهار الرمز</>}
                     </button>
                   </div>
 
@@ -296,44 +224,14 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                     <input
                       type={showPassword ? 'text' : 'password'}
                       className="clay-input"
-                      style={{ paddingRight: '2.5rem', fontSize: '0.9rem' }}
-                      placeholder="123456"
+                      style={{ paddingRight: '2.5rem', fontSize: '0.92rem' }}
+                      placeholder="أدخل الرمز السري..."
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
                       required
                     />
                     <Lock size={18} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--gray-400)' }} />
-                  </div>
-                </div>
-
-                {/* Google Sheet URL Optional Direct Link Box */}
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: '0.75rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                    <label style={{ fontSize: '0.78rem', fontWeight: 800, color: '#1e293b', margin: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <FileSpreadsheet size={14} style={{ color: '#059669' }} />
-                      رابط جدول كوكل شيت (Google Sheet)
-                    </label>
-                    {sheetUrl && (
-                      <a
-                        href={sheetUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontSize: '0.72rem', color: 'var(--primary)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 700 }}
-                      >
-                        فتح الشيت <ExternalLink size={11} />
-                      </a>
-                    )}
-                  </div>
-                  <input
-                    type="url"
-                    className="clay-input"
-                    style={{ fontSize: '0.78rem', padding: '0.45rem 0.65rem' }}
-                    placeholder="https://docs.google.com/spreadsheets/d/..."
-                    value={sheetUrl}
-                    onChange={(e) => setSheetUrl(e.target.value)}
-                  />
-                  <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 3 }}>
-                    يتم حفظ ومزامنة الفواتير مباشرة مع هذا الشيت عند تسجيل الدخول
                   </div>
                 </div>
 
@@ -341,25 +239,29 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                   type="submit"
                   disabled={loading}
                   className="btn-clay btn-primary"
-                  style={{ width: '100%', padding: '0.8rem', fontSize: '0.98rem', fontWeight: 800, marginTop: '0.35rem' }}
+                  style={{ width: '100%', padding: '0.85rem', fontSize: '0.98rem', fontWeight: 800, marginTop: '0.35rem' }}
                 >
-                  {loading ? 'جاري التحقق...' : (
+                  {loading ? 'جاري التحقق من قاعدة البيانات...' : (
                     <><LogIn size={18} /> تسجيل الدخول</>
                   )}
                 </button>
               </form>
+
+              <div style={{ marginTop: '1rem', textAlign: 'center', fontSize: '0.74rem', color: 'var(--gray-500)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                <KeyRound size={12} /> يمكن للمندوبين تغيير الاسم والرمز لاحقاً من قائمة «حسابي» داخل التطبيق
+              </div>
             </>
           ) : (
-            /* Registration Tab */
+            /* Registration Tab (medical_rep only) */
             <form onSubmit={handleRegisterSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
               <div>
                 <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.3rem' }}>
-                  الاسم الكامل للمندوب
+                  الاسم (للدخول وظهور المندوب) *
                 </label>
                 <input
                   type="text"
                   className="clay-input"
-                  placeholder="مثال: حسين كريم"
+                  placeholder="مثال: keko3 أو حسين كريم"
                   value={regFullName}
                   onChange={(e) => setRegFullName(e.target.value)}
                   required
@@ -368,21 +270,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
               <div>
                 <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.3rem' }}>
-                  اسم المستخدم أو المعرف (Username)
-                </label>
-                <input
-                  type="text"
-                  className="clay-input"
-                  placeholder="مثال: hussien"
-                  value={regUsername}
-                  onChange={(e) => setRegUsername(e.target.value)}
-                  required
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.3rem' }}>
-                  الرمز السري (PIN / Password - 6 أرقام على الأقل)
+                  الرمز السري (PIN / Password) *
                 </label>
                 <input
                   type="password"
@@ -416,14 +304,29 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
               <div>
                 <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.3rem' }}>
-                  رابط جدول كوكل شيت المخصص للمبيعات (اختياري)
+                  رابط صفحة كوكل شيت الخاصة بالمندوب
                 </label>
                 <input
                   type="url"
                   className="clay-input"
+                  style={{ direction: 'ltr', fontSize: '0.8rem' }}
                   placeholder="https://docs.google.com/spreadsheets/d/..."
                   value={regSheetUrl}
                   onChange={(e) => setRegSheetUrl(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--gray-700)', display: 'block', marginBottom: '0.3rem' }}>
+                  رابط Apps Script الخاص بالمندوب (اختياري)
+                </label>
+                <input
+                  type="url"
+                  className="clay-input"
+                  style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  value={regWebhookUrl}
+                  onChange={(e) => setRegWebhookUrl(e.target.value)}
                 />
               </div>
 
@@ -431,10 +334,10 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
                 type="submit"
                 disabled={loading}
                 className="btn-clay btn-primary"
-                style={{ width: '100%', padding: '0.8rem', fontSize: '0.98rem', fontWeight: 800, marginTop: '0.5rem', background: '#059669', borderColor: '#047857' }}
+                style={{ width: '100%', padding: '0.8rem', fontSize: '0.98rem', fontWeight: 800, marginTop: '0.4rem', background: '#059669', borderColor: '#047857' }}
               >
-                {loading ? 'جاري التسجيل...' : (
-                  <><UserPlus size={18} /> تسجيل الحساب والدخول فوراً</>
+                {loading ? 'جاري التسجيل في الشيت الرئيسي...' : (
+                  <><UserPlus size={18} /> تسجيل كمندوب والدخول</>
                 )}
               </button>
             </form>
