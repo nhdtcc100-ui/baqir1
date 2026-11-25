@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Pharmacy, Product, Invoice } from '../types';
 import {
   api,
+  getCurrentUser,
   getSavedGeminiKey,
   setSavedGeminiKey,
   getApiBase,
@@ -201,10 +202,12 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     const handleOnline = () => {
       setIsOnline(true);
       setPendingQueue(getPendingOcrQueue());
+      api.syncSharedGeminiKeyFromSheet().then(key => { if (key) setGeminiKeyInput(key); }).catch(() => {});
     };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    api.syncSharedGeminiKeyFromSheet().then(key => { if (key) setGeminiKeyInput(key); }).catch(() => {});
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -1226,7 +1229,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>
-                      🔑 مفتاح Google Gemini API:
+                      🔑 مفتاح Google Gemini API (يتحدث تلقائياً من الشيت الرئيسي):
                     </span>
                     <a
                       href="https://aistudio.google.com/apikey"
@@ -1265,7 +1268,16 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       onClick={async () => {
                         setKeyTestLoading(true);
                         const res = await api.testGeminiKey(geminiKeyInput);
-                        setKeyTestResult(res);
+                        if (res.valid && getCurrentUser()?.role === 'admin') {
+                          try {
+                            const pushed = await api.adminSetSharedGeminiKey(geminiKeyInput);
+                            setKeyTestResult({ valid: true, message: `${res.message} — ${pushed.message}` });
+                          } catch {
+                            setKeyTestResult(res);
+                          }
+                        } else {
+                          setKeyTestResult(res);
+                        }
                         setKeyTestLoading(false);
                       }}
                       className="btn-clay btn-primary btn-sm"

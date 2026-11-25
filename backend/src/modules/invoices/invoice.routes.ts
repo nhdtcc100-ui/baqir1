@@ -12,6 +12,7 @@ import { ProductService } from '../products/product.service';
 import { detectDosageForm, detectAreaFromName } from './geminiVisionOcr';
 import { runInvoiceOcrPipeline } from './ocrPipeline';
 import { GoogleSheetsService } from '../google-sheets/googleSheets.service';
+import { fetchSharedGeminiKeyFromAdminSheet } from '../auth/auth.service';
 import { sendSuccess, sendCreated, sendError } from '../../utils/response';
 
 const router = Router();
@@ -205,11 +206,13 @@ async function processInvoiceFile(file: Express.Multer.File, userId: string, cus
 
   const pharmacies = await PharmacyService.findAll();
   const products = await ProductService.findAll(true);
+  const sharedGeminiKey = await fetchSharedGeminiKeyFromAdminSheet().catch(() => '');
+  const effectiveGeminiKey = (sharedGeminiKey || customGeminiKey || '').trim() || undefined;
 
   const pipelineResult = await runInvoiceOcrPipeline(file.path, {
     originalName: file.originalname,
     mimeType: file.mimetype,
-    customGeminiKey,
+    customGeminiKey: effectiveGeminiKey,
     pharmacies,
     products
   });
@@ -441,6 +444,14 @@ router.post('/ocr-batch',
   }
 );
 
+const rejectSheetlessUser = (req: Request, res: Response, next: NextFunction) => {
+  if (req.user && req.user.role !== 'admin' && req.user.userId?.startsWith('sheet-usr-') && !req.user.sheetId) {
+    sendError(res, 'لا تملك أي قاعدة بيانات (صفحة كوكل شيت) مرتبطة بحسابك في الشيت الرئيسي، يرجى مراجعة الإدارة.', 403);
+    return;
+  }
+  next();
+};
+
 /**
  * @route   POST /api/v1/invoices/batch
  * @access  medical_rep, admin
@@ -448,6 +459,7 @@ router.post('/ocr-batch',
  */
 router.post('/batch',
   requireRoles(['medical_rep', 'admin']),
+  rejectSheetlessUser,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const repId = req.user!.userId;
@@ -495,10 +507,12 @@ router.post('/batch',
         created.push(invoice);
       }
 
-      // مزامنة الدفعة كاملة مع كوكل شيت (الشيت الخاص بالمستخدم إن وجد أو العام)
-      GoogleSheetsService.syncBatchInvoices(created, req.user?.webhookUrl, req.user?.sheetId).catch(err => {
-        console.warn('Batch Google Sheets sync warning:', err.message);
-      });
+      // مزامنة الدفعة كاملة مع كوكل شيت (فقط للأدمن أو المندوب الذي يملك صفحة شيت خاصة به)
+      if (req.user?.role === 'admin' || req.user?.sheetId) {
+        GoogleSheetsService.syncBatchInvoices(created, req.user?.webhookUrl, req.user?.sheetId).catch(err => {
+          console.warn('Batch Google Sheets sync warning:', err.message);
+        });
+      }
 
       sendCreated(res, {
         count: created.length,
@@ -524,7 +538,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     });
 
     // Two-way Sheet Deletion Sync when explicitly requested by UI (?sync_sheet=1)
-    if (req.query.sync_sheet === '1' && data.length > 0) {
+    if (req.query.sync_sheet === '1' && data.length > 0 && (req.user?.role === 'admin' || req.user?.sheetId)) {
       try {
         const sheetRes = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
         if (sheetRes.reachable) {
@@ -570,6 +584,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
  */
 router.post('/',
   requireRoles(['medical_rep', 'admin']),
+  rejectSheetlessUser,
   validateRequest(createInvoiceSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -672,10 +687,12 @@ router.post('/',
 
       const invoice = await InvoiceService.create(repId, { pharmacy_id, pharmacy_area, ...rest }, req.user?.fullName);
 
-      // مزامنة تلقائية مع كوكل شيت فور الحفظ (شيت المستخدم أو العام)
-      GoogleSheetsService.appendInvoice(invoice, req.user?.webhookUrl, req.user?.sheetId).catch(err => {
-        console.warn('Google Sheets auto-sync warning:', err.message);
-      });
+      // مزامنة تلقائية مع كوكل شيت فور الحفظ (فقط للأدمن أو صاحب الشيت الخاص)
+      if (req.user?.role === 'admin' || req.user?.sheetId) {
+        GoogleSheetsService.appendInvoice(invoice, req.user?.webhookUrl, req.user?.sheetId).catch(err => {
+          console.warn('Google Sheets auto-sync warning:', err.message);
+        });
+      }
 
       sendCreated(res, invoice, 'تم حفظ الفاتورة بنجاح ومزامنتها مع كوكل شيت');
     } catch (e) { next(e); }
@@ -692,9 +709,11 @@ router.put('/:id/review',
     try {
       const { status, rejection_reason } = req.body;
       const invoice = await InvoiceService.review(req.params.id, status, rejection_reason);
-      GoogleSheetsService.replaceInvoice(invoice, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
-        console.warn('[GoogleSheets] Review sync err:', e?.message || e);
-      });
+      if (req.user?.role === 'admin' || req.user?.sheetId) {
+        GoogleSheetsService.replaceInvoice(invoice, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+          console.warn('[GoogleSheets] Review sync err:', e?.message || e);
+        });
+      }
       sendSuccess(res, invoice, status === 'approved' ? 'تم اعتماد الفاتورة بنجاح ومزامنتها' : 'تم رفض الفاتورة');
     } catch (e) { next(e); }
   }
@@ -736,10 +755,12 @@ router.put('/:id',
         ...(editPhName ? { pharmacy_name: String(editPhName).trim() } : {}),
         ...(editPhArea !== undefined ? { pharmacy_area: editPhArea } : {})
       });
-      // مزامنة الفاتورة المعدلة فوراً مع كوكل شيت (استبدال السطور القديمة بالجديدة)
-      GoogleSheetsService.replaceInvoice(updated, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
-        console.error('[GoogleSheets] Update sync err:', e);
-      });
+      // مزامنة الفاتورة المعدلة فوراً مع كوكل شيت (فقط للأدمن أو صاحب الشيت الخاص)
+      if (req.user?.role === 'admin' || req.user?.sheetId) {
+        GoogleSheetsService.replaceInvoice(updated, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+          console.error('[GoogleSheets] Update sync err:', e);
+        });
+      }
       sendSuccess(res, updated, 'تم تعديل بيانات الفاتورة بنجاح ومزامنتها مع كوكل شيت');
     } catch (e) { next(e); }
   }
@@ -757,7 +778,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
       if (invoice.status !== 'pending_review') { sendError(res, 'لا يمكن حذف الفاتورة بعد اعتمادها أو رفضها', 400); return; }
     }
     await InvoiceService.deleteById(req.params.id);
-    if (invoice.invoice_number) {
+    if (invoice.invoice_number && (req.user?.role === 'admin' || req.user?.sheetId)) {
       const remaining = await InvoiceService.findAll({}).catch(() => []);
       const hasOtherSameNum = remaining.some(
         other => other.id !== invoice.id && String(other.invoice_number || '').trim() === String(invoice.invoice_number || '').trim()

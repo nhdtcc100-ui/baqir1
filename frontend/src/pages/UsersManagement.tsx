@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { api, getAdminWebhookUrl, setAdminWebhookUrl } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
-import { AdminSheetUser, ADMIN_SHEET_URL, isBaqerAdmin } from '../utils/adminUsersSheet';
+import { AdminSheetUser, ADMIN_SHEET_URL, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
 import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
 import {
   Users, Plus, RefreshCw, ExternalLink, ShieldCheck,
   AlertCircle, CheckCircle2, Copy, Check, FileSpreadsheet,
-  Edit3, Trash2, Eye, EyeOff, Settings, Sparkles, AlertTriangle
+  Edit3, Trash2, Eye, EyeOff, Settings, Sparkles, AlertTriangle, KeyRound
 } from 'lucide-react';
 
 export const UsersManagement: React.FC = () => {
@@ -23,12 +23,18 @@ export const UsersManagement: React.FC = () => {
   const [copiedScript, setCopiedScript] = useState(false);
   const [adminScriptOutdated, setAdminScriptOutdated] = useState(false);
 
+  // Shared Gemini API Key (Col E: اي بي اي جمناي)
+  const [sharedGeminiKeyInput, setSharedGeminiKeyInput] = useState('');
+  const [showSharedGeminiKey, setShowSharedGeminiKey] = useState(false);
+  const [savingGeminiKey, setSavingGeminiKey] = useState(false);
+
   // Add Modal
   const [showAddModal, setShowAddModal] = useState(false);
   const [addName, setAddName] = useState('');
   const [addPassword, setAddPassword] = useState('');
   const [addSheetUrl, setAddSheetUrl] = useState('');
   const [addWebhookUrl, setAddWebhookUrl] = useState('');
+  const [addGeminiKey, setAddGeminiKey] = useState('');
 
   // Edit Modal
   const [editingUser, setEditingUser] = useState<AdminSheetUser | null>(null);
@@ -36,6 +42,7 @@ export const UsersManagement: React.FC = () => {
   const [editPassword, setEditPassword] = useState('');
   const [editSheetUrl, setEditSheetUrl] = useState('');
   const [editWebhookUrl, setEditWebhookUrl] = useState('');
+  const [editGeminiKey, setEditGeminiKey] = useState('');
 
   const loadUsers = async () => {
     setLoading(true);
@@ -46,11 +53,31 @@ export const UsersManagement: React.FC = () => {
         api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }))
       ]);
       setUsers(list);
+      const foundSharedKey = extractSharedGeminiKey(list);
+      if (foundSharedKey) {
+        setSharedGeminiKeyInput(foundSharedKey);
+      }
       setAdminScriptOutdated(Boolean(verStatus?.isOutdated));
     } catch (e: any) {
       setError(e?.message || 'تعذر قراءة الشيت الرئيسي للمستخدمين');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveSharedGeminiKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingGeminiKey(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminSetSharedGeminiKey(sharedGeminiKeyInput.trim());
+      setSuccessMsg(res.message);
+      await loadUsers();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر حفظ مفتاح Gemini الموحد في الشيت الرئيسي');
+    } finally {
+      setSavingGeminiKey(false);
     }
   };
 
@@ -90,7 +117,8 @@ export const UsersManagement: React.FC = () => {
         full_name: addName.trim(),
         password: addPassword.trim(),
         sheet_url: addSheetUrl.trim(),
-        webhook_url: addWebhookUrl.trim()
+        webhook_url: addWebhookUrl.trim(),
+        gemini_api_key: addGeminiKey.trim() || sharedGeminiKeyInput.trim()
       });
       setSuccessMsg(res.message);
       setShowAddModal(false);
@@ -98,6 +126,7 @@ export const UsersManagement: React.FC = () => {
       setAddPassword('');
       setAddSheetUrl('');
       setAddWebhookUrl('');
+      setAddGeminiKey('');
       await loadUsers();
     } catch (e: any) {
       setError(e?.message || 'تعذر إضافة المستخدم للشيت الرئيسي');
@@ -112,6 +141,7 @@ export const UsersManagement: React.FC = () => {
     setEditPassword(u.password_hash || '');
     setEditSheetUrl(u.sheet_url || u.sheet_id || '');
     setEditWebhookUrl(u.webhook_url || '');
+    setEditGeminiKey(u.gemini_api_key || '');
     setError(null);
   };
 
@@ -132,7 +162,8 @@ export const UsersManagement: React.FC = () => {
         newName: editName.trim(),
         newPassword: editPassword.trim(),
         newSheetUrl: editSheetUrl.trim(),
-        newWebhookUrl: editWebhookUrl.trim()
+        newWebhookUrl: editWebhookUrl.trim(),
+        newGeminiApiKey: editGeminiKey.trim()
       });
       setSuccessMsg(res.message);
       setEditingUser(null);
@@ -241,10 +272,10 @@ export const UsersManagement: React.FC = () => {
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ fontWeight: 900, color: '#92400e', fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <AlertTriangle size={18} style={{ color: '#d97706' }} />
-                ترقية سكربت الشيت الرئيسي إلى الإصدار 5 (v5)
+                ترقية سكربت الشيت الرئيسي إلى الإصدار 8 (v8)
               </div>
               <div style={{ fontSize: '0.78rem', color: '#78350f', marginTop: 4, lineHeight: 1.55 }}>
-                لكي يتمكن الأدمن والمندوبون من تعديل الأسماء والرموز السرية وحذف الصفوف مباشرة داخل الشيت الرئيسي (4 أعمدة)، انسخ كود <strong>Apps Script v5</strong> أدناه وانشره كإصدار جديد.
+                لكي يتمكن الأدمن من تحديث مفتاح Gemini الموحد (العمود E: <strong>اي بي اي جمناي</strong>) وحل قراءة جميع الرموز السرية (مثل <code>keko3</code>) وإدارة الشيت الرئيسي (5 أعمدة)، انسخ كود <strong>Apps Script v8</strong> أدناه وانشره كإصدار جديد.
               </div>
             </div>
             <button
@@ -254,11 +285,49 @@ export const UsersManagement: React.FC = () => {
               style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309' }}
             >
               {copiedScript ? <Check size={15} /> : <Copy size={15} />}
-              {copiedScript ? 'تم نسخ كود v5!' : 'نسخ كود Apps Script v5'}
+              {copiedScript ? 'تم نسخ كود v8!' : 'نسخ كود Apps Script v8'}
             </button>
           </div>
         </div>
       )}
+
+      {/* بطاقة مفتاح Google Gemini API الموحد في الشيت الرئيسي */}
+      <div className="card" style={{ padding: '1.15rem 1.2rem', border: '1.5px solid #c7d2fe', background: 'linear-gradient(135deg, #f8fafc, #eef2ff)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.65rem' }}>
+          <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#1e1b4b' }}>
+            <KeyRound size={18} style={{ color: '#4f46e5' }} />
+            مفتاح Google Gemini API الموحد لجميع المستخدمين (العمود E: اي بي اي جمناي)
+          </h4>
+          {sharedGeminiKeyInput.trim() && (
+            <span className="badge badge-success">مفعّل لجميع المندوبين ✓</span>
+          )}
+        </div>
+        <p style={{ fontSize: '0.78rem', color: '#4338ca', margin: '0 0 0.75rem 0', lineHeight: 1.5 }}>
+          أي تغيير هنا يُكتب مباشرة في عمود <strong>اي بي اي جمناي</strong> بالشيت الرئيسي ويتعمم تلقائياً عند كل المستخدمين (الهاتف والحاسوب والخادم) في نفس الوقت دون الحاجة لإدخال المفتاح لدى كل مندوب.
+        </p>
+        <form onSubmit={handleSaveSharedGeminiKey} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <input
+            type={showSharedGeminiKey ? 'text' : 'password'}
+            className="clay-input"
+            style={{ flex: '1 1 260px', fontSize: '0.82rem', direction: 'ltr', background: '#ffffff' }}
+            placeholder="AIzaSy... أو AQ..."
+            value={sharedGeminiKeyInput}
+            onChange={e => setSharedGeminiKeyInput(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => setShowSharedGeminiKey(v => !v)}
+            className="btn-clay btn-secondary btn-sm"
+            style={{ fontWeight: 700 }}
+          >
+            {showSharedGeminiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            {showSharedGeminiKey ? 'إخفاء' : 'إظهار'}
+          </button>
+          <button type="submit" disabled={savingGeminiKey} className="btn-clay btn-primary btn-sm" style={{ fontWeight: 800 }}>
+            {savingGeminiKey ? 'جارِ التعميم في الشيت...' : 'حفظ وتعميم المفتاح على الجميع'}
+          </button>
+        </form>
+      </div>
 
       {/* جدول المستخدمين الحي من الشيت الرئيسي */}
       <div className="card" style={{ padding: '1.2rem' }}>
@@ -268,7 +337,7 @@ export const UsersManagement: React.FC = () => {
               جدول الحسابات في الشيت الرئيسي ({users.length} مستخدم)
             </h4>
             <span style={{ fontSize: '0.76rem', color: 'var(--gray-500)' }}>
-              الأعمدة الحقيقية: A: الاسم | B: الرمز السري | C: صفحة كوكل شيت | D: اي بي اي سكربت
+              الأعمدة الحقيقية: A: الاسم | B: الرمز السري | C: صفحة كوكل شيت | D: اي بي اي سكربت | E: اي بي اي جمناي
             </span>
           </div>
         </div>
@@ -297,6 +366,7 @@ export const UsersManagement: React.FC = () => {
                   <th style={{ textAlign: 'center' }}>الدور</th>
                   <th>صفحة كوكل شيت الخاصة</th>
                   <th>رابط اي بي اي سكربت</th>
+                  <th>مفتاح جمناي (E)</th>
                   <th style={{ textAlign: 'center' }}>إجراءات</th>
                 </tr>
               </thead>
@@ -341,7 +411,7 @@ export const UsersManagement: React.FC = () => {
                             <ExternalLink size={12} /> {u.sheet_id ? `${u.sheet_id.slice(0, 14)}...` : 'فتح الشيت'}
                           </a>
                         ) : (
-                          <span style={{ color: 'var(--gray-400)' }}>غير محدد</span>
+                          <span style={{ color: '#b91c1c', fontWeight: 800 }}>⛔ بدون قاعدة بيانات (محظور)</span>
                         )}
                       </td>
                       <td style={{ fontSize: '0.75rem', direction: 'ltr', textAlign: 'left', color: 'var(--gray-600)' }}>
@@ -349,6 +419,15 @@ export const UsersManagement: React.FC = () => {
                           <span className="badge badge-success" title={u.webhook_url}>مربوط ✓</span>
                         ) : (
                           <span className="badge badge-gray">افتراضي</span>
+                        )}
+                      </td>
+                      <td style={{ fontSize: '0.75rem', textAlign: 'center' }}>
+                        {u.gemini_api_key ? (
+                          <span className="badge badge-primary" title={u.gemini_api_key}>مربوط ✓</span>
+                        ) : sharedGeminiKeyInput ? (
+                          <span className="badge badge-success" title="يستخدم المفتاح الموحد من الشيت الرئيسي">موحد ✓</span>
+                        ) : (
+                          <span className="badge badge-gray">غير محدد</span>
                         )}
                       </td>
                       <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
@@ -414,7 +493,7 @@ export const UsersManagement: React.FC = () => {
             className="btn-clay btn-secondary btn-sm"
             style={{ fontWeight: 700 }}
           >
-            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v5' : 'عرض كود Apps Script v5'}
+            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v8' : 'عرض كود Apps Script v8'}
           </button>
         </form>
 
@@ -507,6 +586,18 @@ export const UsersManagement: React.FC = () => {
               />
             </div>
 
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>مفتاح Gemini API (العمود E — اختياري)</label>
+              <input
+                type="text"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                placeholder={sharedGeminiKeyInput ? 'يُملأ تلقائياً من المفتاح الموحد' : 'AIzaSy... / AQ...'}
+                value={addGeminiKey}
+                onChange={e => setAddGeminiKey(e.target.value)}
+              />
+            </div>
+
             <button type="submit" disabled={saving} className="btn-clay btn-primary" style={{ fontWeight: 800, marginTop: '0.35rem' }}>
               {saving ? 'جارِ الحفظ في الشيت الرئيسي...' : 'حفظ وإضافة للشيت الرئيسي'}
             </button>
@@ -567,6 +658,18 @@ export const UsersManagement: React.FC = () => {
                 style={{ direction: 'ltr', fontSize: '0.8rem' }}
                 value={editWebhookUrl}
                 onChange={e => setEditWebhookUrl(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 700, display: 'block', marginBottom: 4 }}>اي بي اي جمناي (العمود E)</label>
+              <input
+                type="text"
+                className="clay-input"
+                style={{ direction: 'ltr', fontSize: '0.8rem' }}
+                placeholder="AIzaSy... / AQ..."
+                value={editGeminiKey}
+                onChange={e => setEditGeminiKey(e.target.value)}
               />
             </div>
 

@@ -21,8 +21,20 @@ import {
   normalizePersonName,
   isBaqerAdmin,
   extractGoogleSheetId,
-  parseAdminSheetGvizPayload
+  parseAdminSheetGvizPayload,
+  parseAdminSheetCsvPayload,
+  parseAdminSheetWebhookUsers,
+  mergeAdminSheetUsers,
+  extractSharedGeminiKey,
+  hasAssignedDatabase
 } from '../utils/adminUsersSheet';
+
+export const NO_DATABASE_ERROR_MSG =
+  'عذراً، لا تملك أي قاعدة بيانات (صفحة كوكل شيت) مرتبطة بحسابك في الشيت الرئيسي — تم منع الدخول إلى بيانات الإدارة لحماية الخصوصية. يرجى مراجعة المدير (باقر) لإضافة رابط صفحتك الخاصة.';
+
+const LS_SHARED_GEMINI_KEY = 'pharma_sheet_shared_gemini_key';
+
+export const hasUserDatabase = (u?: User | null): boolean => hasAssignedDatabase(u ?? getCurrentUser());
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
 const DEFAULT_SHEET_ID = DEFAULT_INVOICE_SHEET_ID;
@@ -49,48 +61,57 @@ export const setApiBase = (url: string) => {
 };
 
 export const getSavedGeminiKey = (): string => {
-  return (localStorage.getItem('pharma_gemini_api_key') || getCurrentUser()?.gemini_api_key || '').trim();
+  return (
+    localStorage.getItem(LS_SHARED_GEMINI_KEY) ||
+    getCurrentUser()?.gemini_api_key ||
+    localStorage.getItem('pharma_gemini_api_key') ||
+    ''
+  ).trim();
 };
 
 export const setSavedGeminiKey = (key: string) => {
-  if (key.trim()) localStorage.setItem('pharma_gemini_api_key', key.trim());
-  else localStorage.removeItem('pharma_gemini_api_key');
+  if (key.trim()) {
+    localStorage.setItem('pharma_gemini_api_key', key.trim());
+  } else {
+    localStorage.removeItem('pharma_gemini_api_key');
+    localStorage.removeItem(LS_SHARED_GEMINI_KEY);
+  }
 };
 
 export const getSavedWebhookUrl = (): string => {
   const user = getCurrentUser();
   if (user) {
+    if (!hasAssignedDatabase(user)) return '';
     const perUser = localStorage.getItem(`pharma_webhook_url::${user.id}`) || '';
     if (perUser.trim()) return perUser.trim();
     if (user.webhook_url && user.webhook_url.trim()) return user.webhook_url.trim();
     if (user.role === 'admin') return DEFAULT_WEBHOOK_URL;
     return '';
   }
-  return (localStorage.getItem('pharma_webhook_url') || DEFAULT_WEBHOOK_URL).trim();
+  return '';
 };
 
 export const getSavedSheetId = (): string => {
   const user = getCurrentUser();
-  if (user?.sheet_id && user.sheet_id.trim()) {
-    return extractGoogleSheetId(user.sheet_id) || user.sheet_id.trim();
+  if (!user) return '';
+  if (user.sheet_id && user.sheet_id.trim()) {
+    const id = extractGoogleSheetId(user.sheet_id) || user.sheet_id.trim();
+    if (id) return id;
   }
-  if (user?.sheet_url && user.sheet_url.trim()) {
+  if (user.sheet_url && user.sheet_url.trim()) {
     const m = extractGoogleSheetId(user.sheet_url);
     if (m) return m;
   }
-  if (!user) {
-    const customUrl = localStorage.getItem('pharma_google_sheet_url') || '';
-    const extracted = extractGoogleSheetId(customUrl);
-    if (extracted) return extracted;
-  }
-  return DEFAULT_SHEET_ID;
+  if (user.role === 'admin') return DEFAULT_SHEET_ID;
+  return '';
 };
 
 export const getSavedSheetUrl = (): string => {
   const user = getCurrentUser();
+  if (!user || !hasAssignedDatabase(user)) return '';
   if (user?.sheet_url && user.sheet_url.trim()) return user.sheet_url.trim();
   const id = getSavedSheetId();
-  return `https://docs.google.com/spreadsheets/d/${id}/edit?usp=sharing`;
+  return id ? `https://docs.google.com/spreadsheets/d/${id}/edit?usp=sharing` : '';
 };
 
 // ── Seed / Mock Fallback Data ────────────────────────────────────────────────
@@ -182,11 +203,15 @@ const LS_INVOICES_KEY = 'pharma_local_invoices_v1';
 
 function getScopedStorageKey(baseKey: string): string {
   const user = getCurrentUser();
-  const sheetScope = user?.sheet_id || extractGoogleSheetId(user?.sheet_url) || user?.id || DEFAULT_SHEET_ID;
+  if (!user) return `${baseKey}::anon`;
+  const personalSheet = user.sheet_id || extractGoogleSheetId(user.sheet_url);
+  const sheetScope = personalSheet || (user.role === 'admin' ? DEFAULT_SHEET_ID : `no_db_${user.id}`);
   return `${baseKey}::${sheetScope}`;
 }
 
 function getStoredPharmacies(): Pharmacy[] {
+  const user = getCurrentUser();
+  if (!hasAssignedDatabase(user)) return [];
   try {
     const raw = localStorage.getItem(getScopedStorageKey(LS_PHARMACIES_KEY));
     if (raw) {
@@ -194,16 +219,19 @@ function getStoredPharmacies(): Pharmacy[] {
       if (Array.isArray(parsed)) return parsed;
     }
   } catch { /* ignore */ }
-  return getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_PHARMACIES] : [];
+  return user?.role === 'admin' && getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_PHARMACIES] : [];
 }
 
 function saveStoredPharmacies(list: Pharmacy[]) {
+  if (!hasAssignedDatabase(getCurrentUser())) return;
   try {
     localStorage.setItem(getScopedStorageKey(LS_PHARMACIES_KEY), JSON.stringify(list));
   } catch { /* ignore */ }
 }
 
 function getStoredInvoices(): Invoice[] {
+  const user = getCurrentUser();
+  if (!hasAssignedDatabase(user)) return [];
   try {
     const raw = localStorage.getItem(getScopedStorageKey(LS_INVOICES_KEY));
     if (raw) {
@@ -211,10 +239,11 @@ function getStoredInvoices(): Invoice[] {
       if (Array.isArray(parsed)) return parsed;
     }
   } catch { /* ignore */ }
-  return getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : [];
+  return user?.role === 'admin' && getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : [];
 }
 
 function saveStoredInvoices(list: Invoice[]) {
+  if (!hasAssignedDatabase(getCurrentUser())) return;
   const key = getScopedStorageKey(LS_INVOICES_KEY);
   try {
     localStorage.setItem(key, JSON.stringify(list));
@@ -712,29 +741,83 @@ async function runBrowserGeminiOcr(
   throw lastError || new Error('تعذر تحليل الفاتورة عبر جميع نماذج Google Gemini.');
 }
 
+let lastSharedGemSyncAt = 0;
+
 /**
- * جلب المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم الأعمدة العربية الأربعة أو النموذج الموسع)
+ * جلب المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم CSV + Webhook + GViz حتى عند خلط الأرقام والنصوص في الرمز السري مثل keko3)
+ * كما يزامن مفتاح Gemini المشترك لجميع المستخدمين دفعة واحدة.
  */
 async function fetchAdminSheetUsersInBrowser(): Promise<AdminSheetUser[]> {
-  const urls = [
-    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&_t=${Date.now()}`,
-    `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}&_t=${Date.now()}`
-  ];
-  for (const url of urls) {
+  const adminHook = getAdminWebhookUrl();
+  const tasks: Promise<AdminSheetUser[]>[] = [];
+
+  // 1) تصدير CSV المباشر (لا يخفي الخلايا النصية داخل عمود أرقام)
+  tasks.push((async () => {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
-      if (!res.ok) continue;
-      const text = await res.text();
-      const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
-      if (!match?.[1]) continue;
-      const parsed = JSON.parse(match[1]);
-      const users = parseAdminSheetGvizPayload(parsed);
-      if (users.length > 0) return users;
-    } catch { /* try next */ }
+      const res = await fetch(`https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/export?format=csv&_t=${Date.now()}`, { signal: controller.signal })
+        .finally(() => clearTimeout(timer));
+      if (!res.ok) return [];
+      return parseAdminSheetCsvPayload(await res.text());
+    } catch { return []; }
+  })());
+
+  // 2) Apps Script Webhook (?action=users) — يقرأ مباشرة من SpreadsheetApp بدقة 100%
+  if (adminHook && adminHook.startsWith('http')) {
+    tasks.push((async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5500);
+        const res = await fetch(`${adminHook}?action=users&_t=${Date.now()}`, { signal: controller.signal })
+          .finally(() => clearTimeout(timer));
+        if (!res.ok) return [];
+        const data = await res.json().catch(() => null);
+        if (data?.success && Array.isArray(data.users)) {
+          return parseAdminSheetWebhookUsers(data.users);
+        }
+        return [];
+      } catch { return []; }
+    })());
   }
-  return [];
+
+  // 3) GViz JSON
+  tasks.push((async () => {
+    const urls = [
+      `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&_t=${Date.now()}`,
+      `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}&_t=${Date.now()}`
+    ];
+    for (const url of urls) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+        if (!res.ok) continue;
+        const text = await res.text();
+        const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
+        if (!match?.[1]) continue;
+        const users = parseAdminSheetGvizPayload(JSON.parse(match[1]));
+        if (users.length > 0) return users;
+      } catch { /* try next */ }
+    }
+    return [];
+  })());
+
+  const settled = await Promise.allSettled(tasks);
+  const nonEmptyLists = settled
+    .filter((r): r is PromiseFulfilledResult<AdminSheetUser[]> => r.status === 'fulfilled' && r.value.length > 0)
+    .map(r => r.value);
+
+  if (nonEmptyLists.length === 0) return [];
+  const merged = mergeAdminSheetUsers(...nonEmptyLists);
+
+  const sharedGem = extractSharedGeminiKey(merged);
+  if (sharedGem) {
+    localStorage.setItem(LS_SHARED_GEMINI_KEY, sharedGem);
+    localStorage.setItem('pharma_gemini_api_key', sharedGem);
+    lastSharedGemSyncAt = Date.now();
+  }
+  return merged;
 }
 
 /**
@@ -977,6 +1060,9 @@ function mapGvizTableRows(parsed: any): { headers: string[]; rows: any[] } {
 async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: any[]; headers?: string[] }> {
   try {
     const sheetId = getSavedSheetId();
+    if (!sheetId || !hasAssignedDatabase(getCurrentUser())) {
+      return { reachable: false, rows: [] };
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
     const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&_t=${Date.now()}`, { signal: controller.signal })
@@ -1137,6 +1223,9 @@ async function flushSheetsSyncOutboxInternal(opts?: { keepalive?: boolean; useBe
 
 // Helper to push an invoice locally and enqueue persistent exit-safe webhook sync
 function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }): Invoice {
+  if (!hasAssignedDatabase(getCurrentUser())) {
+    throw new Error(NO_DATABASE_ERROR_MSG);
+  }
   const pharmacies = getStoredPharmacies();
   const invoices = getStoredInvoices();
   const curUser = getCurrentUser();
@@ -1376,10 +1465,14 @@ export const api = {
           throw new Error('الاسم أو الرمز السري غير متطابق مع قاعدة البيانات');
         }
 
-        const { password_hash: _ph, username: _un, ...cleanUser } = matchedUser;
-        // مسح أي رابط شيت/ويب هوك قديم لمستخدم آخر حتى يعمل المستخدم بصفحته الخاصة فقط
-        localStorage.removeItem('pharma_google_sheet_url');
-        localStorage.removeItem('pharma_webhook_url');
+      const { password_hash: _ph, username: _un, ...cleanUser } = matchedUser;
+      const sharedGem = extractSharedGeminiKey(sheetUsers);
+      if (sharedGem && !cleanUser.gemini_api_key) {
+        cleanUser.gemini_api_key = sharedGem;
+      }
+      // مسح أي رابط شيت/ويب هوك قديم لمستخدم آخر حتى يعمل المستخدم بصفحته الخاصة فقط
+      localStorage.removeItem('pharma_google_sheet_url');
+      localStorage.removeItem('pharma_webhook_url');
 
         const token = 'sheet-jwt-' + Date.now();
         setToken(token);
@@ -1575,6 +1668,7 @@ export const api = {
 
   // ── Pharmacies ──
   async getPharmacies(): Promise<Pharmacy[]> {
+    if (!hasAssignedDatabase(getCurrentUser())) return [];
     try {
       const res = await fetchApi('/pharmacies', { headers: authHeaders() });
       return await handleResponse<Pharmacy[]>(res);
@@ -1585,6 +1679,7 @@ export const api = {
   },
 
   async createPharmacy(data: Partial<Pharmacy>): Promise<Pharmacy> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/pharmacies', {
         method: 'POST',
@@ -1626,6 +1721,7 @@ export const api = {
 
   // ── Invoices ──
   async getInvoices(): Promise<Invoice[]> {
+    if (!hasAssignedDatabase(getCurrentUser())) return [];
     try {
       const res = await fetchApi('/invoices?sync_sheet=1', { headers: authHeaders() });
       return await handleResponse<Invoice[]>(res);
@@ -1640,6 +1736,7 @@ export const api = {
 
   // حذف فواتير أو نسخ محذوفة من الشيت أو تعبئة الشيت عند الدخول الأول (مزامنة اتجاهين فورية)
   async syncSheetDeletion(): Promise<boolean> {
+    if (!hasAssignedDatabase(getCurrentUser())) return false;
     try {
       const { reachable, rows: sheetRows } = await fetchLiveSheetRowsStatus();
       if (!reachable) return false;
@@ -1750,6 +1847,7 @@ export const api = {
       ocr_confidence?: number;
     }[];
   }): Promise<Invoice> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/invoices', {
         method: 'POST',
@@ -2043,6 +2141,9 @@ export const api = {
       options?.onProgress?.({ stage, percent, message });
     };
 
+    if (Date.now() - lastSharedGemSyncAt > 15000) {
+      await api.syncSharedGeminiKeyFromSheet().catch(() => '');
+    }
     const geminiKey = getSavedGeminiKey();
     const initialBreaker = getClientOcrCircuitBreakerStatus(geminiKey);
     const useAsyncBackend = !isLocalhostFromRemoteHttps();
@@ -2326,6 +2427,7 @@ export const api = {
 
   // ── Batch Invoices Creation ──
   async createInvoicesBatch(invoices: any[]): Promise<{ count: number; invoices: Invoice[]; skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/invoices/batch', {
         method: 'POST',
@@ -2398,6 +2500,7 @@ export const api = {
     sheet_id: string;
     sheet_url: string;
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/data', { headers: authHeaders() });
       return await handleResponse(res);
@@ -2474,6 +2577,7 @@ export const api = {
     timestamp: string;
     skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>;
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/sync-all', {
         method: 'POST',
@@ -2556,6 +2660,7 @@ export const api = {
     missing_in_system_count: number;
     has_gap: boolean;
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/gap-status', { headers: authHeaders() });
       return await handleResponse(res);
@@ -2594,6 +2699,8 @@ export const api = {
     message: string;
     skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>;
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/sync-unuploaded', {
         method: 'POST',
@@ -2715,7 +2822,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 7 };
+      return { scriptVersion: ver, isOutdated: ver < 8 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -2729,6 +2836,7 @@ export const api = {
     imported_count: number;
     message: string;
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/import-missing', {
         method: 'POST',
@@ -2751,6 +2859,7 @@ export const api = {
     apps_script_code: string;
     headers: string[];
   }> {
+    if (!hasAssignedDatabase(getCurrentUser())) throw new Error(NO_DATABASE_ERROR_MSG);
     try {
       const res = await fetchApi('/sheets/config', { headers: authHeaders() });
       return await handleResponse(res);
@@ -2798,6 +2907,19 @@ export const api = {
 
   // ── Analytics ──
   async getKPIs(): Promise<KPISummary> {
+    if (!hasAssignedDatabase(getCurrentUser())) {
+      return {
+        total_invoices: 0,
+        total_pharmacies_visited: 0,
+        total_pieces_sold: 0,
+        total_bonus_given: 0,
+        total_bonus_pieces: 0,
+        total_revenue: 0,
+        total_sales_amount: 0,
+        approved_invoices: 0,
+        pending_invoices: 0
+      };
+    }
     try {
       const res = await fetchApi('/analytics/kpis', { headers: authHeaders() });
       return await handleResponse<KPISummary>(res);
@@ -2839,6 +2961,89 @@ export const api = {
     return fetchAdminSheetUsersInBrowser();
   },
 
+  async syncSharedGeminiKeyFromSheet(): Promise<string> {
+    const users = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+    return extractSharedGeminiKey(users) || getSavedGeminiKey();
+  },
+
+  async syncUserSessionFromMasterSheet(): Promise<{ user: User | null; sharedGeminiKey: string }> {
+    const cur = getCurrentUser();
+    if (!cur) return { user: null, sharedGeminiKey: '' };
+    const users = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+    const sharedGem = extractSharedGeminiKey(users);
+    if (users.length === 0) return { user: cur, sharedGeminiKey: sharedGem || getSavedGeminiKey() };
+
+    const normCur = normalizePersonName(cur.full_name);
+    const matched = users.find(u =>
+      normalizePersonName(u.full_name) === normCur ||
+      u.email.toLowerCase() === cur.email.toLowerCase()
+    );
+    if (!matched) return { user: cur, sharedGeminiKey: sharedGem || getSavedGeminiKey() };
+
+    const nextUser: User = {
+      ...cur,
+      full_name: matched.full_name,
+      role: matched.role,
+      sheet_id: matched.sheet_id,
+      sheet_url: matched.sheet_url,
+      webhook_url: matched.webhook_url,
+      gemini_api_key: matched.gemini_api_key || sharedGem || undefined
+    };
+    const changed =
+      nextUser.sheet_id !== cur.sheet_id ||
+      nextUser.webhook_url !== cur.webhook_url ||
+      nextUser.role !== cur.role ||
+      nextUser.full_name !== cur.full_name ||
+      nextUser.gemini_api_key !== cur.gemini_api_key;
+    if (changed) setCurrentUser(nextUser);
+    return { user: nextUser, sharedGeminiKey: sharedGem || nextUser.gemini_api_key || '' };
+  },
+
+  async adminSetSharedGeminiKey(geminiKey: string): Promise<{ verifiedInSheet: boolean; message: string }> {
+    const cleanKey = geminiKey.trim();
+    if (cleanKey) {
+      localStorage.setItem(LS_SHARED_GEMINI_KEY, cleanKey);
+      localStorage.setItem('pharma_gemini_api_key', cleanKey);
+    } else {
+      localStorage.removeItem(LS_SHARED_GEMINI_KEY);
+      localStorage.removeItem('pharma_gemini_api_key');
+    }
+    const cur = getCurrentUser();
+    if (cur) setCurrentUser({ ...cur, gemini_api_key: cleanKey || undefined });
+
+    try {
+      const res = await fetchApi('/users/shared-gemini-key', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ gemini_api_key: cleanKey, admin_webhook_url: getAdminWebhookUrl() })
+      }, 10000);
+      await handleResponse(res);
+      return { verifiedInSheet: true, message: 'تم حفظ مفتاح Gemini وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح ✅' };
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('يرجى تحديد رابط Apps Script Webhook للشيت الرئيسي أولاً');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'set_shared_gemini_key',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        gemini_api_key: cleanKey
+      });
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'فشل تعميم مفتاح Gemini في الشيت الرئيسي');
+      }
+      await new Promise(r => setTimeout(r, 1200));
+      const refreshed = await fetchAdminSheetUsersInBrowser().catch(() => [] as AdminSheetUser[]);
+      const verified = extractSharedGeminiKey(refreshed) === cleanKey;
+      return {
+        verifiedInSheet: verified,
+        message: verified
+          ? 'تم حفظ مفتاح Gemini في العمود E وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح ✅'
+          : 'تم إرسال المفتاح للشيت الرئيسي (تأكد من تحديث Apps Script للإصدار v8 على الشيت الرئيسي ليُحفظ في العمود E للجميع).'
+      };
+    }
+  },
+
   async checkAdminWebhookVersion(): Promise<{ scriptVersion: number; isOutdated: boolean }> {
     const url = getAdminWebhookUrl();
     if (!url || !url.startsWith('http')) return { scriptVersion: 0, isOutdated: true };
@@ -2848,15 +3053,16 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 5 };
+      return { scriptVersion: ver, isOutdated: ver < 8 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
   },
 
-  async adminAddSheetUser(data: { full_name: string; password: string; sheet_url?: string; webhook_url?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
+  async adminAddSheetUser(data: { full_name: string; password: string; sheet_url?: string; webhook_url?: string; gemini_api_key?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
     const cleanName = data.full_name.trim();
     const cleanPwd = normalizeDigits(data.password.trim());
+    const cleanGem = data.gemini_api_key?.trim() || getSavedGeminiKey();
     try {
       const res = await fetchApi('/users/add-to-sheet', {
         method: 'POST',
@@ -2866,6 +3072,7 @@ export const api = {
           password: cleanPwd,
           sheet_url: data.sheet_url?.trim() || '',
           webhook_url: data.webhook_url?.trim() || '',
+          gemini_api_key: cleanGem || '',
           admin_webhook_url: getAdminWebhookUrl()
         })
       }, 10000);
@@ -2884,7 +3091,8 @@ export const api = {
           password_hash: cleanPwd,
           sheet_url: data.sheet_url?.trim() || '',
           sheet_id: extractGoogleSheetId(data.sheet_url),
-          webhook_url: data.webhook_url?.trim() || ''
+          webhook_url: data.webhook_url?.trim() || '',
+          gemini_api_key: cleanGem || ''
         }
       });
       if (hookRes.parsed && hookRes.parsed.success === false) {
@@ -2895,12 +3103,12 @@ export const api = {
       const found = refreshed.some(u => normalizePersonName(u.full_name) === normalizePersonName(cleanName));
       return {
         verifiedInSheet: found,
-        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار 5 إذا لم يظهر الصف فوراً).'
+        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار 8 إذا لم يظهر الصف فوراً).'
       };
     }
   },
 
-  async adminUpdateSheetUser(data: { rowNumber: number; currentName: string; newName?: string; newPassword?: string; newSheetUrl?: string; newWebhookUrl?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
+  async adminUpdateSheetUser(data: { rowNumber: number; currentName: string; newName?: string; newPassword?: string; newSheetUrl?: string; newWebhookUrl?: string; newGeminiApiKey?: string }): Promise<{ verifiedInSheet: boolean; message: string }> {
     const cleanNewName = data.newName?.trim();
     const cleanNewPwd = data.newPassword !== undefined && data.newPassword.trim() !== '' ? normalizeDigits(data.newPassword.trim()) : undefined;
     try {
@@ -2914,6 +3122,7 @@ export const api = {
           newPassword: cleanNewPwd,
           newSheetUrl: data.newSheetUrl?.trim(),
           newWebhookUrl: data.newWebhookUrl?.trim(),
+          newGeminiApiKey: data.newGeminiApiKey?.trim(),
           admin_webhook_url: getAdminWebhookUrl()
         })
       }, 10000);
@@ -2932,7 +3141,8 @@ export const api = {
         newName: cleanNewName,
         newPassword: cleanNewPwd,
         newSheetUrl: data.newSheetUrl?.trim(),
-        newWebhookUrl: data.newWebhookUrl?.trim()
+        newWebhookUrl: data.newWebhookUrl?.trim(),
+        newGeminiApiKey: data.newGeminiApiKey?.trim()
       });
       if (hookRes.parsed && hookRes.parsed.success === false) {
         throw new Error(hookRes.parsed.error || 'فشل تعديل المستخدم في الشيت الرئيسي');
@@ -3033,7 +3243,8 @@ export const api = {
             { col: 'A', field: 'full_name', title: 'الاسم', example: 'باقر علي' },
             { col: 'B', field: 'password_hash', title: 'الرمز السري', example: '123456' },
             { col: 'C', field: 'sheet_url', title: 'صفحة كوكل شيت', example: 'https://docs.google.com/spreadsheets/d/...' },
-            { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' }
+            { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' },
+            { col: 'E', field: 'gemini_api_key', title: 'اي بي اي جمناي', example: 'AIzaSy...' }
           ]
         };
       }

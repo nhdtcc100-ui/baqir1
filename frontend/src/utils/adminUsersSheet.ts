@@ -3,7 +3,7 @@ import { UserRole } from '../types';
 export const ADMIN_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
 export const ADMIN_SHEET_URL = `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/edit?usp=sharing`;
 export const DEFAULT_INVOICE_SHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
-export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzNVERdMAD6DfcaW6oGOSOZeuuNv-0j2qJ1HVndYMILL8eWkcD5PJ1fG3sJkLV80-qs/exec';
+export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec';
 
 export interface AdminSheetUser {
   rowNumber: number;
@@ -117,7 +117,7 @@ function resolveHeaderIndices(headers: string[]): SheetColIndices {
     const idCol = findIdx(['^id$', 'المعرف']);
     const roleCol = findIdx(['role', 'دور', 'صلاحيه']);
     const activeCol = findIdx(['is_active', 'الحاله']);
-    const geminiCol = findIdx(['gemini', 'مفتاح']);
+    const geminiCol = findIdx(['اي بي اي جمناي', 'مفتاح جمناي', 'جمناي', 'gemini', 'مفتاح']);
 
     return {
       nameCol: nameCol >= 0 ? nameCol : 0,
@@ -193,7 +193,8 @@ export function parseAdminSheetGvizPayload(parsed: any): AdminSheetUser[] {
     const rawWebhook = get(idx.webhookCol);
     const rawId = get(idx.idCol);
     const rawActive = get(idx.activeCol);
-    const rawGemini = get(idx.geminiCol);
+    const rawGeminiCol = get(idx.geminiCol);
+    const scannedGemini = rawGeminiCol || c.slice(4).map((cell: any) => readGvizCellText(cell)).find((v: string) => /^(AIza|AQ\.)/.test(v.trim())) || '';
 
     if (!rawName && !rawEmailCol) continue;
 
@@ -248,9 +249,209 @@ export function parseAdminSheetGvizPayload(parsed: any): AdminSheetUser[] {
       sheet_id: sheetId,
       sheet_url: sheetUrl,
       webhook_url: webhookUrl,
-      gemini_api_key: rawGemini || undefined
+      gemini_api_key: scannedGemini || undefined
     });
   }
 
-  return users;
+  return propagateSharedGeminiKey(users);
+}
+
+/**
+ * استخراج مفتاح Gemini المشترك من الشيت الرئيسي (تُقدَّم خانة باقر/الأدمن عند التغيير لتعميمه للجميع دفعة واحدة)
+ */
+export function extractSharedGeminiKey(users: AdminSheetUser[]): string {
+  if (!Array.isArray(users) || users.length === 0) return '';
+  const adminWithKey = users.find(u => u.role === 'admin' && u.gemini_api_key && u.gemini_api_key.trim());
+  if (adminWithKey?.gemini_api_key) return adminWithKey.gemini_api_key.trim();
+  const anyWithKey = users.find(u => u.gemini_api_key && u.gemini_api_key.trim());
+  return anyWithKey?.gemini_api_key?.trim() || '';
+}
+
+function propagateSharedGeminiKey(users: AdminSheetUser[]): AdminSheetUser[] {
+  const shared = extractSharedGeminiKey(users);
+  if (!shared) return users;
+  const adminKey = users.find(u => u.role === 'admin' && u.gemini_api_key?.trim())?.gemini_api_key?.trim() || shared;
+  return users.map(u => ({
+    ...u,
+    gemini_api_key: adminKey || u.gemini_api_key || shared
+  }));
+}
+
+/**
+ * محلل CSV متوافق مع RFC-4180 لقراءة الشيت الرئيسي حتى عند خلط الأرقام والنصوص في عمود الرمز السري
+ */
+export function parseCsvMatrix(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+  const text = String(csvText || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(cell.trim());
+      cell = '';
+    } else if (ch === '\r') {
+      continue;
+    } else if (ch === '\n') {
+      row.push(cell.trim());
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell.trim());
+    rows.push(row);
+  }
+  return rows;
+}
+
+export function parseAdminSheetCsvPayload(csvText: string): AdminSheetUser[] {
+  const matrix = parseCsvMatrix(csvText);
+  if (matrix.length <= 1) return [];
+  const headers = matrix[0] || [];
+  const idx = resolveHeaderIndices(headers);
+  const users: AdminSheetUser[] = [];
+
+  for (let i = 1; i < matrix.length; i++) {
+    const cols = matrix[i] || [];
+    const get = (ci: number) => (ci >= 0 ? String(cols[ci] ?? '').trim() : '');
+    const rawName = get(idx.nameCol);
+    const rawPass = normalizeDigits(get(idx.passCol));
+    const rawEmailCol = get(idx.emailCol);
+    const rawSheet = get(idx.sheetCol);
+    const rawWebhook = get(idx.webhookCol);
+    const rawId = get(idx.idCol);
+    const rawActive = get(idx.activeCol);
+    const rawGeminiCol = get(idx.geminiCol);
+    const scannedGemini = rawGeminiCol || cols.slice(4).find(v => /^(AIza|AQ\.)/.test(String(v || '').trim())) || '';
+
+    if (!rawName && !rawEmailCol) continue;
+    const normNameCheck = normalizePersonName(rawName);
+    if (normNameCheck === 'الاسم' || normNameCheck === 'full_name' || rawId.toLowerCase() === 'id') continue;
+    if (rawActive) {
+      const act = rawActive.trim().toUpperCase();
+      if (act === 'FALSE' || act === '0' || act === 'معطل') continue;
+    }
+
+    const displayName = rawName || rawEmailCol.split('@')[0];
+    const loginIdentifier = (rawName || rawEmailCol).trim();
+    const safeSlug = loginIdentifier
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9_\u0621-\u064a-]/gi, '') || `rep_${i}`;
+    const email = rawEmailCol.includes('@') ? rawEmailCol.toLowerCase() : `${safeSlug}@pharma.com`;
+    const isAdmin = isBaqerAdmin(displayName, email);
+    const role: UserRole = isAdmin ? 'admin' : 'medical_rep';
+    const sheetId = extractGoogleSheetId(rawSheet) || undefined;
+    const sheetUrl = sheetId
+      ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing`
+      : (rawSheet.startsWith('http') ? rawSheet : undefined);
+    let webhookUrl = rawWebhook && rawWebhook.startsWith('http') ? rawWebhook : undefined;
+    if (!webhookUrl && isAdmin) webhookUrl = DEFAULT_APPS_SCRIPT_URL;
+    const rowNumber = i + 1;
+
+    users.push({
+      rowNumber,
+      id: rawId || `sheet-usr-${rowNumber}`,
+      full_name: displayName,
+      email,
+      username: loginIdentifier,
+      password_hash: rawPass,
+      role,
+      is_active: true,
+      sheet_id: sheetId,
+      sheet_url: sheetUrl,
+      webhook_url: webhookUrl,
+      gemini_api_key: scannedGemini.trim() || undefined
+    });
+  }
+  return propagateSharedGeminiKey(users);
+}
+
+export function parseAdminSheetWebhookUsers(rawUsers: any[]): AdminSheetUser[] {
+  if (!Array.isArray(rawUsers)) return [];
+  const mapped: AdminSheetUser[] = rawUsers
+    .filter(u => u && (u.full_name || u.email))
+    .map((u, idx) => {
+      const displayName = String(u.full_name || u.name || '').trim();
+      const emailRaw = String(u.email || '').trim().toLowerCase();
+      const isAdmin = isBaqerAdmin(displayName, emailRaw);
+      const rawSheet = String(u.sheet_url || u.sheet_id || '').trim();
+      const sheetId = extractGoogleSheetId(rawSheet) || undefined;
+      const sheetUrl = sheetId
+        ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing`
+        : (rawSheet.startsWith('http') ? rawSheet : undefined);
+      let webhookUrl = String(u.webhook_url || '').trim() || undefined;
+      if (!webhookUrl && isAdmin) webhookUrl = DEFAULT_APPS_SCRIPT_URL;
+      const rowNumber = Number(u.rowNumber || idx + 2);
+      return {
+        rowNumber,
+        id: String(u.id || `sheet-usr-${rowNumber}`),
+        full_name: displayName,
+        email: emailRaw || `${displayName.toLowerCase().replace(/\s+/g, '_')}@pharma.com`,
+        username: displayName,
+        password_hash: normalizeDigits(String(u.password_hash || u.password || '').trim()),
+        role: isAdmin ? 'admin' : 'medical_rep',
+        is_active: true,
+        sheet_id: sheetId,
+        sheet_url: sheetUrl,
+        webhook_url: webhookUrl,
+        gemini_api_key: String(u.gemini_api_key || '').trim() || undefined
+      };
+    });
+  return propagateSharedGeminiKey(mapped);
+}
+
+/**
+ * دمج قوائم المستخدمين من مصادر الشيت (CSV + Webhook + GViz) لاستعادة أي رمز سري أو رابط مفقود
+ */
+export function mergeAdminSheetUsers(...lists: AdminSheetUser[][]): AdminSheetUser[] {
+  const byKey = new Map<string, AdminSheetUser>();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const u of list) {
+      if (!u || Array.isArray(u)) continue;
+      const k = normalizePersonName(u.full_name) || (u.email || '').toLowerCase();
+      if (!k) continue;
+      const prev = byKey.get(k);
+      if (!prev) {
+        byKey.set(k, { ...u });
+      } else {
+        byKey.set(k, {
+          ...prev,
+          ...u,
+          password_hash: u.password_hash || prev.password_hash,
+          sheet_id: u.sheet_id || prev.sheet_id,
+          sheet_url: u.sheet_url || prev.sheet_url,
+          webhook_url: u.webhook_url || prev.webhook_url,
+          gemini_api_key: u.gemini_api_key || prev.gemini_api_key,
+          rowNumber: u.rowNumber || prev.rowNumber
+        });
+      }
+    }
+  }
+  return propagateSharedGeminiKey(Array.from(byKey.values()));
+}
+
+export function hasAssignedDatabase(user?: { role?: string; sheet_id?: string; sheet_url?: string } | null): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return Boolean(extractGoogleSheetId(user.sheet_id || user.sheet_url));
 }

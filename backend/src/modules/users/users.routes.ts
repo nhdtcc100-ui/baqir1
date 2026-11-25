@@ -58,7 +58,8 @@ router.get('/admin-sheet-config', requireRoles(['admin']), async (req: Request, 
         { col: 'A', field: 'full_name', title: 'الاسم', example: 'باقر علي' },
         { col: 'B', field: 'password_hash', title: 'الرمز السري', example: '123456' },
         { col: 'C', field: 'sheet_url', title: 'صفحة كوكل شيت', example: 'https://docs.google.com/spreadsheets/d/.../edit' },
-        { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' }
+        { col: 'D', field: 'webhook_url', title: 'اي بي اي سكربت', example: 'https://script.google.com/macros/s/.../exec' },
+        { col: 'E', field: 'gemini_api_key', title: 'اي بي اي جمناي', example: 'AIzaSy...' }
       ]
     };
     sendSuccess(res, config);
@@ -142,7 +143,7 @@ router.post('/push-to-sheet', requireRoles(['admin']), async (req: Request, res:
  */
 router.post('/add-to-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { full_name, password, sheet_url, webhook_url, admin_webhook_url } = req.body;
+    const { full_name, password, sheet_url, webhook_url, gemini_api_key, admin_webhook_url } = req.body;
     if (!full_name || !password) {
       sendError(res, 'الاسم والرمز السري مطلوبان', 400);
       return;
@@ -153,7 +154,8 @@ router.post('/add-to-sheet', requireRoles(['admin']), async (req: Request, res: 
         password_hash: String(password).trim(),
         sheet_url: String(sheet_url || '').trim(),
         sheet_id: extractGoogleSheetId(sheet_url),
-        webhook_url: String(webhook_url || '').trim()
+        webhook_url: String(webhook_url || '').trim(),
+        gemini_api_key: String(gemini_api_key || '').trim()
       }
     }, admin_webhook_url);
     if (!result.success) {
@@ -165,13 +167,32 @@ router.post('/add-to-sheet', requireRoles(['admin']), async (req: Request, res: 
 });
 
 /**
+ * @route   POST /api/v1/users/shared-gemini-key
+ * @access  admin (باقر فقط)
+ * @desc    تحديث مفتاح Gemini المشترك وتعميمه في الشيت الرئيسي للجميع دفعة واحدة
+ */
+router.post('/shared-gemini-key', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { gemini_api_key, admin_webhook_url } = req.body;
+    const result = await GoogleSheetsService.manageAdminSheetUser('set_shared_gemini_key', {
+      gemini_api_key: String(gemini_api_key || '').trim()
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
+    sendSuccess(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
  * @route   PUT /api/v1/users/update-in-sheet
  * @access  admin (باقر فقط)
  * @desc    تعديل أي صف مستخدم مباشرة في الشيت الرئيسي
  */
 router.put('/update-in-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { rowNumber, currentName, newName, newPassword, newSheetUrl, newWebhookUrl, admin_webhook_url } = req.body;
+    const { rowNumber, currentName, newName, newPassword, newSheetUrl, newWebhookUrl, newGeminiApiKey, admin_webhook_url } = req.body;
     if (!rowNumber && !currentName) {
       sendError(res, 'معرف الصف أو الاسم الحالي مطلوب للتعديل', 400);
       return;
@@ -182,7 +203,8 @@ router.put('/update-in-sheet', requireRoles(['admin']), async (req: Request, res
       newName,
       newPassword,
       newSheetUrl,
-      newWebhookUrl
+      newWebhookUrl,
+      newGeminiApiKey
     }, admin_webhook_url);
     if (!result.success) {
       sendError(res, result.message, 502);

@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { User, Invoice, KPISummary, Pharmacy } from '../types';
+import { detectDosageFormClient } from '../utils/invoiceTableParser';
 import {
   TrendingUp, FileText, Building2, Gift, FilePlus, Calendar,
-  Download, CheckCircle2, Clock, AlertCircle, ArrowUpRight, Sparkles
+  Download, CheckCircle2, Clock, AlertCircle, Sparkles
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -130,31 +131,79 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* ── Mid Section ────────────────────────────────────────────────────── */}
       <div className="dashboard-mid-grid">
 
-        {/* Sales Breakdown */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-            <h5 style={{ fontWeight: 800, margin: 0 }}>توزيع المبيعات</h5>
-            <span className="badge badge-purple">
-              <Sparkles size={12} /> تحديث حي
-            </span>
-          </div>
+        {/* Sales Breakdown — Real Live Percentages Calculated From Actual Invoices */}
+        {(() => {
+          const buckets = {
+            drop: { label: '💧 قطرات (Drops)', amount: 0, qty: 0, color: 'var(--primary)' },
+            cream: { label: '🧴 كريمات (Creams)', amount: 0, qty: 0, color: 'var(--success)' },
+            ointment: { label: '🩹 مراهم (Ointments)', amount: 0, qty: 0, color: 'var(--warning)' },
+            tablet: { label: '💊 حبوب وأخرى (Tablets)', amount: 0, qty: 0, color: '#7c3aed' }
+          };
 
-          {[
-            { label: '💧 قطرات (Drops)', pct: 45, color: 'var(--primary)' },
-            { label: '🧴 كريمات (Creams)', pct: 35, color: 'var(--success)' },
-            { label: '🩹 مراهم (Ointments)', pct: 20, color: 'var(--warning)' }
-          ].map(b => (
-            <div key={b.label} style={{ marginBottom: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.83rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-                <span>{b.label}</span>
-                <span style={{ color: b.color }}>{b.pct}%</span>
+          for (const inv of invoices) {
+            for (const it of (inv.items || [])) {
+              const rawForm = String((it as any).dosage_form || '').trim();
+              const form = ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(rawForm)
+                ? rawForm
+                : detectDosageFormClient(it.product_name_snapshot || '');
+              const lineAmount = Number(it.line_total || (Number(it.sold_quantity || 0) * Number(it.historical_unit_price || 0)) || 0);
+              const lineQty = Number(it.sold_quantity || 0);
+              const target =
+                form === 'قطرة' ? buckets.drop
+                  : form === 'كريم' ? buckets.cream
+                  : form === 'مرهم' ? buckets.ointment
+                  : buckets.tablet;
+              target.amount += lineAmount;
+              target.qty += lineQty;
+            }
+          }
+
+          const allCats = [buckets.drop, buckets.cream, buckets.ointment, buckets.tablet];
+          const totalAmountSum = allCats.reduce((s, c) => s + c.amount, 0);
+          const totalQtySum = allCats.reduce((s, c) => s + c.qty, 0);
+          const denom = totalAmountSum > 0 ? totalAmountSum : totalQtySum;
+
+          const visibleCats = (buckets.tablet.amount > 0 || buckets.tablet.qty > 0)
+            ? allCats
+            : [buckets.drop, buckets.cream, buckets.ointment];
+
+          const breakdownRows = visibleCats.map(c => {
+            const val = totalAmountSum > 0 ? c.amount : c.qty;
+            const rawPct = denom > 0 ? (val / denom) * 100 : 0;
+            const pct = Math.round(rawPct * 10) / 10;
+            return { ...c, pct };
+          });
+
+          return (
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <h5 style={{ fontWeight: 800, margin: 0 }}>توزيع المبيعات</h5>
+                <span className="badge badge-purple">
+                  <Sparkles size={12} /> {invoices.length > 0 ? `نسبة حقيقية (${invoices.length} فاتورة)` : 'لا توجد مبيعات بعد'}
+                </span>
               </div>
-              <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{ width: `${b.pct}%`, background: b.color }} />
-              </div>
+
+              {breakdownRows.map(b => (
+                <div key={b.label} style={{ marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.83rem', fontWeight: 600, marginBottom: '0.35rem', gap: '0.5rem' }}>
+                    <span>{b.label}</span>
+                    <span style={{ color: b.color, fontWeight: 800 }}>
+                      {b.pct}%
+                      {b.amount > 0 && (
+                        <span style={{ fontSize: '0.73rem', color: 'var(--gray-500)', fontWeight: 600, marginRight: 6 }}>
+                          ({b.amount.toLocaleString()} د.ع)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="progress-bar-bg">
+                    <div className="progress-bar-fill" style={{ width: `${Math.min(100, b.pct)}%`, background: b.color }} />
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          );
+        })()}
 
         {/* Quick Actions */}
         <div className="card">

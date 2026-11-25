@@ -8,18 +8,43 @@ import { sendSuccess, sendError } from '../../utils/response';
 const router = Router();
 router.use(authenticateToken);
 
+const NO_DATABASE_MSG = 'لا تملك أي قاعدة بيانات (صفحة كوكل شيت) مرتبطة بحسابك في الشيت الرئيسي، ولا يمكنك الدخول إلى شيت الإدارة أو شيت باقر.';
+
+function resolveUserSheetOrReject(req: Request, res: Response): { sheetId: string; webhookUrl?: string } | null {
+  const user = req.user;
+  if (!user) {
+    sendError(res, 'يرجى تسجيل الدخول أولاً', 401);
+    return null;
+  }
+  if (user.role === 'admin') {
+    return {
+      sheetId: user.sheetId || GoogleSheetsService.getSheetId(),
+      webhookUrl: user.webhookUrl || GoogleSheetsService.getWebhookUrl()
+    };
+  }
+  if (!user.sheetId || !String(user.sheetId).trim()) {
+    sendError(res, NO_DATABASE_MSG, 403);
+    return null;
+  }
+  return {
+    sheetId: String(user.sheetId).trim(),
+    webhookUrl: user.webhookUrl ? String(user.webhookUrl).trim() : undefined
+  };
+}
+
 /**
  * @route   GET /api/v1/sheets/data
  * @desc    قراءة البيانات الحية من كوكل شيت لعرضها في الموقع
  */
 router.get('/data', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const activeSheetId = req.user?.sheetId || GoogleSheetsService.getSheetId();
-    const data = await GoogleSheetsService.readFromSheet(activeSheetId, req.user?.webhookUrl);
+    const scope = resolveUserSheetOrReject(req, res);
+    if (!scope) return;
+    const data = await GoogleSheetsService.readFromSheet(scope.sheetId, scope.webhookUrl);
     sendSuccess(res, {
       ...data,
-      sheet_id: activeSheetId,
-      sheet_url: `https://docs.google.com/spreadsheets/d/${activeSheetId}/edit?usp=sharing`
+      sheet_id: scope.sheetId,
+      sheet_url: `https://docs.google.com/spreadsheets/d/${scope.sheetId}/edit?usp=sharing`
     }, 'تم سحب البيانات الحية من كوكل شيت بنجاح');
   } catch (e) { next(e); }
 });
@@ -32,11 +57,13 @@ router.post('/sync-all',
   requireRoles(['admin', 'medical_rep', 'supervisor']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const scope = resolveUserSheetOrReject(req, res);
+      if (!scope) return;
       const { role, userId } = req.user!;
       const repId = role === 'medical_rep' ? userId : undefined;
       const invoices = await InvoiceService.findAll({ repId });
 
-      const result = await GoogleSheetsService.syncBatchInvoices(invoices, req.user?.webhookUrl, req.user?.sheetId, { skipExistingDuplicates: true });
+      const result = await GoogleSheetsService.syncBatchInvoices(invoices, scope.webhookUrl || '', scope.sheetId, { skipExistingDuplicates: true });
       sendSuccess(res, result, result.message);
     } catch (e) { next(e); }
   }
@@ -48,10 +75,12 @@ router.post('/sync-all',
  */
 router.get('/gap-status', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const scope = resolveUserSheetOrReject(req, res);
+    if (!scope) return;
     const { role, userId } = req.user!;
     const repId = role === 'medical_rep' ? userId : undefined;
     const systemInvoices = await InvoiceService.findAll({ repId });
-    const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
+    const sheetData = await GoogleSheetsService.readFromSheet(scope.sheetId, scope.webhookUrl);
     const sheetRows = (sheetData.rows || []).filter(r => {
       const num = String(r.invoice_number || '').trim();
       return num && num !== '123' && r.pharmacy_name;
@@ -104,10 +133,12 @@ router.post('/sync-unuploaded',
   requireRoles(['admin', 'medical_rep', 'supervisor']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const scope = resolveUserSheetOrReject(req, res);
+      if (!scope) return;
       const { role, userId } = req.user!;
       const repId = role === 'medical_rep' ? userId : undefined;
       const systemInvoices = await InvoiceService.findAll({ repId });
-      const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
+      const sheetData = await GoogleSheetsService.readFromSheet(scope.sheetId, scope.webhookUrl);
       const sheetRows = sheetData.rows || [];
 
       const unuploaded = systemInvoices.filter(
@@ -124,7 +155,7 @@ router.post('/sync-unuploaded',
         return;
       }
 
-      const result = await GoogleSheetsService.syncBatchInvoices(unuploaded, req.user?.webhookUrl, req.user?.sheetId, { skipExistingDuplicates: true });
+      const result = await GoogleSheetsService.syncBatchInvoices(unuploaded, scope.webhookUrl || '', scope.sheetId, { skipExistingDuplicates: true });
       sendSuccess(res, {
         success: result.success,
         synced_count: result.synced_count ?? unuploaded.length,
@@ -144,7 +175,9 @@ router.post('/import-missing',
   requireRoles(['admin', 'supervisor', 'medical_rep']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
+      const scope = resolveUserSheetOrReject(req, res);
+      if (!scope) return;
+      const sheetData = await GoogleSheetsService.readFromSheet(scope.sheetId, scope.webhookUrl);
       const sheetRows = sheetData.rows || [];
       const allInvs = await InvoiceService.findAll();
       const sysNumbers = new Set(
@@ -208,13 +241,13 @@ router.post('/import-missing',
  */
 router.get('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const activeSheetId = req.user?.sheetId || GoogleSheetsService.getSheetId();
-    const activeWebhook = req.user?.webhookUrl || GoogleSheetsService.getWebhookUrl();
+    const scope = resolveUserSheetOrReject(req, res);
+    if (!scope) return;
     sendSuccess(res, {
-      sheet_id: activeSheetId,
-      sheet_url: `https://docs.google.com/spreadsheets/d/${activeSheetId}/edit?usp=sharing`,
-      webhook_url: activeWebhook,
-      is_connected: Boolean(activeWebhook),
+      sheet_id: scope.sheetId,
+      sheet_url: `https://docs.google.com/spreadsheets/d/${scope.sheetId}/edit?usp=sharing`,
+      webhook_url: scope.webhookUrl || '',
+      is_connected: Boolean(scope.webhookUrl),
       apps_script_code: GoogleSheetsService.getAppsScriptCode(),
       headers: GoogleSheetsService.getDefaultHeaders()
     });
@@ -229,11 +262,15 @@ router.post('/config',
   requireRoles(['admin', 'medical_rep']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const scope = resolveUserSheetOrReject(req, res);
+      if (!scope) return;
       const { webhook_url } = req.body;
-      GoogleSheetsService.setWebhookUrl(webhook_url || '');
+      if (req.user?.role === 'admin') {
+        GoogleSheetsService.setWebhookUrl(webhook_url || '');
+      }
       sendSuccess(res, {
-        webhook_url: GoogleSheetsService.getWebhookUrl(),
-        is_connected: Boolean(GoogleSheetsService.getWebhookUrl())
+        webhook_url: req.user?.role === 'admin' ? GoogleSheetsService.getWebhookUrl() : (webhook_url || scope.webhookUrl || ''),
+        is_connected: Boolean(req.user?.role === 'admin' ? GoogleSheetsService.getWebhookUrl() : (webhook_url || scope.webhookUrl))
       }, 'تم حفظ إعدادات رابط كوكل شيت بنجاح');
     } catch (e) { next(e); }
   }

@@ -376,10 +376,10 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
                 <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 7 أو إصلاح أعمدة الشيت (إضافة عمود المنطقة بعد المدينة)</span>
+                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 8 أو إصلاح أعمدة الشيت (إضافة عمود المنطقة بعد المدينة)</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.65 }}>
-                لضمان وجود عمود <strong>المنطقة / المكان</strong> مباشرة بعد <strong>المدينة / المحافظة</strong> ومنع حذف الأصلية عند إزالة التكرارات: انسخ الكود الجديد (v7) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
+                لضمان وجود عمود <strong>المنطقة / المكان</strong> مباشرة بعد <strong>المدينة / المحافظة</strong> ودعم المفتاح المشترك وتعدد قواعد البيانات: انسخ الكود الجديد (v8) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -390,7 +390,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
                 style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
               >
                 {copiedCode ? <Check size={15} /> : <Copy size={15} />}
-                {copiedCode ? 'تم نسخ كود v7!' : 'نسخ كود Apps Script v7 📋'}
+                {copiedCode ? 'تم نسخ كود v8!' : 'نسخ كود Apps Script v8 📋'}
               </button>
               <button
                 type="button"

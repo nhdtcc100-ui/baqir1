@@ -70,12 +70,207 @@ export interface SheetUser {
   webhook_url?: string;
 }
 
+function parseCsvMatrixBackend(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+  const text = String(csvText || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; }
+        else { inQuotes = false; }
+      } else { cell += ch; }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(cell.trim()); cell = '';
+    } else if (ch === '\r') {
+      continue;
+    } else if (ch === '\n') {
+      row.push(cell.trim()); rows.push(row); row = []; cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length > 0 || row.length > 0) { row.push(cell.trim()); rows.push(row); }
+  return rows;
+}
+
+function resolveSheetColsBackend(headers: string[]) {
+  const normHeaders = headers.map(h => normalizePersonNameBackend(h));
+  const findIdx = (patterns: string[]) => normHeaders.findIndex(h => h && patterns.some(p => h.includes(p)));
+  const isLegacy = normHeaders[0] === 'id' || normHeaders[0]?.includes('معرف');
+  return {
+    nameCol: isLegacy ? 1 : (findIdx(['الاسم', 'full_name', 'name']) >= 0 ? findIdx(['الاسم', 'full_name', 'name']) : 0),
+    passCol: isLegacy ? 3 : (findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) >= 0 ? findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) : 1),
+    sheetCol: isLegacy ? 7 : (findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) >= 0 ? findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) : 2),
+    webhookCol: isLegacy ? 8 : (findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) >= 0 ? findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) : 3),
+    emailCol: isLegacy ? 2 : findIdx(['email', 'بريد', 'username']),
+    idCol: isLegacy ? 0 : findIdx(['معرف']),
+    activeCol: isLegacy ? 5 : findIdx(['is_active', 'الحاله']),
+    geminiCol: isLegacy ? 6 : findIdx(['اي بي اي جمناي', 'مفتاح جمناي', 'جمناي', 'gemini', 'مفتاح'])
+  };
+}
+
+function buildSheetUserRecordBackend(fields: {
+  rowNum: number;
+  rawName: string;
+  rawPass: string;
+  rawEmailCol: string;
+  rawSheet: string;
+  rawWebhook: string;
+  rawId: string;
+  rawActive: string;
+  rawGemini: string;
+}): SheetUser | null {
+  if (!fields.rawName && !fields.rawEmailCol) return null;
+  const nName = normalizePersonNameBackend(fields.rawName);
+  if (nName === 'الاسم' || nName === 'full_name' || nName === 'a' || fields.rawId.toLowerCase() === 'id') return null;
+  if (fields.rawActive) {
+    const act = fields.rawActive.trim().toUpperCase();
+    if (act === 'FALSE' || act === '0' || act === 'معطل') return null;
+  }
+  const displayName = fields.rawName || fields.rawEmailCol.split('@')[0];
+  const safeSlug = displayName.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_\u0621-\u064a-]/gi, '') || `rep_${fields.rowNum}`;
+  const email = fields.rawEmailCol.includes('@') ? fields.rawEmailCol.toLowerCase() : `${safeSlug}@pharma.com`;
+  const isAdmin = isBaqerAdminBackend(displayName, email);
+  const role: UserRole = isAdmin ? 'admin' : 'medical_rep';
+  const sheetId = extractGoogleSheetId(fields.rawSheet) || undefined;
+  let webhookUrl = fields.rawWebhook && fields.rawWebhook.startsWith('http') ? fields.rawWebhook : undefined;
+  if (!webhookUrl && isAdmin) webhookUrl = ENV.GOOGLE_SHEETS_WEBHOOK_URL;
+  return {
+    rowNumber: fields.rowNum,
+    id: fields.rawId || `sheet-usr-${fields.rowNum}`,
+    full_name: displayName,
+    email,
+    password_hash: fields.rawPass,
+    role,
+    is_active: true,
+    gemini_api_key: fields.rawGemini || undefined,
+    sheet_id: sheetId,
+    sheet_url: sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing` : (fields.rawSheet.startsWith('http') ? fields.rawSheet : undefined),
+    webhook_url: webhookUrl
+  };
+}
+
+function propagateSharedGeminiBackend(users: SheetUser[]): SheetUser[] {
+  const adminKey = users.find(u => u.role === 'admin' && u.gemini_api_key?.trim())?.gemini_api_key?.trim() || '';
+  const anyKey = users.find(u => u.gemini_api_key?.trim())?.gemini_api_key?.trim() || '';
+  const shared = adminKey || anyKey;
+  if (!shared) return users;
+  return users.map(u => ({ ...u, gemini_api_key: adminKey || u.gemini_api_key || shared }));
+}
+
+function mergeSheetUsersBackend(...lists: SheetUser[][]): SheetUser[] {
+  const byKey = new Map<string, SheetUser>();
+  for (const list of lists) {
+    for (const u of list) {
+      const k = normalizePersonNameBackend(u.full_name) || u.email.toLowerCase();
+      if (!k) continue;
+      const prev = byKey.get(k);
+      if (!prev) {
+        byKey.set(k, { ...u });
+      } else {
+        byKey.set(k, {
+          ...prev,
+          ...u,
+          password_hash: u.password_hash || prev.password_hash,
+          sheet_id: u.sheet_id || prev.sheet_id,
+          sheet_url: u.sheet_url || prev.sheet_url,
+          webhook_url: u.webhook_url || prev.webhook_url,
+          gemini_api_key: u.gemini_api_key || prev.gemini_api_key,
+          rowNumber: u.rowNumber || prev.rowNumber
+        });
+      }
+    }
+  }
+  return propagateSharedGeminiBackend(Array.from(byKey.values()));
+}
+
 /**
- * جلب قائمة المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم الأعمدة العربية الأربعة أو النموذج الموسع)
+ * جلب مفتاح Gemini المشترك من الشيت الرئيسي (الأولوية لصف الأدمن/باقر ثم أول مفتاح صالح)
+ */
+export async function fetchSharedGeminiKeyFromAdminSheet(): Promise<string> {
+  const users = await fetchUsersFromAdminSheet().catch(() => [] as SheetUser[]);
+  const adminKey = users.find(u => u.role === 'admin' && u.gemini_api_key?.trim())?.gemini_api_key?.trim();
+  if (adminKey) return adminKey;
+  const anyKey = users.find(u => u.gemini_api_key?.trim())?.gemini_api_key?.trim();
+  return anyKey || '';
+}
+
+/**
+ * جلب قائمة المستخدمين من الشيت الرئيسي كقاعدة بيانات (يدعم CSV + Webhook + GViz حتى عند خلط الأرقام والنصوص في الرمز السري)
  */
 export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
   const sid = ENV.ADMIN_SHEET_ID;
   if (!sid) return [];
+
+  const collected: SheetUser[][] = [];
+
+  // 1) CSV Direct Export (لا يخفي الخلايا النصية مثل keko3 داخل عمود الأرقام)
+  try {
+    const csvRes = await fetch(`https://docs.google.com/spreadsheets/d/${sid}/export?format=csv&_t=${Date.now()}`, { signal: AbortSignal.timeout(6000) });
+    if (csvRes.ok) {
+      const matrix = parseCsvMatrixBackend(await csvRes.text());
+      if (matrix.length > 1) {
+        const idx = resolveSheetColsBackend(matrix[0] || []);
+        const list: SheetUser[] = [];
+        for (let i = 1; i < matrix.length; i++) {
+          const row = matrix[i] || [];
+          const get = (ci: number) => (ci >= 0 ? String(row[ci] ?? '').trim() : '');
+          const rawGem = get(idx.geminiCol) || row.slice(4).find(v => /^(AIza|AQ\.)/.test(String(v || '').trim())) || '';
+          const rec = buildSheetUserRecordBackend({
+            rowNum: i + 1,
+            rawName: get(idx.nameCol),
+            rawPass: normalizeDigitsBackend(get(idx.passCol)),
+            rawEmailCol: get(idx.emailCol),
+            rawSheet: get(idx.sheetCol),
+            rawWebhook: get(idx.webhookCol),
+            rawId: get(idx.idCol),
+            rawActive: get(idx.activeCol),
+            rawGemini: rawGem.trim()
+          });
+          if (rec) list.push(rec);
+        }
+        if (list.length > 0) collected.push(list);
+      }
+    }
+  } catch { /* fallback next */ }
+
+  // 2) Admin Apps Script ?action=users (إن وُجد رابط مفعل)
+  const adminHook = (ENV.ADMIN_WEBHOOK_URL || ENV.GOOGLE_SHEETS_WEBHOOK_URL || '').trim();
+  if (adminHook.startsWith('http')) {
+    try {
+      const hookRes = await fetch(`${adminHook}?action=users&_t=${Date.now()}`, { signal: AbortSignal.timeout(5000) });
+      if (hookRes.ok) {
+        const data: any = await hookRes.json().catch(() => null);
+        if (data?.success && Array.isArray(data.users)) {
+          const list: SheetUser[] = [];
+          for (let i = 0; i < data.users.length; i++) {
+            const u = data.users[i];
+            const rec = buildSheetUserRecordBackend({
+              rowNum: Number(u.rowNumber || i + 2),
+              rawName: String(u.full_name || u.name || '').trim(),
+              rawPass: normalizeDigitsBackend(String(u.password_hash || u.password || '').trim()),
+              rawEmailCol: String(u.email || '').trim(),
+              rawSheet: String(u.sheet_url || u.sheet_id || '').trim(),
+              rawWebhook: String(u.webhook_url || '').trim(),
+              rawId: String(u.id || ''),
+              rawActive: 'TRUE',
+              rawGemini: String(u.gemini_api_key || '').trim()
+            });
+            if (rec) list.push(rec);
+          }
+          if (list.length > 0) collected.push(list);
+        }
+      }
+    } catch { /* fallback next */ }
+  }
+
+  // 3) GViz JSON
   const urls = [
     `https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&_t=${Date.now()}`,
     `https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}&_t=${Date.now()}`
@@ -83,7 +278,7 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
 
   for (const url of urls) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) continue;
 
       const text = await res.text();
@@ -113,77 +308,39 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
         startIdx = 1;
       }
 
-      const normHeaders = headers.map(h => normalizePersonNameBackend(h));
-      const findIdx = (patterns: string[]) => normHeaders.findIndex(h => h && patterns.some(p => h.includes(p)));
-      const isLegacy = normHeaders[0] === 'id' || normHeaders[0]?.includes('معرف');
-
-      const nameCol = isLegacy ? 1 : (findIdx(['الاسم', 'full_name', 'name']) >= 0 ? findIdx(['الاسم', 'full_name', 'name']) : 0);
-      const passCol = isLegacy ? 3 : (findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) >= 0 ? findIdx(['الرمز السري', 'كلمه المرور', 'الرمز', 'password', 'pin']) : 1);
-      const sheetCol = isLegacy ? 7 : (findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) >= 0 ? findIdx(['صفحه كوكل شيت', 'شيت', 'sheet']) : 2);
-      const webhookCol = isLegacy ? 8 : (findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) >= 0 ? findIdx(['اي بي اي سكربت', 'سكربت', 'webhook', 'script']) : 3);
-      const emailCol = isLegacy ? 2 : findIdx(['email', 'بريد', 'username']);
-      const idCol = isLegacy ? 0 : findIdx(['معرف']);
-      const activeCol = isLegacy ? 5 : findIdx(['is_active', 'الحاله']);
-      const geminiCol = isLegacy ? 6 : findIdx(['gemini', 'مفتاح']);
-
+      const idx = resolveSheetColsBackend(headers);
       const parsedUsers: SheetUser[] = [];
       for (let i = startIdx; i < rows.length; i++) {
         const c = rows[i]?.c || [];
         const get = (ci: number) => (ci >= 0 ? readGvizCellBackend(c[ci]) : '');
-        const rawName = get(nameCol);
-        const rawPass = normalizeDigitsBackend(get(passCol));
-        const rawEmailCol = get(emailCol);
-        const rawSheet = get(sheetCol);
-        const rawWebhook = get(webhookCol);
-        const rawId = get(idCol);
-        const rawActive = get(activeCol);
-        const rawGemini = get(geminiCol);
-
-        if (!rawName && !rawEmailCol) continue;
-        const nName = normalizePersonNameBackend(rawName);
-        if (nName === 'الاسم' || nName === 'full_name' || nName === 'a' || rawId.toLowerCase() === 'id') continue;
-        if (rawActive) {
-          const act = rawActive.trim().toUpperCase();
-          if (act === 'FALSE' || act === '0' || act === 'معطل') continue;
-        }
-
-        const displayName = rawName || rawEmailCol.split('@')[0];
-        const safeSlug = displayName.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_\u0621-\u064a-]/gi, '') || `rep_${i}`;
-        const email = rawEmailCol.includes('@') ? rawEmailCol.toLowerCase() : `${safeSlug}@pharma.com`;
-        const isAdmin = isBaqerAdminBackend(displayName, email);
-        const role: UserRole = isAdmin ? 'admin' : 'medical_rep';
-        const rowNum = parsedNumHeaders > 0 ? i + parsedNumHeaders + 1 : i + 1;
-        const sheetId = extractGoogleSheetId(rawSheet) || undefined;
-        let webhookUrl = rawWebhook && rawWebhook.startsWith('http') ? rawWebhook : undefined;
-        if (!webhookUrl && isAdmin) {
-          webhookUrl = ENV.GOOGLE_SHEETS_WEBHOOK_URL;
-        }
-
-        parsedUsers.push({
-          rowNumber: rowNum,
-          id: rawId || `sheet-usr-${rowNum}`,
-          full_name: displayName,
-          email,
-          password_hash: rawPass,
-          role,
-          is_active: true,
-          gemini_api_key: rawGemini || undefined,
-          sheet_id: sheetId,
-          sheet_url: sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing` : (rawSheet.startsWith('http') ? rawSheet : undefined),
-          webhook_url: webhookUrl
+        const rawGem = get(idx.geminiCol) || c.slice(4).map((cell: any) => readGvizCellBackend(cell)).find((v: string) => /^(AIza|AQ\.)/.test(v.trim())) || '';
+        const rec = buildSheetUserRecordBackend({
+          rowNum: parsedNumHeaders > 0 ? i + parsedNumHeaders + 1 : i + 1,
+          rawName: get(idx.nameCol),
+          rawPass: normalizeDigitsBackend(get(idx.passCol)),
+          rawEmailCol: get(idx.emailCol),
+          rawSheet: get(idx.sheetCol),
+          rawWebhook: get(idx.webhookCol),
+          rawId: get(idx.idCol),
+          rawActive: get(idx.activeCol),
+          rawGemini: rawGem.trim()
         });
+        if (rec) parsedUsers.push(rec);
       }
 
       if (parsedUsers.length > 0) {
-        console.log(`✅ Loaded ${parsedUsers.length} users successfully from Admin Google Sheet (${sid})`);
-        return parsedUsers;
+        collected.push(parsedUsers);
+        break;
       }
     } catch {
       // تجربة الرابط التالي
     }
   }
 
-  return [];
+  if (collected.length === 0) return [];
+  const merged = mergeSheetUsersBackend(...collected);
+  console.log(`✅ Loaded ${merged.length} users successfully from Admin Google Sheet (${sid})`);
+  return merged;
 }
 
 export class AuthService {

@@ -113,9 +113,9 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onUserUp
           <div>
             <div style={{ fontSize: '0.76rem', color: 'var(--gray-500)', fontWeight: 700 }}>المستخدم الحالي</div>
             <div style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--gray-900)' }}>{user.full_name}</div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 700, marginTop: 2 }}>
+            <div style={{ fontSize: '0.78rem', color: user.sheet_id || isAdmin ? 'var(--primary)' : '#dc2626', fontWeight: 700, marginTop: 2 }}>
               <FileSpreadsheet size={13} style={{ display: 'inline', marginLeft: 4 }} />
-              {user.sheet_id ? `الشيت الشخصي: ${user.sheet_id.slice(0, 18)}...` : 'الشيت الافتراضي'}
+              {user.sheet_id ? `الشيت الشخصي: ${user.sheet_id.slice(0, 18)}...` : (isAdmin ? 'الشيت الرئيسي / الافتراضي للأدمن' : '⛔ لا تملك أي قاعدة بيانات (كوكل شيت) مرتبطة بحسابك')}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

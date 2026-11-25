@@ -9,7 +9,7 @@
  */
 export const APPS_SCRIPT_V2_CODE = `var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
-var SCRIPT_VERSION = 7;
+var SCRIPT_VERSION = 8;
 
 function getTargetSpreadsheet(customSpreadsheetId) {
   var targetId = String(customSpreadsheetId || '').trim();
@@ -90,7 +90,7 @@ function getOrCreateUsersSheet(adminSpreadsheetId) {
   var sheet = ss.getSheetByName('المستخدمون') || ss.getSheets()[0];
   if (!sheet) sheet = ss.insertSheet('المستخدمون');
   if (sheet.getLastRow() === 0) {
-    var masterHeaders = ['الاسم', 'الرمز السري', 'صفحة كوكل شيت', 'اي بي اي سكربت'];
+    var masterHeaders = ['الاسم', 'الرمز السري', 'صفحة كوكل شيت', 'اي بي اي سكربت', 'اي بي اي جمناي'];
     sheet.appendRow(masterHeaders);
     sheet.getRange(1, 1, 1, masterHeaders.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
   }
@@ -121,7 +121,7 @@ function resolveUserColMap(headers) {
       idCol: findIdx(['معرف']),
       roleCol: findIdx(['role', 'دور', 'صلاحيه']),
       activeCol: findIdx(['is_active', 'الحاله']),
-      geminiCol: findIdx(['gemini', 'مفتاح'])
+      geminiCol: findIdx(['اي بي اي جمناي', 'مفتاح جمناي', 'جمناي', 'gemini', 'مفتاح'])
     };
   }
   return {
@@ -709,6 +709,10 @@ function doPost(e) {
       var uMap = resolveUserColMap(headersU);
       var incomingUsers = payload.users || (payload.user ? [payload.user] : []);
       var currentUsers = readAllSheetUsers(usersSheet);
+      var existingSharedGem = '';
+      for (var sg = 0; sg < currentUsers.length; sg++) {
+        if (currentUsers[sg].gemini_api_key) { existingSharedGem = currentUsers[sg].gemini_api_key; break; }
+      }
       var inserted = 0;
       for (var ui = 0; ui < incomingUsers.length; ui++) {
         var u = incomingUsers[ui];
@@ -733,18 +737,20 @@ function doPost(e) {
         var uRow = [];
         for (var k = 0; k < totalUCols; k++) uRow.push('');
         uRow[uMap.nameCol] = uName || uEmail.split('@')[0];
-        uRow[uMap.passCol] = uPass;
+        uRow[uMap.passCol] = /^[1-9]\\d*$/.test(uPass) ? Number(uPass) : uPass;
         uRow[uMap.sheetCol] = String(u.sheet_url || u.sheet_id || '').trim();
         uRow[uMap.webhookCol] = String(u.webhook_url || '').trim();
         if (uMap.idCol >= 0) uRow[uMap.idCol] = u.id || ('usr-' + new Date().getTime() + '-' + ui);
         if (uMap.emailCol >= 0) uRow[uMap.emailCol] = uEmail;
         if (uMap.roleCol >= 0) uRow[uMap.roleCol] = isBaqerName(uName, uEmail) ? 'admin' : 'medical_rep';
         if (uMap.activeCol >= 0) uRow[uMap.activeCol] = 'TRUE';
-        if (uMap.geminiCol >= 0) uRow[uMap.geminiCol] = String(u.gemini_api_key || '').trim();
+        if (uMap.geminiCol >= 0) uRow[uMap.geminiCol] = String(u.gemini_api_key || existingSharedGem || '').trim();
 
         var newRowIndex = usersSheet.getLastRow() + 1;
         usersSheet.getRange(newRowIndex, 1, 1, totalUCols).setValues([uRow]);
-        try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
+        if (!/^[1-9]\\d*$/.test(uPass)) {
+          try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
+        }
         currentUsers.push({ full_name: uName, email: uEmail });
         inserted++;
       }
@@ -754,6 +760,40 @@ function doPost(e) {
         script_version: SCRIPT_VERSION,
         inserted: inserted,
         message: 'تم حفظ المستخدم بنجاح في الشيت الرئيسي.'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'set_shared_gemini_key') {
+      var usersSheetGem = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheetGem) {
+        return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var gemKeyVal = String(payload.gemini_api_key || payload.geminiApiKey || '').trim();
+      var lastColG = Math.max(4, usersSheetGem.getLastColumn());
+      var headersGem = usersSheetGem.getRange(1, 1, 1, lastColG).getValues()[0];
+      var uMapGem = resolveUserColMap(headersGem);
+      var targetGemCol = uMapGem.geminiCol;
+      if (targetGemCol < 0) {
+        targetGemCol = 4;
+        for (var gc = 0; gc < headersGem.length; gc++) {
+          if (gc >= 4 && !String(headersGem[gc] || '').trim()) { targetGemCol = gc; break; }
+          if (gc === headersGem.length - 1 && String(headersGem[gc] || '').trim()) { targetGemCol = headersGem.length; }
+        }
+        if (targetGemCol < 4) targetGemCol = 4;
+        usersSheetGem.getRange(1, targetGemCol + 1).setValue('اي بي اي جمناي').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      }
+      var lastRowGem = usersSheetGem.getLastRow();
+      for (var gr = 2; gr <= lastRowGem; gr++) {
+        var rowNameG = String(usersSheetGem.getRange(gr, uMapGem.nameCol + 1).getValue() || '').trim();
+        if (rowNameG) {
+          usersSheetGem.getRange(gr, targetGemCol + 1).setValue(gemKeyVal);
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        gemini_api_key: gemKeyVal,
+        message: 'تم تحديث مفتاح Gemini وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح!'
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -779,13 +819,22 @@ function doPost(e) {
         usersSheetUpd.getRange(targetRow, uMapUpd.nameCol + 1).setValue(newName);
       }
       if (payload.newPassword !== undefined && String(payload.newPassword).trim() !== '') {
-        usersSheetUpd.getRange(targetRow, uMapUpd.passCol + 1).setNumberFormat('@').setValue(String(payload.newPassword).trim());
+        var np = String(payload.newPassword).trim();
+        var passCell = usersSheetUpd.getRange(targetRow, uMapUpd.passCol + 1);
+        if (/^[1-9]\\d*$/.test(np)) {
+          passCell.setNumberFormat('0').setValue(Number(np));
+        } else {
+          passCell.setNumberFormat('@').setValue(np);
+        }
       }
       if (payload.newSheetUrl !== undefined) {
         usersSheetUpd.getRange(targetRow, uMapUpd.sheetCol + 1).setValue(String(payload.newSheetUrl).trim());
       }
       if (payload.newWebhookUrl !== undefined) {
         usersSheetUpd.getRange(targetRow, uMapUpd.webhookCol + 1).setValue(String(payload.newWebhookUrl).trim());
+      }
+      if (payload.newGeminiApiKey !== undefined && uMapUpd.geminiCol >= 0) {
+        usersSheetUpd.getRange(targetRow, uMapUpd.geminiCol + 1).setValue(String(payload.newGeminiApiKey).trim());
       }
       return ContentService.createTextOutput(JSON.stringify({
         success: true,

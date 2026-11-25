@@ -126,21 +126,21 @@ export class GoogleSheetsService {
 
           const colIdx = {
             invoice_number: findCol(['رقم الفاتور'], 0),
-            invoice_date:   findCol(['تاريخ الفاتور'], 1),
+            invoice_date: findCol(['تاريخ الفاتور'], 1),
             warehouse_name: findCol(['المذخر'], 2),
-            pharmacy_name:  findCol(['اسم الصيدلي'], 3),
-            city:           cityColIdx >= 0 ? cityColIdx : 4,
-            area:           areaColIdx >= 0 ? areaColIdx : -1,
-            product_name:   findCol(['اسم الماد', 'الماده الدوائي'], has16Schema ? 6 : 5),
-            dosage_form:    dosageColIdx >= 0 ? dosageColIdx : -1,
-            quantity:       findCol(['الكمي'], has16Schema ? 8 : 6),
-            unit_price:     findCol(['سعر المفرد'], has16Schema ? 9 : 7),
+            pharmacy_name: findCol(['اسم الصيدلي'], 3),
+            city: cityColIdx >= 0 ? cityColIdx : 4,
+            area: areaColIdx >= 0 ? areaColIdx : -1,
+            product_name: findCol(['اسم الماد', 'الماده الدوائي'], has16Schema ? 6 : 5),
+            dosage_form: dosageColIdx >= 0 ? dosageColIdx : -1,
+            quantity: findCol(['الكمي'], has16Schema ? 8 : 6),
+            unit_price: findCol(['سعر المفرد'], has16Schema ? 9 : 7),
             bonus_quantity: findCol(['البونص'], has16Schema ? 10 : 8),
-            line_total:     findCol(['المجموع'], has16Schema ? 11 : 9),
-            total_invoice:  findCol(['صافي الفاتور'], has16Schema ? 12 : 10),
-            rep_name:       findCol(['المندوب'], has16Schema ? 13 : 11),
-            status:         findCol(['حاله الاعتماد', 'الحال'], has16Schema ? 14 : 12),
-            timestamp:      findCol(['وقت وتاريخ', 'الادراج'], has16Schema ? 15 : 13)
+            line_total: findCol(['المجموع'], has16Schema ? 11 : 9),
+            total_invoice: findCol(['صافي الفاتور'], has16Schema ? 12 : 10),
+            rep_name: findCol(['المندوب'], has16Schema ? 13 : 11),
+            status: findCol(['حاله الاعتماد', 'الحال'], has16Schema ? 14 : 12),
+            timestamp: findCol(['وقت وتاريخ', 'الادراج'], has16Schema ? 15 : 13)
           };
 
           const rows: any[] = [];
@@ -160,21 +160,21 @@ export class GoogleSheetsService {
             const rawDosage = colIdx.dosage_form >= 0 ? val(colIdx.dosage_form) : '';
             const rowObj: any = {
               invoice_number: invNum,
-              invoice_date:   val(colIdx.invoice_date),
+              invoice_date: val(colIdx.invoice_date),
               warehouse_name: val(colIdx.warehouse_name),
-              pharmacy_name:  phName,
-              city:           val(colIdx.city) || 'بغداد',
-              area:           rawArea || detectAreaFromName(phName) || 'مركز المدينة',
-              product_name:   prName,
-              dosage_form:    rawDosage || detectDosageForm(prName),
-              quantity:       Number(c[colIdx.quantity]?.v ?? 0),
-              unit_price:     Number(c[colIdx.unit_price]?.v ?? 0),
+              pharmacy_name: phName,
+              city: val(colIdx.city) || 'بغداد',
+              area: rawArea || detectAreaFromName(phName) || 'مركز المدينة',
+              product_name: prName,
+              dosage_form: rawDosage || detectDosageForm(prName),
+              quantity: Number(c[colIdx.quantity]?.v ?? 0),
+              unit_price: Number(c[colIdx.unit_price]?.v ?? 0),
               bonus_quantity: Number(c[colIdx.bonus_quantity]?.v ?? 0),
-              line_total:     Number(c[colIdx.line_total]?.v ?? 0),
-              total_invoice:  Number(c[colIdx.total_invoice]?.v ?? 0),
-              rep_name:       val(colIdx.rep_name),
-              status:         val(colIdx.status),
-              timestamp:      val(colIdx.timestamp),
+              line_total: Number(c[colIdx.line_total]?.v ?? 0),
+              total_invoice: Number(c[colIdx.total_invoice]?.v ?? 0),
+              rep_name: val(colIdx.rep_name),
+              status: val(colIdx.status),
+              timestamp: val(colIdx.timestamp),
               cells
             };
             if (cols.length > 16) {
@@ -212,21 +212,21 @@ export class GoogleSheetsService {
               const prName = String(r.product_name || '').trim();
               return {
                 invoice_number: String(r.invoice_number || '').trim(),
-                invoice_date:   String(r.invoice_date || '').trim(),
+                invoice_date: String(r.invoice_date || '').trim(),
                 warehouse_name: String(r.warehouse_name || '').trim(),
-                pharmacy_name:  phName,
-                area:           String(r.area || detectAreaFromName(phName) || 'مركز المدينة').trim(),
-                city:           String(r.city || 'بغداد').trim(),
-                product_name:   prName,
-                dosage_form:    String(r.dosage_form || detectDosageForm(prName)).trim(),
-                quantity:       Number(r.quantity || 0),
-                unit_price:     Number(r.unit_price || 0),
+                pharmacy_name: phName,
+                area: String(r.area || detectAreaFromName(phName) || 'مركز المدينة').trim(),
+                city: String(r.city || 'بغداد').trim(),
+                product_name: prName,
+                dosage_form: String(r.dosage_form || detectDosageForm(prName)).trim(),
+                quantity: Number(r.quantity || 0),
+                unit_price: Number(r.unit_price || 0),
                 bonus_quantity: Number(r.bonus_quantity || 0),
-                line_total:     Number(r.line_total || 0),
-                total_invoice:  Number(r.total_invoice || 0),
-                rep_name:       String(r.rep_name || '').trim(),
-                status:         String(r.status || '').trim(),
-                timestamp:      String(r.timestamp || '').trim()
+                line_total: Number(r.line_total || 0),
+                total_invoice: Number(r.total_invoice || 0),
+                rep_name: String(r.rep_name || '').trim(),
+                status: String(r.status || '').trim(),
+                timestamp: String(r.timestamp || '').trim()
               };
             });
             return {
@@ -256,7 +256,7 @@ export class GoogleSheetsService {
    * 1 ب. إدارة المستخدمين في الشيت الرئيسي (إضافة، تعديل الاسم/الرمز، حذف) عبر Webhook
    */
   static async manageAdminSheetUser(
-    action: 'add_user' | 'register_user' | 'update_user' | 'delete_user' | 'seed_users',
+    action: 'add_user' | 'register_user' | 'update_user' | 'delete_user' | 'seed_users' | 'set_shared_gemini_key',
     payload: Record<string, any>,
     customWebhook?: string
   ): Promise<{ success: boolean; message: string }> {
@@ -314,7 +314,7 @@ export class GoogleSheetsService {
     }
     const resText = await res.text();
     let resJson: any = null;
-    try { resJson = JSON.parse(resText); } catch (e) {}
+    try { resJson = JSON.parse(resText); } catch (e) { }
     if (resText.includes('ليس لديك إذن') || (resText.startsWith('<') && !resJson)) {
       throw new Error('رابط Webhook يتطلب صلاحية وصول (Anyone).');
     }
@@ -727,21 +727,21 @@ export class GoogleSheetsService {
 
       return {
         invoice_number: String(invoice.invoice_number || '').trim(),
-        invoice_date:   String(invoice.invoice_date || '').trim(),
+        invoice_date: String(invoice.invoice_date || '').trim(),
         warehouse_name: String(invoice.warehouse_name || 'مذخر الشغف الحديث').trim(),
-        pharmacy_name:  phName,
-        area:           phArea,
-        city:           phCity,
-        product_name:   prodName,
-        dosage_form:    dosageForm,
-        quantity:       qty,
-        unit_price:     price,
+        pharmacy_name: phName,
+        area: phArea,
+        city: phCity,
+        product_name: prodName,
+        dosage_form: dosageForm,
+        quantity: qty,
+        unit_price: price,
         bonus_quantity: bonus,
-        line_total:     lineTotal,
-        total_invoice:  Number(invoice.total_sales_amount || invoice.total_sales || invoice.total_amount || lineTotal),
-        rep_name:       String(invoice.rep_name || invoice.rep?.full_name || 'مندوب علمي').trim(),
-        status:         invoice.status === 'approved' ? 'معتمدة ✓' : 'قيد التدقيق',
-        timestamp:      nowStr
+        line_total: lineTotal,
+        total_invoice: Number(invoice.total_sales_amount || invoice.total_sales || invoice.total_amount || lineTotal),
+        rep_name: String(invoice.rep_name || invoice.rep?.full_name || 'مندوب علمي').trim(),
+        status: invoice.status === 'approved' ? 'معتمدة ✓' : 'قيد التدقيق',
+        timestamp: nowStr
       };
     });
   }
@@ -780,7 +780,7 @@ export class GoogleSheetsService {
 
 var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
-var SCRIPT_VERSION = 7;
+var SCRIPT_VERSION = 8;
 
 function getTargetSpreadsheet(customSpreadsheetId) {
   var targetId = String(customSpreadsheetId || '').trim();
@@ -857,7 +857,7 @@ function getOrCreateUsersSheet(adminSpreadsheetId) {
   var sheet = ss.getSheetByName('المستخدمون') || ss.getSheets()[0];
   if (!sheet) sheet = ss.insertSheet('المستخدمون');
   if (sheet.getLastRow() === 0) {
-    var masterHeaders = ['الاسم', 'الرمز السري', 'صفحة كوكل شيت', 'اي بي اي سكربت'];
+    var masterHeaders = ['الاسم', 'الرمز السري', 'صفحة كوكل شيت', 'اي بي اي سكربت', 'اي بي اي جمناي'];
     sheet.appendRow(masterHeaders);
     sheet.getRange(1, 1, 1, masterHeaders.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
   }
@@ -888,7 +888,7 @@ function resolveUserColMap(headers) {
       idCol: findIdx(['معرف']),
       roleCol: findIdx(['role', 'دور', 'صلاحيه']),
       activeCol: findIdx(['is_active', 'الحاله']),
-      geminiCol: findIdx(['gemini', 'مفتاح'])
+      geminiCol: findIdx(['اي بي اي جمناي', 'مفتاح جمناي', 'جمناي', 'gemini', 'مفتاح'])
     };
   }
   return {
@@ -1430,6 +1430,10 @@ function doPost(e) {
       var uMap = resolveUserColMap(headersU);
       var incomingUsers = payload.users || (payload.user ? [payload.user] : []);
       var currentUsers = readAllSheetUsers(usersSheet);
+      var existingSharedGem = '';
+      for (var sg = 0; sg < currentUsers.length; sg++) {
+        if (currentUsers[sg].gemini_api_key) { existingSharedGem = currentUsers[sg].gemini_api_key; break; }
+      }
       var inserted = 0;
       for (var ui = 0; ui < incomingUsers.length; ui++) {
         var u = incomingUsers[ui];
@@ -1452,22 +1456,51 @@ function doPost(e) {
         var uRow = [];
         for (var k = 0; k < totalUCols; k++) uRow.push('');
         uRow[uMap.nameCol] = uName || uEmail.split('@')[0];
-        uRow[uMap.passCol] = uPass;
+        uRow[uMap.passCol] = /^[1-9]\\d*$/.test(uPass) ? Number(uPass) : uPass;
         uRow[uMap.sheetCol] = String(u.sheet_url || u.sheet_id || '').trim();
         uRow[uMap.webhookCol] = String(u.webhook_url || '').trim();
         if (uMap.idCol >= 0) uRow[uMap.idCol] = u.id || ('usr-' + new Date().getTime() + '-' + ui);
         if (uMap.emailCol >= 0) uRow[uMap.emailCol] = uEmail;
         if (uMap.roleCol >= 0) uRow[uMap.roleCol] = isBaqerName(uName, uEmail) ? 'admin' : 'medical_rep';
         if (uMap.activeCol >= 0) uRow[uMap.activeCol] = 'TRUE';
-        if (uMap.geminiCol >= 0) uRow[uMap.geminiCol] = String(u.gemini_api_key || '').trim();
+        if (uMap.geminiCol >= 0) uRow[uMap.geminiCol] = String(u.gemini_api_key || existingSharedGem || '').trim();
         var newRowIndex = usersSheet.getLastRow() + 1;
         usersSheet.getRange(newRowIndex, 1, 1, totalUCols).setValues([uRow]);
-        try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
+        if (!/^[1-9]\\d*$/.test(uPass)) {
+          try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
+        }
         currentUsers.push({ full_name: uName, email: uEmail });
         inserted++;
       }
       try { usersSheet.autoResizeColumns(1, Math.max(4, headersU.length)); } catch (ue) {}
       return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, inserted: inserted, message: 'تم حفظ المستخدم بنجاح في الشيت الرئيسي.' })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'set_shared_gemini_key') {
+      var usersSheetGem = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheetGem) return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
+      var gemKeyVal = String(payload.gemini_api_key || payload.geminiApiKey || '').trim();
+      var lastColG = Math.max(4, usersSheetGem.getLastColumn());
+      var headersGem = usersSheetGem.getRange(1, 1, 1, lastColG).getValues()[0];
+      var uMapGem = resolveUserColMap(headersGem);
+      var targetGemCol = uMapGem.geminiCol;
+      if (targetGemCol < 0) {
+        targetGemCol = 4;
+        for (var gc = 0; gc < headersGem.length; gc++) {
+          if (gc >= 4 && !String(headersGem[gc] || '').trim()) { targetGemCol = gc; break; }
+          if (gc === headersGem.length - 1 && String(headersGem[gc] || '').trim()) { targetGemCol = headersGem.length; }
+        }
+        if (targetGemCol < 4) targetGemCol = 4;
+        usersSheetGem.getRange(1, targetGemCol + 1).setValue('اي بي اي جمناي').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      }
+      var lastRowGem = usersSheetGem.getLastRow();
+      for (var gr = 2; gr <= lastRowGem; gr++) {
+        var rowNameG = String(usersSheetGem.getRange(gr, uMapGem.nameCol + 1).getValue() || '').trim();
+        if (rowNameG) {
+          usersSheetGem.getRange(gr, targetGemCol + 1).setValue(gemKeyVal);
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, gemini_api_key: gemKeyVal, message: 'تم تحديث مفتاح Gemini وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح!' })).setMimeType(ContentService.MimeType.JSON);
     }
 
     if (actionName === 'update_user') {
@@ -1488,13 +1521,22 @@ function doPost(e) {
         usersSheetUpd.getRange(targetRow, uMapUpd.nameCol + 1).setValue(newName);
       }
       if (payload.newPassword !== undefined && String(payload.newPassword).trim() !== '') {
-        usersSheetUpd.getRange(targetRow, uMapUpd.passCol + 1).setNumberFormat('@').setValue(String(payload.newPassword).trim());
+        var np = String(payload.newPassword).trim();
+        var passCell = usersSheetUpd.getRange(targetRow, uMapUpd.passCol + 1);
+        if (/^[1-9]\\d*$/.test(np)) {
+          passCell.setNumberFormat('0').setValue(Number(np));
+        } else {
+          passCell.setNumberFormat('@').setValue(np);
+        }
       }
       if (payload.newSheetUrl !== undefined) {
         usersSheetUpd.getRange(targetRow, uMapUpd.sheetCol + 1).setValue(String(payload.newSheetUrl).trim());
       }
       if (payload.newWebhookUrl !== undefined) {
         usersSheetUpd.getRange(targetRow, uMapUpd.webhookCol + 1).setValue(String(payload.newWebhookUrl).trim());
+      }
+      if (payload.newGeminiApiKey !== undefined && uMapUpd.geminiCol >= 0) {
+        usersSheetUpd.getRange(targetRow, uMapUpd.geminiCol + 1).setValue(String(payload.newGeminiApiKey).trim());
       }
       return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, rowNumber: targetRow, message: 'تم تعديل البيانات وحفظها في الشيت الرئيسي بنجاح.' })).setMimeType(ContentService.MimeType.JSON);
     }

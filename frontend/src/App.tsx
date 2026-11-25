@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Pharmacy, Product, Invoice, KPISummary } from './types';
-import { api, getCurrentUser, removeToken, removeCurrentUser } from './services/api';
+import { api, getCurrentUser, removeToken, removeCurrentUser, hasUserDatabase, NO_DATABASE_ERROR_MSG } from './services/api';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { VisitsCalendar } from './pages/VisitsCalendar';
@@ -42,6 +42,41 @@ export function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [preselectedPharmacyId, setPreselectedPharmacyId] = useState<string | undefined>();
   const [invoicePageKey, setInvoicePageKey] = useState(0); // increment to force full remount of AddInvoicePage
+  const [checkingDatabase, setCheckingDatabase] = useState(false);
+
+  const hasSessionUserChanged = (a: User | null, b: User | null): boolean => {
+    if (!a || !b) return Boolean(a) !== Boolean(b);
+    return (
+      (a.sheet_id || '').trim() !== (b.sheet_id || '').trim() ||
+      (a.sheet_url || '').trim() !== (b.sheet_url || '').trim() ||
+      (a.webhook_url || '').trim() !== (b.webhook_url || '').trim() ||
+      a.role !== b.role ||
+      a.full_name !== b.full_name ||
+      (a.gemini_api_key || '').trim() !== (b.gemini_api_key || '').trim()
+    );
+  };
+
+  const handleRecheckDatabase = async () => {
+    if (!currentUser) return;
+    setCheckingDatabase(true);
+    try {
+      const synced = await api.syncUserSessionFromMasterSheet();
+      if (synced.user && hasSessionUserChanged(currentUser, synced.user)) {
+        setCurrentUser(synced.user);
+      }
+      const nextUser = synced.user || currentUser;
+      if (hasUserDatabase(nextUser)) {
+        addToast('تم العثور على قاعدة بياناتك في الشيت الرئيسي بنجاح ✅');
+        await loadData();
+      } else {
+        addToast(NO_DATABASE_ERROR_MSG, 'error');
+      }
+    } catch (e: any) {
+      addToast('تعذر التحقق من الشيت الرئيسي: ' + (e?.message || ''), 'error');
+    } finally {
+      setCheckingDatabase(false);
+    }
+  };
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const addToast = (message: string, type: Toast['type'] = 'success') => {
@@ -52,6 +87,19 @@ export function App() {
 
   // ── Data loading ───────────────────────────────────────────────────────────
   const loadData = async () => {
+    if (!hasUserDatabase(currentUser)) {
+      setPharmacies([]);
+      setInvoices([]);
+      setKpis({
+        total_invoices: 0,
+        total_pharmacies_visited: 0,
+        total_pieces_sold: 0,
+        total_bonus_given: 0,
+        total_revenue: 0
+      });
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const [phList, prList, invList, kpiData] = await Promise.all([
@@ -91,10 +139,27 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (currentUser) {
-      api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
-      loadData();
-    }
+    if (!currentUser) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const synced = await api.syncUserSessionFromMasterSheet();
+        if (!cancelled && synced.user && hasSessionUserChanged(currentUser, synced.user)) {
+          setCurrentUser(synced.user);
+          return;
+        }
+      } catch { /* ignore */ }
+      if (cancelled) return;
+      if (hasUserDatabase(currentUser)) {
+        api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
+        loadData();
+      } else {
+        setPharmacies([]);
+        setInvoices([]);
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [currentUser]);
 
   // مزامنة تلقائية فورية عند العودة للتطبيق، التنقل، وكل 8 ثوانٍ أثناء عرض الفواتير/الشيت
@@ -106,6 +171,12 @@ export function App() {
       if (!force && now - lastSyncAt < 3000) return;
       lastSyncAt = now;
       try {
+        const synced = await api.syncUserSessionFromMasterSheet();
+        if (synced.user && hasSessionUserChanged(currentUser, synced.user)) {
+          setCurrentUser(synced.user);
+          return;
+        }
+        if (!hasUserDatabase(currentUser)) return;
         const changed = await api.syncSheetDeletion();
         if (changed) {
           await loadData();
@@ -313,7 +384,7 @@ export function App() {
           )}
 
           {/* Direct Mobile + Add Invoice Button (hidden when already on add-invoice page) */}
-          {activeTab !== 'add-invoice' && (
+          {activeTab !== 'add-invoice' && hasUserDatabase(currentUser) && (
             <button
               className="topbar-mobile-add-btn"
               onClick={() => navigate('add-invoice')}
@@ -480,7 +551,66 @@ export function App() {
       <main className={`app-main ${activeTab === 'add-invoice' ? 'app-main-fullpage' : ''}`}>
         <div className="app-content animate-in">
 
-          {activeTab === 'dashboard' && (
+          {!hasUserDatabase(currentUser) && ['dashboard', 'visits', 'add-invoice', 'pharmacies', 'billing', 'sheets'].includes(activeTab) && (
+            <div
+              className="card"
+              style={{
+                maxWidth: 620,
+                margin: '2rem auto',
+                padding: '2rem 1.5rem',
+                border: '2px solid #ef4444',
+                background: 'linear-gradient(135deg, #fff5f5, #fef2f2)',
+                textAlign: 'center'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.85rem' }}>
+                <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#fee2e2', color: '#dc2626', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <AlertCircle size={34} />
+                </div>
+              </div>
+              <h2 style={{ fontWeight: 900, color: '#991b1b', fontSize: '1.25rem', marginBottom: '0.6rem' }}>
+                ⛔ لا تملك أي قاعدة بيانات (Google Sheet)
+              </h2>
+              <p style={{ color: '#7f1d1d', fontSize: '0.94rem', lineHeight: 1.7, marginBottom: '0.75rem', fontWeight: 600 }}>
+                {NO_DATABASE_ERROR_MSG}
+              </p>
+              <div style={{ background: '#ffffff', border: '1px solid #fecaca', borderRadius: 10, padding: '0.85rem', fontSize: '0.84rem', color: '#475569', marginBottom: '1.25rem', lineHeight: 1.6 }}>
+                <div><strong>الحساب الحالي:</strong> {currentUser.full_name}</div>
+                <div>
+                  يجب على الأدمن (<strong>باقر</strong>) إضافة رابط صفحة Google Sheet الخاصة بك في العمود <strong>C</strong> داخل الشيت الرئيسي حتى تتمكن من رؤية فواتيرك وإدخال بيانات جديدة. لا يمكنك الدخول إلى شيت الإدارة أو شيت باقر.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.65rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={handleRecheckDatabase}
+                  disabled={checkingDatabase}
+                  className="btn-clay btn-primary"
+                  style={{ fontWeight: 800 }}
+                >
+                  {checkingDatabase ? '⏳ جارِ التحقق من الشيت الرئيسي...' : '🔄 إعادة التحقق من الشيت الرئيسي'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('profile')}
+                  className="btn-clay btn-secondary"
+                  style={{ fontWeight: 700 }}
+                >
+                  <KeyRound size={15} /> حسابي
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="btn-clay btn-secondary"
+                  style={{ color: '#b91c1c', borderColor: '#fecaca', background: '#fee2e2', fontWeight: 700 }}
+                >
+                  <LogOut size={15} /> تسجيل الخروج
+                </button>
+              </div>
+            </div>
+          )}
+
+          {hasUserDatabase(currentUser) && activeTab === 'dashboard' && (
             <Dashboard
               user={currentUser}
               kpis={kpis}
@@ -492,14 +622,14 @@ export function App() {
             />
           )}
 
-          {activeTab === 'visits' && (
+          {hasUserDatabase(currentUser) && activeTab === 'visits' && (
             <VisitsCalendar
               pharmacies={pharmacies}
               onStartInvoiceForPharmacy={handleStartInvoiceForPharmacy}
             />
           )}
 
-          {activeTab === 'add-invoice' && (
+          {hasUserDatabase(currentUser) && activeTab === 'add-invoice' && (
             <AddInvoicePage
               key={invoicePageKey}
               pharmacies={pharmacies}
@@ -511,7 +641,7 @@ export function App() {
             />
           )}
 
-          {activeTab === 'pharmacies' && (
+          {hasUserDatabase(currentUser) && activeTab === 'pharmacies' && (
             <PharmacyProfile
               pharmacies={pharmacies}
               invoices={invoices}
@@ -520,7 +650,7 @@ export function App() {
             />
           )}
 
-          {activeTab === 'billing' && (
+          {hasUserDatabase(currentUser) && activeTab === 'billing' && (
             <BillingLedger
               user={currentUser}
               invoices={invoices}
@@ -534,7 +664,7 @@ export function App() {
             />
           )}
 
-          {activeTab === 'sheets' && (
+          {hasUserDatabase(currentUser) && activeTab === 'sheets' && (
             <GoogleSheetsSync onDataChanged={loadData} />
           )}
 
@@ -553,7 +683,7 @@ export function App() {
       </main>
 
       {/* ── Mobile Floating Action Button (FAB) for Immediate Add Invoice ──── */}
-      {activeTab !== 'add-invoice' && (
+      {activeTab !== 'add-invoice' && hasUserDatabase(currentUser) && (
         <button
           type="button"
           onClick={() => navigate('add-invoice')}
