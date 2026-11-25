@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api, getAdminWebhookUrl, setAdminWebhookUrl } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
-import { AdminSheetUser, ADMIN_SHEET_URL, DEFAULT_APPS_SCRIPT_URL, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
+import { AdminSheetUser, ADMIN_SHEET_URL, DEFAULT_APPS_SCRIPT_URL, DEFAULT_INVOICE_SHEET_ID, extractGoogleSheetId, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
 import { APPS_SCRIPT_V2_CODE, APPS_SCRIPT_THIN_WRAPPER } from '../utils/appsScriptTemplate';
 import {
   Users, Plus, RefreshCw, ExternalLink, ShieldCheck,
@@ -22,12 +22,14 @@ export const UsersManagement: React.FC = () => {
   const [showScriptCode, setShowScriptCode] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
   const [adminScriptOutdated, setAdminScriptOutdated] = useState(false);
+  const [liveScriptVersion, setLiveScriptVersion] = useState<number | null>(null);
 
   // Shared Gemini API Key (Col E: اي بي اي جمناي)
   const [sharedGeminiKeyInput, setSharedGeminiKeyInput] = useState('');
   const [showSharedGeminiKey, setShowSharedGeminiKey] = useState(false);
   const [savingGeminiKey, setSavingGeminiKey] = useState(false);
   const [syncingTemplates, setSyncingTemplates] = useState(false);
+  const [templateSyncResults, setTemplateSyncResults] = useState<Array<{ repName: string; sheetId: string; sheetName?: string; ok: boolean; tabsCount: number; pivotsCount: number; tabNames?: string[]; errorDetails?: string }>>([]);
   const [unifyingWebhook, setUnifyingWebhook] = useState(false);
   const [copiedThinWrapper, setCopiedThinWrapper] = useState(false);
 
@@ -51,15 +53,20 @@ export const UsersManagement: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [list, verStatus] = await Promise.all([
-        api.getAdminUsersFromSheet(),
-        api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }))
-      ]);
+      const list = await api.getAdminUsersFromSheet();
       setUsers(list);
+      const baqerRow = list.find(u => u.role === 'admin' && u.webhook_url && u.webhook_url.startsWith('http'));
+      const curHook = getAdminWebhookUrl();
+      if (baqerRow?.webhook_url && (!curHook || curHook.includes('AKfycbyxEXPVY7gl'))) {
+        setAdminWebhookUrl(baqerRow.webhook_url);
+        setAdminWebhookInput(baqerRow.webhook_url);
+      }
+      const verStatus = await api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }));
       const foundSharedKey = extractSharedGeminiKey(list);
       if (foundSharedKey) {
         setSharedGeminiKeyInput(foundSharedKey);
       }
+      setLiveScriptVersion(verStatus?.scriptVersion ? verStatus.scriptVersion : null);
       setAdminScriptOutdated(Boolean(verStatus?.isOutdated));
     } catch (e: any) {
       setError(e?.message || 'تعذر قراءة الشيت الرئيسي للمستخدمين');
@@ -112,13 +119,74 @@ export const UsersManagement: React.FC = () => {
     setTimeout(() => setCopiedThinWrapper(false), 2500);
   };
 
-  const handleSyncTemplatesToAll = async () => {
+  const handleSyncTemplatesToAll = async (mode: 'full' | 'tabs_only' = 'full') => {
     setSyncingTemplates(true);
     setError(null);
     setSuccessMsg(null);
+    setTemplateSyncResults([]);
     try {
-      const res = await api.adminSyncTemplateToAllSheets();
-      setSuccessMsg(res.message || 'تمت مزامنة أوراق و Pivot Tables شيت الأدمن لجميع الشيتات بنجاح ✅');
+      const verStatus = await api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }));
+      if (verStatus.scriptVersion > 0 && verStatus.scriptVersion < 10) {
+        setLiveScriptVersion(verStatus.scriptVersion);
+        setAdminScriptOutdated(true);
+        setShowScriptCode(true);
+        throw new Error(
+          `السكربت المنشور حالياً على شيت الأدمن هو الإصدار (v${verStatus.scriptVersion}) ولا يدعم استنساخ الأوراق و Pivot Tables. انسخ كود v10 أدناه ثم Apps Script ← Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy ثم أعد المحاولة.`
+        );
+      }
+
+      const repTargets = users.filter(u => {
+        const sid = extractGoogleSheetId(u.sheet_url || u.sheet_id);
+        return sid && sid !== DEFAULT_INVOICE_SHEET_ID;
+      });
+
+      if (repTargets.length === 0) {
+        const res = await api.adminSyncTemplateToAllSheets({ mode });
+        setSuccessMsg(res.message || 'تمت مزامنة أوراق و Pivot Tables شيت الأدمن لجميع الشيتات بنجاح ✅');
+        await loadUsers();
+        return;
+      }
+
+      const collected: Array<{ repName: string; sheetId: string; sheetName?: string; ok: boolean; tabsCount: number; pivotsCount: number; tabNames?: string[]; errorDetails?: string }> = [];
+      let okCount = 0;
+
+      for (const rep of repTargets) {
+        const repSid = extractGoogleSheetId(rep.sheet_url || rep.sheet_id);
+        try {
+          const singleRes = await api.adminSyncTemplateToAllSheets({ targetSpreadsheetId: repSid, mode });
+          const rItem = Array.isArray(singleRes.results) && singleRes.results[0] ? singleRes.results[0] : null;
+          const ok = rItem ? Boolean(rItem.ok) : Number(singleRes.updatedSheets || 0) > 0;
+          if (ok) okCount++;
+          collected.push({
+            repName: rep.full_name,
+            sheetId: repSid,
+            sheetName: rItem?.sheetName || '',
+            ok,
+            tabsCount: Number(rItem?.tabsCount || 0),
+            pivotsCount: Number(rItem?.pivotsCount || 0),
+            tabNames: rItem?.tabNames || [],
+            errorDetails: rItem?.errorDetails || rItem?.error || ''
+          });
+        } catch (repErr: any) {
+          collected.push({
+            repName: rep.full_name,
+            sheetId: repSid,
+            ok: false,
+            tabsCount: 0,
+            pivotsCount: 0,
+            errorDetails: repErr?.message || 'تعذرت مزامنة شيت المندوب'
+          });
+        }
+        setTemplateSyncResults([...collected]);
+      }
+
+      if (okCount === repTargets.length) {
+        setSuccessMsg(`تمت مزامنة أوراق و Pivot Tables الأدمن مع (${okCount} / ${repTargets.length}) شيتات للمندوبين — كل شيت يقرأ بياناته الخاصة بنجاح ✅`);
+      } else if (okCount > 0) {
+        setSuccessMsg(`تمت مزامنة (${okCount} / ${repTargets.length}) شيتات، وبعض الشيتات تحتاج التحقق من صلاحية التعديل (Editor). راجع التفاصيل أدناه.`);
+      } else {
+        setError('لم تتم مزامنة أي شيت — تحقق من تفاصيل الأخطاء أدناه وتأكد من مشاركة شيتات المندوبين بصلاحية محرر (Editor) مع حساب باقر.');
+      }
       await loadUsers();
     } catch (e: any) {
       setError(e?.message || 'تعذر مزامنة أوراق و Pivot Tables الأدمن لجميع الشيتات');
@@ -316,10 +384,10 @@ export const UsersManagement: React.FC = () => {
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ fontWeight: 900, color: '#92400e', fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <AlertTriangle size={18} style={{ color: '#d97706' }} />
-                ترقية سكربت الأدمن المركزي إلى الإصدار 9 (v9)
+                ترقية سكربت الأدمن المركزي إلى الإصدار 10 (v10){liveScriptVersion ? ` — النسخة الحية الآن: v${liveScriptVersion}` : ''}
               </div>
               <div style={{ fontSize: '0.78rem', color: '#78350f', marginTop: 4, lineHeight: 1.55 }}>
-                يدعم الإصدار <strong>v9</strong> عكس وتوحيد العمود E (<strong>المنطقة / المكان</strong>) قبل F (<strong>المدينة / المحافظة</strong>)، واستنساخ أوراق و Pivot Tables الأدمن لجميع الشيتات، والتوجيه المركزي الموحد للجميع، ومفتاح Gemini في العمود E مع التعميم الفوري عند التعديل اليدوي.
+                الإصدار <strong>v10</strong> مطلوب لتفعيل استنساخ أوراق و Pivot Tables الأدمن لجميع المندوبين (ببيانات كل مندوب الخاصة) وتوحيد عمود D. عند النشر في Google Apps Script تأكد من اختيار: <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong>.
               </div>
             </div>
             <button
@@ -329,7 +397,7 @@ export const UsersManagement: React.FC = () => {
               style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309' }}
             >
               {copiedScript ? <Check size={15} /> : <Copy size={15} />}
-              {copiedScript ? 'تم نسخ كود v9!' : 'نسخ كود Apps Script v9'}
+              {copiedScript ? 'تم نسخ كود v10!' : 'نسخ كود Apps Script v10'}
             </button>
           </div>
         </div>
@@ -341,22 +409,32 @@ export const UsersManagement: React.FC = () => {
           <div style={{ flex: '1 1 280px' }}>
             <h4 style={{ fontWeight: 800, margin: '0 0 0.25rem 0', color: '#0c4a6e', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Sparkles size={18} style={{ color: '#0284c7' }} />
-              توحيد القوالب (Pivot Tables) والسكربت المركزي لجميع الشيتات (v9)
+              توحيد القوالب (Pivot Tables) والسكربت المركزي لجميع الشيتات (v10)
             </h4>
             <p style={{ fontSize: '0.78rem', color: '#0369a1', margin: 0, lineHeight: 1.55 }}>
-              أي ورقة أو Pivot Table تعدّه في شيت الأدمن يمكنك تعميمه لجميع المندوبين بضغطة واحدة، كما يتيح توحيد رابط السكربت في العمود D إدارة وتحديث الكود للجميع من مشروع الأدمن فقط.
+              أي ورقة أو Pivot Table تعدّه في شيت الأدمن يمكنك استنساخه لجميع المندوبين بضغطة واحدة بحيث يقرأ كل Pivot Table من <strong>فواتير ذلك المندوب فقط</strong> دون خلط البيانات.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button
               type="button"
-              onClick={handleSyncTemplatesToAll}
+              onClick={() => handleSyncTemplatesToAll('full')}
               disabled={syncingTemplates || saving}
               className="btn-clay btn-primary btn-sm"
               style={{ fontWeight: 800, background: '#0284c7', borderColor: '#0369a1' }}
             >
               <RefreshCw size={15} className={syncingTemplates ? 'animate-spin' : ''} />
-              {syncingTemplates ? 'جارِ التعميم...' : '🔄 استنساخ أوراق و Pivot Tables الأدمن لجميع الشيتات'}
+              {syncingTemplates ? 'جارِ مزامنة القوالب...' : '🔄 استنساخ أوراق و Pivot Tables الأدمن للجميع'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSyncTemplatesToAll('tabs_only')}
+              disabled={syncingTemplates || saving}
+              className="btn-clay btn-secondary btn-sm"
+              style={{ fontWeight: 700 }}
+              title="نسخ أسماء وهيكل الأوراق فقط بدون إعادة بناء Pivot Tables"
+            >
+              📑 مزامنة هيكل الأوراق فقط
             </button>
             <button
               type="button"
@@ -370,6 +448,34 @@ export const UsersManagement: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {templateSyncResults.length > 0 && (
+          <div style={{ marginTop: '0.9rem', paddingTop: '0.85rem', borderTop: '1px dashed #7dd3fc', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.55rem' }}>
+            {templateSyncResults.map(r => (
+              <div
+                key={r.sheetId}
+                style={{
+                  background: r.ok ? '#f0fdf4' : '#fef2f2',
+                  border: `1px solid ${r.ok ? '#86efac' : '#fca5a5'}`,
+                  borderRadius: 10,
+                  padding: '0.55rem 0.75rem',
+                  fontSize: '0.76rem'
+                }}
+              >
+                <div style={{ fontWeight: 900, color: r.ok ? '#166534' : '#991b1b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{r.ok ? '✅' : '❌'} {r.repName}</span>
+                  <span>{r.tabsCount} أوراق • {r.pivotsCount} Pivot</span>
+                </div>
+                {r.tabNames && r.tabNames.length > 0 && (
+                  <div style={{ color: '#15803d', marginTop: 3 }}>الأوراق: {r.tabNames.join('، ')}</div>
+                )}
+                {r.errorDetails && (
+                  <div style={{ color: '#b91c1c', marginTop: 3, wordBreak: 'break-word' }}>{r.errorDetails}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* بطاقة مفتاح Google Gemini API الموحد في الشيت الرئيسي */}
@@ -574,7 +680,7 @@ export const UsersManagement: React.FC = () => {
             className="btn-clay btn-secondary btn-sm"
             style={{ fontWeight: 700 }}
           >
-            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v9' : 'عرض كود Apps Script v9'}
+            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v10' : 'عرض كود Apps Script v10'}
           </button>
         </form>
 
@@ -586,7 +692,7 @@ export const UsersManagement: React.FC = () => {
               </span>
               <button type="button" onClick={handleCopyScript} className="btn-clay btn-primary btn-sm" style={{ fontWeight: 700 }}>
                 {copiedScript ? <Check size={14} /> : <Copy size={14} />}
-                {copiedScript ? 'تم النسخ!' : 'نسخ الكود المركزي v9 بالكامل'}
+                {copiedScript ? 'تم النسخ!' : 'نسخ الكود المركزي v10 بالكامل'}
               </button>
             </div>
             <pre style={{

@@ -192,8 +192,9 @@ router.post('/shared-gemini-key', requireRoles(['admin']), async (req: Request, 
  */
 router.post('/sync-template-all', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { admin_webhook_url, targetIds, targetSpreadsheetId } = req.body || {};
-    const result = await GoogleSheetsService.manageAdminSheetUser('sync_template_to_all', {
+    const { admin_webhook_url, targetIds, targetSpreadsheetId, mode } = req.body || {};
+    const actionName = mode === 'tabs_only' ? 'sync_tabs_only' : 'sync_template_to_all';
+    const result = await GoogleSheetsService.manageAdminSheetUser(actionName, {
       adminSpreadsheetId: ENV.ADMIN_SHEET_ID,
       spreadsheetId: ENV.GOOGLE_SHEET_ID,
       targetSpreadsheetId: targetSpreadsheetId || undefined,

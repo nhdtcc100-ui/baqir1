@@ -3,7 +3,7 @@ import { UserRole } from '../types';
 export const ADMIN_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
 export const ADMIN_SHEET_URL = `https://docs.google.com/spreadsheets/d/${ADMIN_SHEET_ID}/edit?usp=sharing`;
 export const DEFAULT_INVOICE_SHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
-export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec';
+export const DEFAULT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzCpY1P3iyWJrI2HFjTRvJjsObDMO1Gfpk82nrPuoee021RWKfl3jTfiRBW0bQtFz2I/exec';
 
 export interface AdminSheetUser {
   rowNumber: number;

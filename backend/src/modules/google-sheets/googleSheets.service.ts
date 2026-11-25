@@ -264,6 +264,7 @@ export class GoogleSheetsService {
       | 'seed_users'
       | 'set_shared_gemini_key'
       | 'sync_template_to_all'
+      | 'sync_tabs_only'
       | 'unify_admin_webhook',
     payload: Record<string, any>,
     customWebhook?: string
@@ -786,13 +787,13 @@ export class GoogleSheetsService {
     ];
   }
 
-  /**
-   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 9: توحيد عمود المنطقة E قبل المدينة F + استنساخ Pivot Tables + مركزية السكربت + عمود E جمناي)
+    /**
+   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 10: توحيد المنطقة E قبل المدينة F + استنساخ Pivot Tables بمصدر المندوب + sync_tabs_only + رفض الأوامر المجهولة)
    */
   static getAppsScriptCode(): string {
     return `var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
-var SCRIPT_VERSION = 9;
+var SCRIPT_VERSION = 10;
 var TEMPLATE_SYNC_GUARD = false;
 
 var DATA_COL_KEYS = [
@@ -1063,7 +1064,7 @@ function getExpectedCols(sheet) {
     var existing = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     for (var c = 16; c < existing.length; c++) {
       var label = String(existing[c] || '').trim();
-      headers.push(label || ('عمود ' + (c + 1)));
+      if (label) headers.push(label);
     }
   }
   return headers;
@@ -1377,24 +1378,34 @@ function getColKeyByIndex(colMap, zeroBasedIdx) {
   return '';
 }
 
-function mapAdminColToRepCol(adminCol1Based, adminColMap, repColMap, tabName) {
+function mapAdminColToRepCol(adminCol1Based, adminColMap, repColMap, tabName, adminHeaders, repHeaders) {
   var zeroIdx = Number(adminCol1Based) - 1;
   var key = getColKeyByIndex(adminColMap, zeroIdx);
-  if (!key) return Number(adminCol1Based);
-  if (normAr(tabName).indexOf('منطق') !== -1 && key === 'city' && repColMap.area >= 0) {
-    return repColMap.area + 1;
+  if (key) {
+    if (normAr(tabName).indexOf('منطق') !== -1 && key === 'city' && repColMap.area >= 0) {
+      return repColMap.area + 1;
+    }
+    return repColMap[key] >= 0 ? (repColMap[key] + 1) : Number(adminCol1Based);
   }
-  return repColMap[key] >= 0 ? (repColMap[key] + 1) : Number(adminCol1Based);
+  if (Array.isArray(adminHeaders) && Array.isArray(repHeaders) && zeroIdx >= 0 && zeroIdx < adminHeaders.length) {
+    var srcLabel = normAr(adminHeaders[zeroIdx]);
+    if (srcLabel) {
+      for (var ri = 0; ri < repHeaders.length; ri++) {
+        if (normAr(repHeaders[ri]) === srcLabel) return ri + 1;
+      }
+    }
+  }
+  return Number(adminCol1Based);
 }
 
-function copySinglePivotTable(pt, targetTab, repSourceRange, adminColMap, repColMap, tabName) {
+function copySinglePivotTable(pt, targetTab, repSourceRange, adminColMap, repColMap, tabName, adminHeaders, repHeaders) {
   var anchorA1 = 'A1';
   try { anchorA1 = pt.getAnchorCell().getA1Notation(); } catch (e) {}
   var newPt = targetTab.getRange(anchorA1).createPivotTable(repSourceRange);
   var rGroups = typeof pt.getRowGroups === 'function' ? pt.getRowGroups() : [];
   for (var rgIdx = 0; rgIdx < rGroups.length; rgIdx++) {
     var rg = rGroups[rgIdx];
-    var targetRCol = mapAdminColToRepCol(rg.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var targetRCol = mapAdminColToRepCol(rg.getSourceDataColumn(), adminColMap, repColMap, tabName, adminHeaders, repHeaders);
     var newRg = newPt.addRowGroup(targetRCol);
     try { if (typeof rg.totalsAreShown === 'function') newRg.showTotals(rg.totalsAreShown()); } catch (e1) {}
     try { if (typeof rg.areLabelsRepeated === 'function' && rg.areLabelsRepeated()) newRg.showRepeatedLabels(); } catch (e2) {}
@@ -1403,7 +1414,7 @@ function copySinglePivotTable(pt, targetTab, repSourceRange, adminColMap, repCol
   var cGroups = typeof pt.getColumnGroups === 'function' ? pt.getColumnGroups() : [];
   for (var cgIdx = 0; cgIdx < cGroups.length; cgIdx++) {
     var cg = cGroups[cgIdx];
-    var targetCCol = mapAdminColToRepCol(cg.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var targetCCol = mapAdminColToRepCol(cg.getSourceDataColumn(), adminColMap, repColMap, tabName, adminHeaders, repHeaders);
     var newCg = newPt.addColumnGroup(targetCCol);
     try { if (typeof cg.totalsAreShown === 'function') newCg.showTotals(cg.totalsAreShown()); } catch (e4) {}
     try { if (typeof cg.areLabelsRepeated === 'function' && cg.areLabelsRepeated()) newCg.showRepeatedLabels(); } catch (e5) {}
@@ -1412,16 +1423,22 @@ function copySinglePivotTable(pt, targetTab, repSourceRange, adminColMap, repCol
   var pVals = typeof pt.getPivotValues === 'function' ? pt.getPivotValues() : [];
   for (var pvIdx = 0; pvIdx < pVals.length; pvIdx++) {
     var pv = pVals[pvIdx];
-    var targetVCol = mapAdminColToRepCol(pv.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var targetVCol = mapAdminColToRepCol(pv.getSourceDataColumn(), adminColMap, repColMap, tabName, adminHeaders, repHeaders);
     var fn = typeof pv.getSummarizedBy === 'function' ? pv.getSummarizedBy() : (SpreadsheetApp.PivotTableSummarizeFunction ? SpreadsheetApp.PivotTableSummarizeFunction.SUM : 'SUM');
     var newPv = newPt.addPivotValue(targetVCol, fn);
     try { var dn = typeof pv.getDisplayName === 'function' ? pv.getDisplayName() : ''; if (dn) newPv.setDisplayName(dn); } catch (e7) {}
+    try {
+      if (typeof pv.getDisplayType === 'function' && typeof newPv.showAs === 'function') {
+        var dispType = pv.getDisplayType();
+        if (dispType && String(dispType) !== 'DEFAULT') newPv.showAs(dispType);
+      }
+    } catch (e7b) {}
   }
   var pFilters = typeof pt.getFilters === 'function' ? pt.getFilters() : [];
   for (var pfIdx = 0; pfIdx < pFilters.length; pfIdx++) {
     var pf = pFilters[pfIdx];
     try {
-      var targetFCol = mapAdminColToRepCol(pf.getSourceDataColumn(), adminColMap, repColMap, tabName);
+      var targetFCol = mapAdminColToRepCol(pf.getSourceDataColumn(), adminColMap, repColMap, tabName, adminHeaders, repHeaders);
       var crit = typeof pf.getFilterCriteria === 'function' ? pf.getFilterCriteria() : null;
       if (crit) newPt.addFilter(targetFCol, crit);
     } catch (e8) {}
@@ -1512,34 +1529,56 @@ function fixAdminAreaPivotIfNeeded(adminSs, adminDataSheet) {
   }
 }
 
-function cloneAdminTabsAndPivotsToTarget(targetSpreadsheetId) {
-  if (TEMPLATE_SYNC_GUARD) return { synced: false, tabsCount: 0, pivotsCount: 0 };
+function cloneAdminTabsAndPivotsToTarget(targetSpreadsheetId, options) {
+  if (TEMPLATE_SYNC_GUARD) return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'sync_guard_active' };
   TEMPLATE_SYNC_GUARD = true;
+  var tabsOnly = Boolean(options && options.tabsOnly);
   try {
     var adminSs = getTargetSpreadsheet(SPREADSHEET_ID);
     var targetId = extractSheetIdFromUrl(targetSpreadsheetId) || String(targetSpreadsheetId || '').trim();
     if (!adminSs || !targetId || targetId === ADMIN_USERS_SHEET_ID) {
-      return { synced: false, tabsCount: 0, pivotsCount: 0 };
+      return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'invalid_target_or_admin' };
     }
     var adminDataSheet = findInvoiceDataSheet(adminSs);
-    if (!adminDataSheet) return { synced: false, tabsCount: 0, pivotsCount: 0 };
+    if (!adminDataSheet) return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'no_admin_data_sheet' };
 
     setupSheet(adminDataSheet);
+    try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (fAdm) {}
     fixAdminAreaPivotIfNeeded(adminSs, adminDataSheet);
 
     if (targetId === SPREADSHEET_ID) {
-      return { synced: true, tabsCount: adminSs.getSheets().length, pivotsCount: 0 };
+      return { synced: true, sheetName: adminSs.getName ? adminSs.getName() : '', tabsCount: adminSs.getSheets().length, pivotsCount: 0, tabNames: [], errorDetails: '' };
     }
 
     var targetSs = null;
-    try { targetSs = SpreadsheetApp.openById(targetId); } catch (openErr) { targetSs = null; }
-    if (!targetSs || isUsersSheetObj(targetSs.getSheets()[0])) {
-      return { synced: false, tabsCount: 0, pivotsCount: 0 };
+    try { targetSs = SpreadsheetApp.openById(targetId); } catch (openErr) {
+      return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'تعذر فتح الشيت (تأكد من صلاحيات المشاركة): ' + String(openErr) };
+    }
+    if (!targetSs) {
+      return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'null_target_spreadsheet' };
+    }
+    var targetSheetTitle = '';
+    try { targetSheetTitle = typeof targetSs.getName === 'function' ? targetSs.getName() : ''; } catch (nErr) {}
+
+    var repFirst = targetSs.getSheets()[0];
+    if (repFirst && isUsersSheetObj(repFirst)) {
+      return { synced: false, sheetName: targetSheetTitle, tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: 'target_is_master_users_sheet' };
     }
 
     var targetDataSheet = findInvoiceDataSheet(targetSs);
-    if (!targetDataSheet) targetDataSheet = targetSs.insertSheet('الفواتير');
-    setupSheet(targetDataSheet);
+    try {
+      if (!targetDataSheet) targetDataSheet = targetSs.insertSheet('الفواتير');
+      setupSheet(targetDataSheet);
+    } catch (permErr) {
+      return {
+        synced: false,
+        sheetName: targetSheetTitle,
+        tabsCount: 0,
+        pivotsCount: 0,
+        tabNames: [],
+        errorDetails: 'لا توجد صلاحية تعديل (Editor) على شيت المندوب — شاركه مع حساب باقر كـ Editor: ' + String(permErr)
+      };
+    }
 
     var adminHeaders = getExpectedCols(adminDataSheet);
     var repHeaders = getExpectedCols(targetDataSheet);
@@ -1549,10 +1588,11 @@ function cloneAdminTabsAndPivotsToTarget(targetSpreadsheetId) {
         targetDataSheet.getRange(1, eh + 1).setValue(adminHeaders[eh]).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
       }
     }
+    try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (fRep1) {}
 
     var adminColMap = resolveColMap(adminHeaders);
     var repColMap = resolveColMap(repHeaders);
-    var repMaxRows = ensureSheetMinRows(targetDataSheet, Math.max(targetDataSheet.getLastRow() + 50, 1000));
+    var repMaxRows = ensureSheetMinRows(targetDataSheet, Math.max(targetDataSheet.getLastRow() + 200, 1000));
     var repSourceRange = targetDataSheet.getRange(1, 1, repMaxRows, repHeaders.length);
 
     var adminDataName = adminDataSheet.getName();
@@ -1560,54 +1600,76 @@ function cloneAdminTabsAndPivotsToTarget(targetSpreadsheetId) {
     var adminSheets = adminSs.getSheets();
     var tabsCount = 0;
     var pivotsCount = 0;
+    var tabNames = [];
+    var tabErrors = [];
 
     for (var sIdx = 0; sIdx < adminSheets.length; sIdx++) {
       var s = adminSheets[sIdx];
       var sName = String(s.getName() || '').trim();
       if (sName === adminDataName || isUsersSheetObj(s)) continue;
 
-      var targetTab = targetSs.getSheetByName(sName) || targetSs.insertSheet(sName);
-      try { targetTab.setRightToLeft(true); } catch (rtlErr) {}
-      try { var tc = typeof s.getTabColor === 'function' ? s.getTabColor() : null; if (tc) targetTab.setTabColor(tc); } catch (tcErr) {}
+      try {
+        var targetTab = targetSs.getSheetByName(sName) || targetSs.insertSheet(sName);
+        try { targetTab.setRightToLeft(true); } catch (rtlErr) {}
+        try { var tc = typeof s.getTabColor === 'function' ? s.getTabColor() : null; if (tc) targetTab.setTabColor(tc); } catch (tcErr) {}
 
-      var adminPts = typeof s.getPivotTables === 'function' ? s.getPivotTables() : [];
-      if (adminPts.length > 0) {
-        targetTab.clear();
-        for (var ptIdx = 0; ptIdx < adminPts.length; ptIdx++) {
-          copySinglePivotTable(adminPts[ptIdx], targetTab, repSourceRange, adminColMap, repColMap, sName);
-          pivotsCount++;
+        var existingOldPts = typeof targetTab.getPivotTables === 'function' ? targetTab.getPivotTables() : [];
+        for (var op = existingOldPts.length - 1; op >= 0; op--) {
+          try { if (typeof existingOldPts[op].remove === 'function') existingOldPts[op].remove(); } catch (rmErr) {}
         }
-      } else {
         targetTab.clear();
-        var lr = s.getLastRow();
-        var lc = s.getLastColumn();
-        if (lr > 0 && lc > 0) {
-          var srcRng = s.getRange(1, 1, lr, lc);
-          var vals = srcRng.getValues();
-          var forms = typeof srcRng.getFormulas === 'function' ? srcRng.getFormulas() : [];
-          var destRng = targetTab.getRange(1, 1, lr, lc);
-          var mergedOut = [];
-          var escAdmin = adminDataName.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
-          var refRegex = new RegExp("('?" + escAdmin + "'?)!", 'g');
-          for (var rr = 0; rr < lr; rr++) {
-            var lineOut = [];
-            for (var cc = 0; cc < lc; cc++) {
-              var f = (forms[rr] && forms[rr][cc]) ? String(forms[rr][cc]) : '';
-              if (f && f.charAt(0) === '=') {
-                lineOut.push(f.replace(refRegex, "'" + repDataName + "'!"));
-              } else {
-                lineOut.push(vals[rr][cc]);
-              }
-            }
-            mergedOut.push(lineOut);
+
+        var adminPts = typeof s.getPivotTables === 'function' ? s.getPivotTables() : [];
+        if (adminPts.length > 0 && !tabsOnly) {
+          for (var ptIdx = 0; ptIdx < adminPts.length; ptIdx++) {
+            copySinglePivotTable(adminPts[ptIdx], targetTab, repSourceRange, adminColMap, repColMap, sName, adminHeaders, repHeaders);
+            pivotsCount++;
+            try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (fPt) {}
           }
-          destRng.setValues(mergedOut);
-          try { targetTab.autoResizeColumns(1, lc); } catch (rcErr) {}
+        } else {
+          var lr = s.getLastRow();
+          var lc = s.getLastColumn();
+          if (lr > 0 && lc > 0) {
+            var srcRng = s.getRange(1, 1, lr, lc);
+            var vals = srcRng.getValues();
+            var forms = typeof srcRng.getFormulas === 'function' ? srcRng.getFormulas() : [];
+            var destRng = targetTab.getRange(1, 1, lr, lc);
+            var mergedOut = [];
+            var escAdmin = adminDataName.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+            var refRegex = new RegExp("('?" + escAdmin + "'?)!", 'g');
+            for (var rr = 0; rr < lr; rr++) {
+              var lineOut = [];
+              for (var cc = 0; cc < lc; cc++) {
+                var f = (forms[rr] && forms[rr][cc]) ? String(forms[rr][cc]) : '';
+                if (f && f.charAt(0) === '=') {
+                  lineOut.push(f.replace(refRegex, "'" + repDataName + "'!"));
+                } else {
+                  lineOut.push(vals[rr][cc]);
+                }
+              }
+              mergedOut.push(lineOut);
+            }
+            destRng.setValues(mergedOut);
+            try { targetTab.autoResizeColumns(1, lc); } catch (rcErr) {}
+          }
         }
+        tabNames.push(sName);
+        tabsCount++;
+      } catch (tabErr) {
+        tabErrors.push(sName + ': ' + String(tabErr));
       }
-      tabsCount++;
     }
-    return { synced: true, tabsCount: tabsCount, pivotsCount: pivotsCount };
+    try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (fEnd) {}
+    return {
+      synced: tabsCount > 0 || tabErrors.length === 0,
+      sheetName: targetSheetTitle,
+      tabsCount: tabsCount,
+      pivotsCount: pivotsCount,
+      tabNames: tabNames,
+      errorDetails: tabErrors.join(' | ')
+    };
+  } catch (outerErr) {
+    return { synced: false, sheetName: '', tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: String(outerErr) };
   } finally {
     TEMPLATE_SYNC_GUARD = false;
   }
@@ -1902,11 +1964,14 @@ function doPost(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    if (actionName === 'sync_template_to_all') {
-      var adminDataOnly = findInvoiceDataSheet(getTargetSpreadsheet(SPREADSHEET_ID));
+    if (actionName === 'sync_template_to_all' || actionName === 'sync_tabs_only') {
+      var tabsOnlyMode = actionName === 'sync_tabs_only' || payload.mode === 'tabs_only';
+      var adminSsMain = getTargetSpreadsheet(SPREADSHEET_ID);
+      var adminDataOnly = findInvoiceDataSheet(adminSsMain);
       if (adminDataOnly) {
         setupSheet(adminDataOnly);
-        fixAdminAreaPivotIfNeeded(getTargetSpreadsheet(SPREADSHEET_ID), adminDataOnly);
+        try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (flA) {}
+        fixAdminAreaPivotIfNeeded(adminSsMain, adminDataOnly);
       }
       var targetIds = [];
       if (payload.targetSpreadsheetId) {
@@ -1935,16 +2000,25 @@ function doPost(e) {
       for (var sLoop = 0; sLoop < targetIds.length; sLoop++) {
         var curSid = targetIds[sLoop];
         try {
-          var resClone = cloneAdminTabsAndPivotsToTarget(curSid);
+          var resClone = cloneAdminTabsAndPivotsToTarget(curSid, { tabsOnly: tabsOnlyMode });
           if (resClone.synced) syncedCount++;
-          syncResults.push({ sheetId: curSid, ok: resClone.synced, tabsCount: resClone.tabsCount, pivotsCount: resClone.pivotsCount });
+          syncResults.push({
+            sheetId: curSid,
+            sheetName: resClone.sheetName || '',
+            ok: resClone.synced,
+            tabsCount: resClone.tabsCount,
+            pivotsCount: resClone.pivotsCount,
+            tabNames: resClone.tabNames || [],
+            errorDetails: resClone.errorDetails || ''
+          });
         } catch (repErr) {
-          syncResults.push({ sheetId: curSid, ok: false, error: String(repErr) });
+          syncResults.push({ sheetId: curSid, sheetName: '', ok: false, tabsCount: 0, pivotsCount: 0, tabNames: [], errorDetails: String(repErr) });
         }
       }
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
         script_version: SCRIPT_VERSION,
+        tabsOnly: tabsOnlyMode,
         updatedSheets: syncedCount,
         totalTargets: targetIds.length,
         results: syncResults,
@@ -2112,6 +2186,14 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({
         success: true, script_version: SCRIPT_VERSION, added: addedCount, updated: updatedCount,
         message: 'تم تعديل الفاتورة في نفس الصف (' + updatedCount + ' تحديث، ' + addedCount + ' بند إضافي).'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName && !Array.isArray(payload.rows)) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        script_version: SCRIPT_VERSION,
+        error: 'أمر غير مدعوم أو تنسيق طلب غير مكتمل: ' + actionName
       })).setMimeType(ContentService.MimeType.JSON);
     }
 

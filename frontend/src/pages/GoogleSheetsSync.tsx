@@ -46,6 +46,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
   const [outboxCount, setOutboxCount] = useState(() => getPendingSheetsOutbox().length);
   const [skippedNotices, setSkippedNotices] = useState<Array<{ id?: string; invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>>([]);
   const [scriptOutdated, setScriptOutdated] = useState(false);
+  const [liveScriptVersion, setLiveScriptVersion] = useState<number | null>(null);
   const [repairingSheet, setRepairingSheet] = useState(false);
   const [syncingTemplate, setSyncingTemplate] = useState(false);
   const isAdmin = getCurrentUser()?.role === 'admin';
@@ -85,6 +86,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
       setSheetData(dataRes);
       setConfig(configRes);
       setGapStatus(gapRes);
+      setLiveScriptVersion(scriptStatus?.scriptVersion ? scriptStatus.scriptVersion : null);
       setScriptOutdated(Boolean(scriptStatus?.isOutdated));
       setWebhookInput(configRes.webhook_url || '');
     } catch (e: any) {
@@ -196,6 +198,15 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
     setError(null);
     setSuccessMsg(null);
     try {
+      const verStatus = await api.checkAdminWebhookVersion().catch(() => ({ scriptVersion: 0, isOutdated: false }));
+      if (verStatus.scriptVersion > 0 && verStatus.scriptVersion < 10) {
+        setLiveScriptVersion(verStatus.scriptVersion);
+        setScriptOutdated(true);
+        setShowCodeGuide(true);
+        throw new Error(
+          `السكربت المنشور على شيت الأدمن هو الإصدار (v${verStatus.scriptVersion}) ولا يدعم استنساخ الأوراق و Pivot Tables. انسخ كود v10 أدناه ثم Apps Script ← Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy.`
+        );
+      }
       const res = await api.adminSyncTemplateToAllSheets();
       setSuccessMsg(res.message || 'تمت مزامنة أوراق و Pivot Tables الأدمن مع جميع الشيتات بنجاح ✅');
       await loadData();
@@ -408,10 +419,10 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
                 <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 9 (v9) لتوحيد الأعمدة و Pivot Tables</span>
+                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 10 (v10){liveScriptVersion ? ` — النسخة الحية الآن: v${liveScriptVersion}` : ''} لتوحيد الأعمدة و Pivot Tables</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.65 }}>
-                لضمان توحيد العمود <strong>E = المنطقة / المكان</strong> قبل العمود <strong>F = المدينة / المحافظة</strong> وتعميم أوراق و Pivot Tables الأدمن تلقائياً: انسخ الكود الجديد (v9) ← الصقه في <strong>Extensions ← Apps Script</strong> (شيت الأدمن المركزي) ← <strong>Deploy ← Manage deployments ← Edit ← New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
+                لضمان توحيد العمود <strong>E = المنطقة / المكان</strong> قبل العمود <strong>F = المدينة / المحافظة</strong> واستنساخ أوراق و Pivot Tables الأدمن لكل شيت ببياناته الخاصة: انسخ الكود الجديد (v10) ← الصقه في <strong>Extensions ← Apps Script</strong> (شيت الأدمن المركزي) ← <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -422,7 +433,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
                 style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
               >
                 {copiedCode ? <Check size={15} /> : <Copy size={15} />}
-                {copiedCode ? 'تم نسخ كود v9!' : 'نسخ كود Apps Script v9 📋'}
+                {copiedCode ? 'تم نسخ كود v10!' : 'نسخ كود Apps Script v10 📋'}
               </button>
               <button
                 type="button"

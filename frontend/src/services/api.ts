@@ -41,8 +41,14 @@ const DEFAULT_SHEET_ID = DEFAULT_INVOICE_SHEET_ID;
 const DEFAULT_SHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_SHEET_ID}/edit?usp=sharing`;
 const DEFAULT_WEBHOOK_URL = DEFAULT_APPS_SCRIPT_URL;
 
+const LEGACY_STALE_ADMIN_WEBHOOK = 'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec';
+
 export const getAdminWebhookUrl = (): string => {
-  return (localStorage.getItem('pharma_admin_webhook_url') || DEFAULT_WEBHOOK_URL).trim();
+  const saved = (localStorage.getItem('pharma_admin_webhook_url') || '').trim();
+  if (!saved || saved === LEGACY_STALE_ADMIN_WEBHOOK) {
+    return DEFAULT_WEBHOOK_URL;
+  }
+  return saved;
 };
 
 export const setAdminWebhookUrl = (url: string) => {
@@ -2824,7 +2830,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 9 };
+      return { scriptVersion: ver, isOutdated: ver < 10 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -3041,12 +3047,26 @@ export const api = {
         verifiedInSheet: verified,
         message: verified
           ? 'تم حفظ مفتاح Gemini في العمود E وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح ✅'
-          : 'تم إرسال المفتاح للشيت الرئيسي (تأكد من تحديث Apps Script للإصدار v9 على الشيت الرئيسي ليُحفظ في العمود E للجميع).'
+          : 'تم إرسال المفتاح للشيت الرئيسي (تأكد من تحديث Apps Script للإصدار v10 على الشيت الرئيسي ليُحفظ في العمود E للجميع).'
       };
     }
   },
 
-  async adminSyncTemplateToAllSheets(opts?: { targetIds?: string[]; targetSpreadsheetId?: string }): Promise<{ updatedSheets: number; totalTargets: number; message: string; results?: any[] }> {
+  async adminSyncTemplateToAllSheets(opts?: { targetIds?: string[]; targetSpreadsheetId?: string; mode?: 'full' | 'tabs_only' }): Promise<{ updatedSheets: number; totalTargets: number; message: string; script_version?: number; results?: Array<{ sheetId: string; sheetName?: string; ok: boolean; tabsCount?: number; pivotsCount?: number; tabNames?: string[]; errorDetails?: string; error?: string }> }> {
+    const mode = opts?.mode === 'tabs_only' ? 'tabs_only' : 'full';
+    const actionName = mode === 'tabs_only' ? 'sync_tabs_only' : 'sync_template_to_all';
+    const validateTemplateResult = (parsed: any) => {
+      if (!parsed) return;
+      if (parsed.success === false) {
+        throw new Error(parsed.error || parsed.message || 'تعذر مزامنة أوراق و Pivot Tables الأدمن');
+      }
+      const ver = Number(parsed.script_version || 0);
+      if (ver < 10 || parsed.updatedSheets === undefined) {
+        throw new Error(
+          `السكربت المنشور على شيت الأدمن هو الإصدار (v${ver || 'قديم'}) ولا يدعم استنساخ الأوراق و Pivot Tables بالكامل. انسخ كود v10 والصقه في Apps Script ← Deploy ← Manage deployments ← Edit ← New version ← Deploy.`
+        );
+      }
+    };
     try {
       const res = await fetchApi('/users/sync-template-all', {
         method: 'POST',
@@ -3054,34 +3074,51 @@ export const api = {
         body: JSON.stringify({
           admin_webhook_url: getAdminWebhookUrl(),
           targetIds: opts?.targetIds || [],
-          targetSpreadsheetId: opts?.targetSpreadsheetId
+          targetSpreadsheetId: opts?.targetSpreadsheetId,
+          mode
         })
-      }, 35000);
-      return await handleResponse(res);
+      }, 45000);
+      const data = await handleResponse<any>(res);
+      validateTemplateResult(data);
+      return data;
     } catch (err: any) {
       if (!isNetworkError(err)) throw err;
       const hookUrl = getAdminWebhookUrl();
       if (!hookUrl) throw new Error('لا يوجد رابط Apps Script المركزي للأدمن');
       const hookRes = await sendWebhookCommand(hookUrl, {
-        action: 'sync_template_to_all',
+        action: actionName,
+        mode,
         adminSpreadsheetId: ADMIN_SHEET_ID,
         spreadsheetId: DEFAULT_SHEET_ID,
         targetSpreadsheetId: opts?.targetSpreadsheetId,
         targetIds: opts?.targetIds || []
-      }, 35000);
-      if (hookRes.parsed && hookRes.parsed.success === false) {
-        throw new Error(hookRes.parsed.error || 'تعذر مزامنة أوراق و Pivot Tables الأدمن');
+      }, 45000);
+      if (hookRes.opaque) {
+        throw new Error('تعذر قراءة استجابة Google Apps Script — تأكد من نشر كود v10 بصلاحية Anyone.');
       }
+      validateTemplateResult(hookRes.parsed);
       return hookRes.parsed || {
         updatedSheets: 0,
         totalTargets: 0,
-        message: 'تم إرسال أمر مزامنة وتعميم أوراق و Pivot Tables الأدمن لجميع الشيتات بنجاح ✅'
+        message: 'تمت مزامنة أوراق و Pivot Tables الأدمن بنجاح ✅'
       };
     }
   },
 
-  async adminUnifyWebhookUrl(centralUrl?: string, mode: 'set' | 'clear' = 'set'): Promise<{ updated: number; message: string }> {
+  async adminUnifyWebhookUrl(centralUrl?: string, mode: 'set' | 'clear' = 'set'): Promise<{ updated: number; message: string; script_version?: number }> {
     const resolvedCentral = (centralUrl || getAdminWebhookUrl() || DEFAULT_WEBHOOK_URL).trim();
+    const validateUnifyResult = (parsed: any) => {
+      if (!parsed) return;
+      if (parsed.success === false) {
+        throw new Error(parsed.error || parsed.message || 'تعذر توحيد رابط السكربت المركزي');
+      }
+      const ver = Number(parsed.script_version || 0);
+      if (ver < 10 || parsed.updated === undefined) {
+        throw new Error(
+          `السكربت المنشور على شيت الأدمن هو الإصدار (v${ver || 'قديم'}) ولا يدعم أمر توحيد عمود D. يرجى نشر كود v10 (New version) أولاً.`
+        );
+      }
+    };
     try {
       const res = await fetchApi('/users/unify-webhook', {
         method: 'POST',
@@ -3092,7 +3129,9 @@ export const api = {
           admin_webhook_url: getAdminWebhookUrl()
         })
       }, 20000);
-      return await handleResponse(res);
+      const data = await handleResponse<any>(res);
+      validateUnifyResult(data);
+      return data;
     } catch (err: any) {
       if (!isNetworkError(err)) throw err;
       const hookUrl = getAdminWebhookUrl();
@@ -3104,9 +3143,10 @@ export const api = {
         centralWebhookUrl: resolvedCentral,
         mode
       }, 20000);
-      if (hookRes.parsed && hookRes.parsed.success === false) {
-        throw new Error(hookRes.parsed.error || 'تعذر توحيد رابط السكربت المركزي');
+      if (hookRes.opaque) {
+        throw new Error('تعذر قراءة استجابة Google Apps Script — تأكد من نشر كود v10 بصلاحية Anyone.');
       }
+      validateUnifyResult(hookRes.parsed);
       return hookRes.parsed || {
         updated: 0,
         message: 'تم إرسال أمر توحيد رابط سكربت الأدمن المركزي لجميع الحسابات بنجاح ⚡'
@@ -3123,7 +3163,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 9 };
+      return { scriptVersion: ver, isOutdated: ver < 10 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -3173,7 +3213,7 @@ export const api = {
       const found = refreshed.some(u => normalizePersonName(u.full_name) === normalizePersonName(cleanName));
       return {
         verifiedInSheet: found,
-        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار v9 إذا لم يظهر الصف فوراً).'
+        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار v10 إذا لم يظهر الصف فوراً).'
       };
     }
   },
@@ -3227,7 +3267,7 @@ export const api = {
       );
       return {
         verifiedInSheet: verified,
-        message: verified ? 'تم تعديل الصف وحفظه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال التعديل للويب هوك (تأكد من نشر Apps Script v9 مع صلاحية الشيت الرئيسي إن لم يتغير الصف).'
+        message: verified ? 'تم تعديل الصف وحفظه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال التعديل للويب هوك (تأكد من نشر Apps Script v10 مع صلاحية الشيت الرئيسي إن لم يتغير الصف).'
       };
     }
   },

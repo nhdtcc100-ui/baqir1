@@ -11,7 +11,7 @@ export const ENV = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   GOOGLE_SHEET_ID: process.env.GOOGLE_SHEET_ID || '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE',
   GOOGLE_SHEET_URL: process.env.GOOGLE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE/edit?usp=sharing',
-  GOOGLE_SHEETS_WEBHOOK_URL: process.env.GOOGLE_SHEETS_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec',
+  GOOGLE_SHEETS_WEBHOOK_URL: process.env.GOOGLE_SHEETS_WEBHOOK_URL || 'https://script.google.com/macros/s/AKfycbzCpY1P3iyWJrI2HFjTRvJjsObDMO1Gfpk82nrPuoee021RWKfl3jTfiRBW0bQtFz2I/exec',
   // Admin Google Sheet acting as users database
   ADMIN_SHEET_ID: process.env.ADMIN_SHEET_ID || '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI',
   ADMIN_SHEET_URL: process.env.ADMIN_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI/edit?usp=sharing',
@@ -20,5 +20,5 @@ export const ENV = {
     process.env.SHARED_CENTRAL_WEBHOOK ||
     process.env.ADMIN_WEBHOOK_URL ||
     process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
-    'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec'
+    'https://script.google.com/macros/s/AKfycbzCpY1P3iyWJrI2HFjTRvJjsObDMO1Gfpk82nrPuoee021RWKfl3jTfiRBW0bQtFz2I/exec'
 };
