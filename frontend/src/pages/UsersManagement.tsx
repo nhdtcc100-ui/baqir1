@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
+import { FloatingModal } from '../components/FloatingModal';
 import { User } from '../types';
 import {
   Users, Plus, RefreshCw, Key, ExternalLink, ShieldCheck,
@@ -322,12 +323,7 @@ export const UsersManagement: React.FC = () => {
 
       {/* نافذة / بطاقة إضافة مستخدم وتجهيز السطر لشيت الإدارة */}
       {showAddModal && (
-        <div className="modal-backdrop-floating" onClick={() => setShowAddModal(false)}>
-          <div
-            className="modal-card-floating"
-            style={{ maxWidth: 640 }}
-            onClick={e => e.stopPropagation()}
-          >
+        <FloatingModal maxWidth={640} onClose={() => setShowAddModal(false)}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--gray-200)', paddingBottom: '0.75rem' }}>
               <h4 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Plus size={20} style={{ color: 'var(--primary)' }} />
@@ -476,8 +472,7 @@ export const UsersManagement: React.FC = () => {
                 </p>
               </div>
             )}
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
     </div>

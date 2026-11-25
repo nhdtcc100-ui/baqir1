@@ -1,6 +1,12 @@
 import { User, Pharmacy, Product, Invoice, KPISummary } from '../types';
 import { prepareInvoiceFile, PreparedInvoiceFile } from '../utils/imageCompressor';
 import { detectDosageFormClient, detectAreaFromText } from '../utils/invoiceTableParser';
+import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
+import {
+  normalizePharmacyName,
+  normalizeDateYmd,
+  buildItemsSignature
+} from '../utils/duplicateDetector';
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
 const DEFAULT_SHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
@@ -736,9 +742,12 @@ export interface SkippedSheetDuplicateNotice {
 
 export interface PendingSheetsSyncJob {
   id: string;
-  action: 'replace_invoice' | 'delete_invoice' | 'batchAppend';
+  action: 'replace_invoice' | 'delete_invoice' | 'batchAppend' | 'repair';
   invoice_number?: string;
   previous_invoice_number?: string;
+  pharmacy_name?: string;
+  invoice_date?: string;
+  timestamp?: string;
   delete_mode?: 'all' | 'duplicate_copy';
   rows?: SheetRowPayload[];
   createdAt: string;
@@ -861,47 +870,40 @@ async function fetchLiveSheetRowsCompact(): Promise<any[]> {
 function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
   if (!sheetRows || sheetRows.length === 0) return { isDuplicate: false, isExactMatch: false, reason: '' };
   const invNum = String(inv?.invoice_number || '').trim();
-  const phName = String(inv?.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-  const invDate = String(inv?.invoice_date || '').split('T')[0];
-  const items = inv?.items || [];
+  const phName = normalizePharmacyName(inv?.pharmacy_name || '');
+  const invDate = normalizeDateYmd(inv?.invoice_date || '');
   const statusText = inv?.status === 'approved' ? 'معتمدة' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
-  const itemsSig = items
-    .map((it: any) => `${String(it.product_name_snapshot || it.custom_product_name || it.product_name || '').trim().toLowerCase()}:${Number(it.sold_quantity || it.quantity || 0)}:${Number(it.historical_unit_price || it.custom_unit_price || it.unit_price || 0)}`)
-    .sort()
-    .join('|');
+  const itemsSig = buildItemsSignature(inv?.items || []);
 
-  const byInv = new Map<string, any[]>();
-  for (const r of sheetRows) {
-    const k = String(r.invoice_number || `${r.pharmacy_name}::${r.invoice_date}`).trim();
-    if (!byInv.has(k)) byInv.set(k, []);
-    byInv.get(k)!.push(r);
-  }
-
-  if (invNum && byInv.has(invNum)) {
-    const exRows = byInv.get(invNum)!;
-    const exStatus = String(exRows[0]?.status || '').replace(' ✓', '').trim();
-    const exItemsSig = exRows
-      .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
-      .sort()
-      .join('|');
-    if (exStatus === statusText && exItemsSig === itemsSig) {
-      return { isDuplicate: true, isExactMatch: true, reason: `الفاتورة رقم (${invNum}) موجودة مسبقاً بنفس الأصناف والحالة في كوكل شيت` };
-    }
+  if (!phName || !invDate || itemsSig.count === 0) {
     return { isDuplicate: false, isExactMatch: false, reason: '' };
   }
 
-  if (phName && invDate && items.length > 0) {
-    for (const [exNum, exRows] of byInv.entries()) {
-      const exPh = String(exRows[0]?.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-      const exDate = String(exRows[0]?.invoice_date || '').split('T')[0];
-      if (exPh === phName && exDate === invDate) {
-        const exItemsSig = exRows
-          .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
-          .sort()
-          .join('|');
-        if (exItemsSig === itemsSig) {
-          return { isDuplicate: true, isExactMatch: false, reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name} / ${invDate}) موجودة مسبقاً برقم (${exNum})` };
-        }
+  const groups = new Map<string, any[]>();
+  for (const r of sheetRows) {
+    const k = `${String(r.invoice_number || r.pharmacy_name).trim()}::${normalizeDateYmd(r.invoice_date)}::${String(r.timestamp || '').trim()}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(r);
+  }
+
+  for (const exRows of groups.values()) {
+    const exPh = normalizePharmacyName(exRows[0]?.pharmacy_name || '');
+    const exDate = normalizeDateYmd(exRows[0]?.invoice_date || '');
+    if (exPh !== phName || exDate !== invDate) continue;
+
+    const exSig = buildItemsSignature(
+      exRows.map(x => ({ product_name: x.product_name, quantity: x.quantity }))
+    );
+    if (exSig.signature === itemsSig.signature) {
+      const exNum = String(exRows[0]?.invoice_number || '').trim();
+      const exStatus = String(exRows[0]?.status || '').replace(' ✓', '').trim();
+      const statusChanged = Boolean(invNum && exNum === invNum && exStatus !== statusText);
+      if (!statusChanged) {
+        return {
+          isDuplicate: true,
+          isExactMatch: invNum === exNum,
+          reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name || phName} / ${invDate} — ${itemsSig.count} أصناف) موجودة مسبقاً${exNum ? ` برقم (${exNum})` : ''}`
+        };
       }
     }
   }
@@ -939,6 +941,9 @@ async function flushSheetsSyncOutboxInternal(opts?: { keepalive?: boolean; useBe
       sheetName: 'الفواتير',
       invoice_number: job.invoice_number,
       previous_invoice_number: job.previous_invoice_number,
+      pharmacy_name: job.pharmacy_name,
+      invoice_date: job.invoice_date,
+      timestamp: job.timestamp,
       delete_mode: job.delete_mode,
       rows: job.rows || []
     });
@@ -2026,14 +2031,15 @@ export const api = {
         let syncedCount = 0;
 
         for (const inv of invs) {
-          const ph = String(inv.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-          const dt = (inv.invoice_date || '').split('T')[0];
-          const sig = `${ph}::${dt}::${(inv.items || []).map(x => `${x.product_name_snapshot || ''}:${x.sold_quantity}`).sort().join('|')}`;
-          if (ph && seenLocalSig.has(sig)) {
+          const ph = normalizePharmacyName(inv.pharmacy_name || '');
+          const dt = normalizeDateYmd(inv.invoice_date || '');
+          const itemsSig = buildItemsSignature(inv.items || []);
+          const sig = ph && dt && itemsSig.count > 0 ? `${ph}||${dt}||${itemsSig.signature}` : '';
+          if (sig && seenLocalSig.has(sig)) {
             skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: 'نسخة مكررة داخل النظام' });
             continue;
           }
-          if (ph) seenLocalSig.add(sig);
+          if (sig) seenLocalSig.add(sig);
 
           const dup = checkClientInvoiceDuplicateInSheet(inv, sheetRows);
           if (dup.isDuplicate) {
@@ -2171,7 +2177,7 @@ export const api = {
     return flushSheetsSyncOutboxInternal(opts);
   },
 
-  async deleteDuplicateSheetInvoice(target: { invoice_number: string; pharmacy_name?: string; invoice_date?: string }) {
+  async deleteDuplicateSheetInvoice(target: { invoice_number: string; pharmacy_name?: string; invoice_date?: string; timestamp?: string }) {
     const cleanNum = String(target.invoice_number || '').trim();
     const list = getStoredInvoices();
     if (cleanNum) {
@@ -2179,18 +2185,57 @@ export const api = {
       if (matching.length > 1) {
         const toDelete = matching[matching.length - 1];
         saveStoredInvoices(list.filter(i => i.id !== toDelete.id));
-      } else if (matching.length === 1) {
-        saveStoredInvoices(list.filter(i => i.id !== matching[0].id));
       }
-      enqueueSheetsSyncJob({
-        action: 'delete_invoice',
-        invoice_number: cleanNum,
-        delete_mode: 'duplicate_copy'
-      });
-      await Promise.race([
-        flushSheetsSyncOutboxInternal({ keepalive: true }),
-        new Promise(r => setTimeout(r, 3000))
-      ]).catch(() => {});
+    }
+    enqueueSheetsSyncJob({
+      action: 'delete_invoice',
+      invoice_number: cleanNum,
+      pharmacy_name: target.pharmacy_name,
+      invoice_date: target.invoice_date,
+      timestamp: target.timestamp,
+      delete_mode: 'duplicate_copy'
+    });
+    await Promise.race([
+      flushSheetsSyncOutboxInternal({ keepalive: true }),
+      new Promise(r => setTimeout(r, 3000))
+    ]).catch(() => {});
+  },
+
+  async repairGoogleSheet(): Promise<{ success: boolean; message: string }> {
+    const webhookUrl = getSavedWebhookUrl();
+    if (!webhookUrl || !webhookUrl.startsWith('http')) {
+      return { success: false, message: 'رابط Webhook غير مفعّل.' };
+    }
+    await fetch(webhookUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'repair',
+        spreadsheetId: getSavedSheetId(),
+        sheetName: 'الفواتير'
+      })
+    });
+    return {
+      success: true,
+      message: 'تم إرسال أمر إصلاح الأعمدة المزاحة وفحص التكرار وتلوين الصفوف في كوكل شيت.'
+    };
+  },
+
+  async checkWebhookScriptStatus(): Promise<{ scriptVersion: number; isOutdated: boolean }> {
+    const webhookUrl = getSavedWebhookUrl();
+    if (!webhookUrl || !webhookUrl.startsWith('http')) {
+      return { scriptVersion: 0, isOutdated: false };
+    }
+    try {
+      const res = await fetch(webhookUrl, { method: 'GET' });
+      if (!res.ok) return { scriptVersion: 0, isOutdated: false };
+      const data = await res.json().catch(() => null);
+      if (!data) return { scriptVersion: 0, isOutdated: false };
+      const ver = Number(data.script_version || 1);
+      return { scriptVersion: ver, isOutdated: ver < 2 };
+    } catch {
+      return { scriptVersion: 0, isOutdated: false };
     }
   },
 
@@ -2234,8 +2279,8 @@ export const api = {
           sheet_url: getSavedSheetUrl(),
           webhook_url: getSavedWebhookUrl(),
           is_connected: Boolean(getSavedWebhookUrl()),
-          apps_script_code: '// يمكن نسخ كود Apps Script عند تشغيل الخادم المحلي',
-          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة', 'المدينة', 'المادة الدوائية', 'النوع', 'الكمية', 'سعر المفرد', 'البونص', 'المجموع', 'الصافي', 'المندوب', 'الحالة', 'الوقت']
+          apps_script_code: APPS_SCRIPT_V2_CODE,
+          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج']
         };
       }
       throw err;

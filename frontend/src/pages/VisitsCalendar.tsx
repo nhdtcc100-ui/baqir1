@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { VisitEvent, Pharmacy } from '../types';
+import { FloatingModal } from '../components/FloatingModal';
 import { 
   Calendar as CalendarIcon, Clock, MapPin, CheckCircle2, 
   XCircle, Plus, Sparkles, Building2, UserCheck, ArrowRight, FilePlus, X
@@ -252,8 +253,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
 
       {/* ── Add Appointment Modal ─────────────────────────────────────────── */}
       {showAddModal && (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) setShowAddModal(false); }}>
-          <div className="modal-card-floating" style={{ maxWidth: 500 }}>
+        <FloatingModal maxWidth={500} onClose={() => setShowAddModal(false)}>
             <div className="modal-header">
               <h4 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <CalendarIcon size={20} style={{ color: 'var(--primary)' }} />
@@ -357,8 +357,7 @@ export const VisitsCalendar: React.FC<VisitsCalendarProps> = ({
                 </button>
               </div>
             </form>
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
     </div>

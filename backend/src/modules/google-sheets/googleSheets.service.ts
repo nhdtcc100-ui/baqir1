@@ -246,50 +246,92 @@ export class GoogleSheetsService {
     }
   }
 
+  private static normalizeAr(raw: string): string {
+    return String(raw || '')
+      .toLowerCase()
+      .replace(/[\u064B-\u0652\u0640]/g, '')
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ة/g, 'ه')
+      .replace(/ى/g, 'ي')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private static normalizePharmacy(raw: string): string {
+    return this.normalizeAr(raw).replace(/^(صيدلية|صيدليه|مذخر|ص\.?)\s+/gi, '').trim();
+  }
+
+  private static normalizeProductKey(raw: string): string {
+    return this.normalizeAr(raw).replace(/[^a-z0-9\u0621-\u064a]/gi, '');
+  }
+
+  private static normalizeDateYmd(raw: string): string {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+    const gviz = s.match(/^Date\((\d{4}),\s*(\d{1,2}),\s*(\d{1,2})/);
+    if (gviz) return `${gviz[1]}-${String(Number(gviz[2]) + 1).padStart(2, '0')}-${gviz[3].padStart(2, '0')}`;
+    const us = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (us) {
+      const p1 = Number(us[1]);
+      const p2 = Number(us[2]);
+      const m = p1 > 12 ? p2 : p1;
+      const d = p1 > 12 ? p1 : p2;
+      return `${us[3]}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    return s.split('T')[0];
+  }
+
   private static findSheetDuplicateMatch(invoice: any, sheetRows: SheetRow[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
-    const invNum = String(invoice.invoice_number || '').trim();
-    const phName = String(invoice.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-    const invDate = String(invoice.invoice_date || '').split('T')[0];
+    const phName = this.normalizePharmacy(invoice.pharmacy_name || '');
+    const invDate = this.normalizeDateYmd(invoice.invoice_date || '');
     const items = invoice.items || [];
     const statusText = invoice.status === 'approved' ? 'معتمدة ✓' : invoice.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
-    const itemsSig = items
-      .map((it: any) => `${String(it.product_name_snapshot || it.custom_product_name || it.product_name || '').trim().toLowerCase()}:${Number(it.sold_quantity || it.quantity || 0)}:${Number(it.historical_unit_price || it.custom_unit_price || it.unit_price || 0)}`)
-      .sort()
-      .join('|');
+    const normItems = items
+      .map((it: any) => ({
+        prod: this.normalizeProductKey(it.product_name_snapshot || it.custom_product_name || it.product_name || it.name || ''),
+        qty: Math.round(Number(it.sold_quantity ?? it.quantity ?? 0))
+      }))
+      .filter((x: any) => x.prod.length > 0)
+      .sort((a: any, b: any) => (a.prod !== b.prod ? a.prod.localeCompare(b.prod) : a.qty - b.qty));
 
-    const byInv = new Map<string, SheetRow[]>();
-    for (const r of sheetRows) {
-      const k = String(r.invoice_number || `${r.pharmacy_name}::${r.invoice_date}`).trim();
-      if (!byInv.has(k)) byInv.set(k, []);
-      byInv.get(k)!.push(r);
-    }
-
-    if (invNum && byInv.has(invNum)) {
-      const existing = byInv.get(invNum)!;
-      const exStatus = String(existing[0]?.status || '').trim();
-      const exItemsSig = existing
-        .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
-        .sort()
-        .join('|');
-      const statusSame = exStatus.replace(' ✓', '') === statusText.replace(' ✓', '');
-      if (statusSame && exItemsSig === itemsSig) {
-        return { isDuplicate: true, isExactMatch: true, reason: `الفاتورة رقم (${invNum}) موجودة مسبقاً بنفس الأصناف والحالة في كوكل شيت` };
-      }
+    if (!phName || !invDate || normItems.length === 0) {
       return { isDuplicate: false, isExactMatch: false, reason: '' };
     }
 
-    if (phName && invDate && items.length > 0) {
-      for (const [exNum, exRows] of byInv.entries()) {
-        const exPh = String(exRows[0]?.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-        const exDate = String(exRows[0]?.invoice_date || '').split('T')[0];
-        if (exPh === phName && exDate === invDate) {
-          const exItemsSig = exRows
-            .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
-            .sort()
-            .join('|');
-          if (exItemsSig === itemsSig) {
-            return { isDuplicate: true, isExactMatch: false, reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name} / ${invDate}) موجودة مسبقاً تحت رقم (${exNum})` };
-          }
+    const itemsSig = `${normItems.length}::${normItems.map((x: any) => `${x.prod}:${x.qty}`).join('|')}`;
+    const invNum = String(invoice.invoice_number || '').trim();
+
+    // Group existing sheet rows by logical invoice submission so multi-item invoices compare as complete units
+    const groups = new Map<string, SheetRow[]>();
+    for (const r of sheetRows) {
+      const gKey = `${String(r.invoice_number || r.pharmacy_name).trim()}::${this.normalizeDateYmd(r.invoice_date)}::${String(r.timestamp || '').trim()}`;
+      if (!groups.has(gKey)) groups.set(gKey, []);
+      groups.get(gKey)!.push(r);
+    }
+
+    for (const exRows of groups.values()) {
+      const exPh = this.normalizePharmacy(exRows[0]?.pharmacy_name || '');
+      const exDate = this.normalizeDateYmd(exRows[0]?.invoice_date || '');
+      if (exPh !== phName || exDate !== invDate) continue;
+
+      const exNormItems = exRows
+        .map(x => ({ prod: this.normalizeProductKey(x.product_name || ''), qty: Math.round(Number(x.quantity || 0)) }))
+        .filter(x => x.prod.length > 0)
+        .sort((a, b) => (a.prod !== b.prod ? a.prod.localeCompare(b.prod) : a.qty - b.qty));
+
+      const exSig = `${exNormItems.length}::${exNormItems.map(x => `${x.prod}:${x.qty}`).join('|')}`;
+      if (exSig === itemsSig) {
+        const exNum = String(exRows[0]?.invoice_number || '').trim();
+        const exStatus = String(exRows[0]?.status || '').trim();
+        const statusChanged = Boolean(invNum && exNum === invNum && exStatus.replace(' ✓', '') !== statusText.replace(' ✓', ''));
+        if (!statusChanged) {
+          return {
+            isDuplicate: true,
+            isExactMatch: invNum === exNum,
+            reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name} / ${invDate} — ${normItems.length} أصناف) موجودة مسبقاً${exNum ? ` برقم (${exNum})` : ''}`
+          };
         }
       }
     }
@@ -617,29 +659,21 @@ export class GoogleSheetsService {
   }
 
   /**
-   * نص كود Google Apps Script المطور للربط والمزامنة بتنسيق قياسي موحد بدون تلوين المكررات وبدون أي تداخل
+   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 2: التحديث في نفس الصف + تلوين المكرر بالأحمر وإرجاع السليم للأبيض + منع إزاحة الأعمدة)
    */
   static getAppsScriptCode(): string {
     return `/**
- * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (16 عموداً متطابقاً)
- * يضمن:
- * 1. معالجة تداخل الأعمدة وإعادة محاذاة كافة الصفوف القديمة بشكل سليم (المنطقة ونوع المادة)
- * 2. حذف الصفوف الوهمية مثل (123)
- * 3. إزالة تلوين الفواتير المتشابهة بالكامل وجعل الخلفيات نظيفة وموحدة (#ffffff / #f8fafc)
- * 4. حفظ وتحديث الفواتير تلقائياً دون أي تكرار
+ * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (الإصدار 2)
  */
 
 var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
+var SCRIPT_VERSION = 2;
 
 function getTargetSheet() {
   var ss = null;
-  try {
-    ss = SpreadsheetApp.getActiveSpreadsheet();
-  } catch (e) {}
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) {}
   if (!ss) {
-    try {
-      ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    } catch (e) {}
+    try { ss = SpreadsheetApp.openById(SPREADSHEET_ID); } catch (e) {}
   }
   if (!ss) return null;
   return ss.getSheetByName('الفواتير') || ss.getActiveSheet();
@@ -664,13 +698,71 @@ function getExpectedCols(sheet) {
     'حالة الاعتماد',
     'وقت وتاريخ الإدراج'
   ];
-  if (sheet && sheet.getLastRow() > 0) {
+  if (sheet && sheet.getLastRow() > 0 && sheet.getLastColumn() > 16) {
     var existing = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     for (var c = 16; c < existing.length; c++) {
-      if (String(existing[c] || '').trim()) headers.push(String(existing[c]).trim());
+      var label = String(existing[c] || '').trim();
+      headers.push(label || ('عمود ' + (c + 1)));
     }
   }
   return headers;
+}
+
+function normAr(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[\\u064B-\\u0652\\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/\\s+/g, ' ')
+    .trim();
+}
+
+function normPh(s) {
+  return normAr(s).replace(/^(صيدلية|صيدليه|مذخر|ص\\.?)\\s+/gi, '').trim();
+}
+
+function normProd(s) {
+  return normAr(s).replace(/[^a-z0-9\\u0621-\\u064a]/gi, '');
+}
+
+function formatYmd(val) {
+  if (!val) return '';
+  if (val instanceof Date) {
+    try { return Utilities.formatDate(val, 'Asia/Baghdad', 'yyyy-MM-dd'); } catch (e) {}
+  }
+  var s = String(val).trim();
+  var m = s.match(/^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})/);
+  if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+  var us = s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})$/);
+  if (us) {
+    var p1 = Number(us[1]), p2 = Number(us[2]);
+    var mo = p1 > 12 ? p2 : p1;
+    var dy = p1 > 12 ? p1 : p2;
+    return us[3] + '-' + ('0' + mo).slice(-2) + '-' + ('0' + dy).slice(-2);
+  }
+  return s.split('T')[0];
+}
+
+function detectDosage(name) {
+  var p = String(name || '').toLowerCase();
+  if (p.indexOf('drop') !== -1 || p.indexOf('قطرة') !== -1 || p.indexOf('drups') !== -1 || p.indexOf('hyfresh') !== -1 || p.indexOf('loxtra') !== -1) return 'قطرة';
+  if (p.indexOf('cream') !== -1 || p.indexOf('كريم') !== -1 || p.indexOf('elica') !== -1 || p.indexOf('fucidin') !== -1) return 'كريم';
+  if (p.indexOf('oint') !== -1 || p.indexOf('مرهم') !== -1) return 'مرهم';
+  return 'حبوب';
+}
+
+function isShiftedOldRow(row) {
+  var c4 = String(row[4] || '').trim();
+  var c5 = String(row[5] || '').trim();
+  var c6Num = Number(row[6]);
+  var c13 = String(row[13] || '').trim();
+  var c14 = String(row[14] || '').trim();
+  if (row.length < 16) return true;
+  if ((c4 === 'بغداد' || c4 === 'البصرة' || c4 === 'أربيل' || c4 === 'النجف' || c4 === 'كربلاء') && !isNaN(c6Num) && c6Num > 0 && c5 !== '') return true;
+  if (c13 && c13.indexOf(':') !== -1 && !c14 && !String(row[15] || '').trim()) return true;
+  return false;
 }
 
 function setupSheet(sheet) {
@@ -689,7 +781,7 @@ function setupSheet(sheet) {
     var needsRewrite = false;
     var currentHeaders = rawData[0];
 
-    if (currentHeaders.length < 16 || currentHeaders[4] !== 'المنطقة / المكان' || currentHeaders[7] !== 'نوع المادة / الشكل الدوائي') {
+    if (currentHeaders.length < 16 || String(currentHeaders[4] || '').trim() !== 'المنطقة / المكان' || String(currentHeaders[7] || '').trim() !== 'نوع المادة / الشكل الدوائي') {
       needsRewrite = true;
     }
 
@@ -702,25 +794,23 @@ function setupSheet(sheet) {
         continue;
       }
 
-      var isShifted = (String(row[4] || '').trim() === 'بغداد' && !isNaN(Number(row[6])) && Number(row[6]) > 0) ||
-                      (row.length < 16);
-      if (isShifted) {
+      if (isShiftedOldRow(row)) {
         needsRewrite = true;
         var phName = String(row[3] || '').trim();
         var cityName = String(row[4] || 'بغداد').trim();
         var prName = String(row[5] || '').trim();
-        var dosage = 'حبوب';
-        var pr = prName.toLowerCase();
-        if (pr.indexOf('drop') !== -1 || pr.indexOf('قطرة') !== -1 || pr.indexOf('drups') !== -1 || pr.indexOf('hyfresh') !== -1) dosage = 'قطرة';
-        else if (pr.indexOf('cream') !== -1 || pr.indexOf('كريم') !== -1 || pr.indexOf('elica') !== -1 || pr.indexOf('fucidin') !== -1) dosage = 'كريم';
-        else if (pr.indexOf('oint') !== -1 || pr.indexOf('مرهم') !== -1) dosage = 'مرهم';
-        var formattedDate = '';
-        if (row[1]) {
-          try { formattedDate = row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Baghdad', 'yyyy-MM-dd') : String(row[1]).split('T')[0]; }
-          catch (e) { formattedDate = String(row[1]).split('T')[0]; }
-        }
-        var rebuilt = [invNum, formattedDate, String(row[2] || '').trim(), phName, 'مركز المدينة', cityName || 'بغداد', prName, dosage, Number(row[6] || 0), Number(row[7] || 0), Number(row[8] || 0), Number(row[9] || 0), Number(row[10] || 0), String(row[11] || '').trim(), String(row[12] || 'قيد التدقيق').trim(), String(row[13] || '').trim()];
-        while (rebuilt.length < totalCols) rebuilt.push('');
+        var qtyVal = Number(row[6] || 0);
+        var priceVal = Number(row[7] || 0);
+        var bonusVal = Number(row[8] || 0);
+        var lineTotalVal = Number(row[9] || (qtyVal * priceVal));
+        var totalInvVal = Number(row[10] || lineTotalVal);
+        var maybeRep = String(row[11] || '').trim();
+        var maybeStatus = String(row[12] || '').trim();
+        var maybeTs = String(row[13] || '').trim();
+        if (!maybeRep && maybeTs) maybeRep = 'علي حسن (مندوب الرصافة)';
+        if (!maybeStatus) maybeStatus = 'قيد التدقيق';
+        var rebuilt = [invNum, formatYmd(row[1]), String(row[2] || '').trim(), phName, 'مركز المدينة', cityName || 'بغداد', prName, detectDosage(prName), qtyVal, priceVal, bonusVal, lineTotalVal, totalInvVal, maybeRep, maybeStatus, maybeTs];
+        while (rebuilt.length < totalCols) rebuilt.push(row[rebuilt.length] !== undefined ? row[rebuilt.length] : '');
         cleanedData.push(rebuilt);
       } else {
         var fixedRow = [];
@@ -746,46 +836,141 @@ function setupSheet(sheet) {
   sheet.setFrozenRows(1);
   sheet.setRightToLeft(true);
 
-  var finalRows = sheet.getLastRow();
-  if (finalRows > 1) {
-    var allRange = sheet.getRange(2, 1, finalRows - 1, totalCols);
-    allRange.setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true).setFontColor('#0f172a');
-    for (var r = 2; r <= finalRows; r++) {
-      sheet.getRange(r, 1, 1, totalCols).setBackground(r % 2 === 0 ? '#f8fafc' : '#ffffff');
-    }
-  }
   try {
-    sheet.autoResizeColumns(1, totalCols);
     sheet.clearConditionalFormatRules();
+    highlightDuplicatesInSheet(sheet);
+    sheet.autoResizeColumns(1, totalCols);
   } catch (fmtErr) {}
 }
 
-function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode) {
-  if (!targetInvNum) return 0;
-  var cleanTarget = String(targetInvNum).trim();
+function highlightDuplicatesInSheet(sheet) {
+  if (!sheet) sheet = getTargetSheet();
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow();
+  var totalCols = Math.max(16, sheet.getLastColumn());
+  if (lastRow <= 1) return;
+
+  var data = sheet.getRange(2, 1, lastRow - 1, totalCols).getValues();
+  var groups = {};
+  var groupOrder = [];
+
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var invNum = String(row[0] || '').trim();
+    var dt = formatYmd(row[1]);
+    var ph = normPh(row[3]);
+    var prod = normProd(row[6]);
+    var qty = Math.round(Number(row[8] || 0));
+    var ts = String(row[15] || '').trim();
+    if (!ph && !prod) continue;
+
+    var gKey = (invNum || ph) + '::' + dt + '::' + ts;
+    if (!groups[gKey]) {
+      groups[gKey] = { ph: ph, dt: dt, items: [], rows: [] };
+      groupOrder.push(gKey);
+    }
+    if (prod) groups[gKey].items.push(prod + ':' + qty);
+    groups[gKey].rows.push(i + 2);
+  }
+
+  var bySignature = {};
+  for (var g = 0; g < groupOrder.length; g++) {
+    var gk = groupOrder[g];
+    var grp = groups[gk];
+    if (!grp.ph || !grp.dt || grp.items.length === 0) continue;
+    grp.items.sort();
+    var sig = grp.ph + '||' + grp.dt + '||' + grp.items.length + '||' + grp.items.join('|');
+    if (!bySignature[sig]) bySignature[sig] = [];
+    bySignature[sig].push(grp);
+  }
+
+  var dupRowMap = {};
+  for (var sigKey in bySignature) {
+    if (bySignature[sigKey].length > 1) {
+      var copies = bySignature[sigKey];
+      for (var c = 0; c < copies.length; c++) {
+        for (var rIdx = 0; rIdx < copies[c].rows.length; rIdx++) {
+          dupRowMap[copies[c].rows[rIdx]] = true;
+        }
+      }
+    }
+  }
+
+  for (var sheetRow = 2; sheetRow <= lastRow; sheetRow++) {
+    var rng = sheet.getRange(sheetRow, 1, 1, totalCols);
+    rng.setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
+    if (dupRowMap[sheetRow]) {
+      rng.setBackground('#fee2e2').setFontColor('#991b1b');
+    } else {
+      rng.setBackground('#ffffff').setFontColor('#0f172a');
+    }
+  }
+}
+
+function buildRowValues(r, totalCols, existingRow) {
+  var invNum = String(r.invoice_number || '').trim();
+  var vals = [
+    invNum,
+    formatYmd(r.invoice_date),
+    r.warehouse_name || (existingRow ? existingRow[2] : '') || 'مذخر الشغف الحديث',
+    r.pharmacy_name || '',
+    r.area || r.pharmacy_area || (existingRow ? existingRow[4] : '') || 'مركز المدينة',
+    r.city || r.pharmacy_city || (existingRow ? existingRow[5] : '') || 'بغداد',
+    r.product_name || '',
+    r.dosage_form || detectDosage(r.product_name),
+    Number(r.quantity || 0),
+    Number(r.unit_price || 0),
+    Number(r.bonus_quantity || 0),
+    Number(r.line_total || 0),
+    Number(r.total_invoice || 0),
+    r.rep_name || (existingRow ? existingRow[13] : '') || '',
+    r.status || 'قيد التدقيق',
+    r.timestamp || (existingRow ? existingRow[15] : '') || ''
+  ];
+  for (var c = 16; c < totalCols; c++) {
+    var val = (c === 16 && r.loyalty !== undefined && r.loyalty !== '') ? r.loyalty : (existingRow && existingRow[c] !== undefined ? existingRow[c] : '');
+    vals.push(val);
+  }
+  return vals;
+}
+
+function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, targetDate, targetTs) {
+  var cleanTarget = String(targetInvNum || '').trim();
+  var cleanPh = normPh(targetPh || '');
+  var cleanDate = formatYmd(targetDate || '');
   var data = sheet.getDataRange().getValues();
   var deleted = 0;
-  var skippedFirstCopy = false;
-  var firstTimestamp = null;
 
-  if (deleteMode === 'duplicate_copy') {
+  var matches = function(row) {
+    var rNum = String(row[0] || '').trim();
+    if (cleanTarget) return rNum === cleanTarget;
+    if (cleanPh && cleanDate) {
+      return normPh(row[3]) === cleanPh && formatYmd(row[1]) === cleanDate;
+    }
+    return false;
+  };
+
+  var firstTs = targetTs || null;
+  if (deleteMode === 'duplicate_copy' && !firstTs) {
     for (var f = 1; f < data.length; f++) {
-      if (String(data[f][0] || '').trim() === cleanTarget) {
-        firstTimestamp = String(data[f][15] || '');
+      if (matches(data[f])) {
+        firstTs = String(data[f][15] || '');
         break;
       }
     }
   }
 
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0] || '').trim() === cleanTarget) {
-      if (deleteMode === 'duplicate_copy' && String(data[i][15] || '') === firstTimestamp) {
-        skippedFirstCopy = true;
+    if (!matches(data[i])) continue;
+    if (deleteMode === 'duplicate_copy') {
+      if (targetTs) {
+        if (String(data[i][15] || '').trim() !== String(targetTs).trim()) continue;
+      } else if (String(data[i][15] || '') === String(firstTs || '')) {
         continue;
       }
-      sheet.deleteRow(i + 1);
-      deleted++;
     }
+    sheet.deleteRow(i + 1);
+    deleted++;
   }
   return deleted;
 }
@@ -805,22 +990,16 @@ function doPost(e) {
     var payload = JSON.parse(e.postData.contents);
 
     if (payload.action === 'repair' || payload.action === 'setup') {
-      return ContentService.createTextOutput(JSON.stringify({ success: true, message: 'تم إصلاح وترقية وتنسيق جدول كوكل شيت بنجاح!' })).setMimeType(ContentService.MimeType.JSON);
+      highlightDuplicatesInSheet(sheet);
+      try { sheet.autoResizeColumns(1, Math.max(16, sheet.getLastColumn())); } catch (errR) {}
+      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, message: 'تم إصلاح الأعمدة المزاحة وفحص وتلوين التكرار في كوكل شيت بنجاح!' })).setMimeType(ContentService.MimeType.JSON);
     }
 
     if (payload.action === 'delete_invoice') {
       var delInv = payload.invoice_number || (payload.row && payload.row.invoice_number);
-      var delCount = deleteMatchingInvoiceRows(sheet, delInv, payload.delete_mode);
-      return ContentService.createTextOutput(JSON.stringify({ success: true, deleted: delCount, message: 'تم حذف ' + delCount + ' سطر من كوكل شيت' })).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    if (payload.action === 'replace_invoice') {
-      if (payload.previous_invoice_number) {
-        deleteMatchingInvoiceRows(sheet, payload.previous_invoice_number);
-      }
-      if (payload.invoice_number && payload.invoice_number !== payload.previous_invoice_number) {
-        deleteMatchingInvoiceRows(sheet, payload.invoice_number);
-      }
+      var delCount = deleteMatchingInvoiceRows(sheet, delInv, payload.delete_mode, payload.pharmacy_name, payload.invoice_date, payload.timestamp);
+      highlightDuplicatesInSheet(sheet);
+      return ContentService.createTextOutput(JSON.stringify({ success: true, deleted: delCount, message: 'تم حذف ' + delCount + ' سطر من كوكل شيت وإعادة ضبط الألوان' })).setMimeType(ContentService.MimeType.JSON);
     }
 
     var headers = getExpectedCols(sheet);
@@ -830,74 +1009,123 @@ function doPost(e) {
     var addedCount = 0;
     var updatedCount = 0;
 
+    if (payload.action === 'replace_invoice') {
+      var matchNums = {};
+      if (payload.previous_invoice_number) matchNums[String(payload.previous_invoice_number).trim()] = true;
+      if (payload.invoice_number) matchNums[String(payload.invoice_number).trim()] = true;
+
+      var existingIndices = [];
+      for (var m = 1; m < data.length; m++) {
+        var rNum = String(data[m][0] || '').trim();
+        if (rNum && matchNums[rNum]) {
+          existingIndices.push(m + 1);
+        }
+      }
+
+      var validRows = [];
+      for (var vr = 0; vr < rows.length; vr++) {
+        if (String(rows[vr].invoice_number || '').trim() && String(rows[vr].invoice_number).trim() !== '123') {
+          validRows.push(rows[vr]);
+        }
+      }
+
+      var common = Math.min(existingIndices.length, validRows.length);
+      for (var u = 0; u < common; u++) {
+        var sheetRowNum = existingIndices[u];
+        var oldRowData = data[sheetRowNum - 1];
+        var newVals = buildRowValues(validRows[u], totalCols, oldRowData);
+        sheet.getRange(sheetRowNum, 1, 1, totalCols).setValues([newVals]);
+        updatedCount++;
+      }
+
+      if (validRows.length > existingIndices.length) {
+        var insertAfter = existingIndices.length > 0 ? existingIndices[existingIndices.length - 1] : sheet.getLastRow();
+        for (var a = common; a < validRows.length; a++) {
+          var insVals = buildRowValues(validRows[a], totalCols, null);
+          if (insertAfter > 0 && insertAfter < sheet.getLastRow()) {
+            sheet.insertRowAfter(insertAfter);
+            insertAfter++;
+            sheet.getRange(insertAfter, 1, 1, totalCols).setValues([insVals]);
+          } else {
+            sheet.appendRow(insVals);
+            insertAfter = sheet.getLastRow();
+          }
+          addedCount++;
+        }
+      } else if (existingIndices.length > validRows.length) {
+        for (var d = existingIndices.length - 1; d >= validRows.length; d--) {
+          sheet.deleteRow(existingIndices[d]);
+        }
+      }
+
+      highlightDuplicatesInSheet(sheet);
+      try { sheet.autoResizeColumns(1, totalCols); } catch (re1) {}
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        added: addedCount,
+        updated: updatedCount,
+        message: 'تم تحديث الفاتورة في مكانها (' + updatedCount + ' تحديث، ' + addedCount + ' إضافة).'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var invNum = String(r.invoice_number || '').trim();
       if (!invNum || invNum === '123') continue;
 
-      var rowValues = [
-        invNum,
-        String(r.invoice_date || '').split('T')[0],
-        r.warehouse_name || 'مذخر الشغف الحديث',
-        r.pharmacy_name || '',
-        r.area || 'مركز المدينة',
-        r.city || 'بغداد',
-        r.product_name || '',
-        r.dosage_form || 'حبوب',
-        Number(r.quantity || 0),
-        Number(r.unit_price || 0),
-        Number(r.bonus_quantity || 0),
-        Number(r.line_total || 0),
-        Number(r.total_invoice || 0),
-        r.rep_name || '',
-        r.status || 'قيد التدقيق',
-        r.timestamp || ''
-      ];
-      while (rowValues.length < totalCols) rowValues.push(r.loyalty || '');
-
       var existingRowIndex = -1;
-      var thisProd = String(r.product_name || '').trim();
+      var thisProd = normProd(r.product_name || '');
       for (var k = 1; k < data.length; k++) {
-        if (String(data[k][0] || '').trim() === invNum && String(data[k][6] || '').trim() === thisProd) {
+        if (String(data[k][0] || '').trim() === invNum && normProd(data[k][6] || '') === thisProd) {
           existingRowIndex = k + 1;
           break;
         }
       }
 
       if (existingRowIndex > 1) {
-        sheet.getRange(existingRowIndex, 1, 1, totalCols).setValues([rowValues]).setBackground(existingRowIndex % 2 === 0 ? '#f8fafc' : '#ffffff');
+        var updVals = buildRowValues(r, totalCols, data[existingRowIndex - 1]);
+        sheet.getRange(existingRowIndex, 1, 1, totalCols).setValues([updVals]);
         updatedCount++;
       } else {
-        sheet.appendRow(rowValues);
-        var lastRow = sheet.getLastRow();
-        sheet.getRange(lastRow, 1, 1, totalCols).setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true).setBackground(lastRow % 2 === 0 ? '#f8fafc' : '#ffffff').setFontColor('#0f172a');
+        var addVals = buildRowValues(r, totalCols, null);
+        sheet.appendRow(addVals);
         addedCount++;
-        data.push(rowValues);
+        data.push(addVals);
       }
     }
 
+    highlightDuplicatesInSheet(sheet);
     try { sheet.autoResizeColumns(1, totalCols); } catch (resizeErr) {}
 
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
+      script_version: SCRIPT_VERSION,
       added: addedCount,
       updated: updatedCount,
-      message: 'تم إدراج ' + addedCount + ' سطراً وتحديث ' + updatedCount + ' سطور بنجاح.'
+      message: 'تم إدراج ' + addedCount + ' سطراً وتحديث ' + updatedCount + ' سطور في مكانها بنجاح.'
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
+function onEdit(e) {
+  try {
+    var sheet = getTargetSheet();
+    if (sheet) highlightDuplicatesInSheet(sheet);
+  } catch (err) {}
+}
+
 function doGet(e) {
   try {
     var sheet = getTargetSheet();
     if (!sheet) {
-      return ContentService.createTextOutput(JSON.stringify({ headers: [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({ script_version: SCRIPT_VERSION, headers: [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
     }
     var data = sheet.getDataRange().getValues();
     if (data.length <= 1) {
-      return ContentService.createTextOutput(JSON.stringify({ headers: data[0] || [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({ script_version: SCRIPT_VERSION, headers: data[0] || [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
     }
 
     var headers = data[0];
@@ -908,12 +1136,7 @@ function doGet(e) {
       var phName = String(row[3] || '').trim();
       if (invNum === '123' || (!invNum && !phName && !row[6])) continue;
 
-      var invDate = '';
-      if (row[1]) {
-        try { invDate = row[1] instanceof Date ? Utilities.formatDate(row[1], 'Asia/Baghdad', 'yyyy-MM-dd') : String(row[1]).split('T')[0]; }
-        catch(errD) { invDate = String(row[1]).split('T')[0]; }
-      }
-
+      var invDate = formatYmd(row[1]);
       var cells = [];
       for (var c = 0; c < headers.length; c++) {
         if (c === 1) cells.push(invDate);
@@ -942,7 +1165,7 @@ function doGet(e) {
       });
     }
 
-    return ContentService.createTextOutput(JSON.stringify({ success: true, headers: headers, rows: rows })).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, headers: headers, rows: rows })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
@@ -951,7 +1174,7 @@ function doGet(e) {
 function testRun() {
   var sheet = getTargetSheet();
   setupSheet(sheet);
-  Logger.log('تم تحديث وتنسيق كافة الأعمدة: ' + (sheet ? sheet.getLastRow() : 0));
+  Logger.log('تم ترقية وتنسيق وفحص التكرار للشيت بنجاح (v' + SCRIPT_VERSION + '): ' + (sheet ? sheet.getLastRow() : 0));
 }`;
   }
 

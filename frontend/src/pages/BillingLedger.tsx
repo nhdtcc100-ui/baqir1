@@ -5,6 +5,8 @@ import {
   Eye, Filter, Calendar, Building2, Gift, Search, X, Check, Clock, Trash2, Edit3, Plus, Copy
 } from 'lucide-react';
 import { api } from '../services/api';
+import { FloatingModal } from '../components/FloatingModal';
+import { detectLocalInvoiceDuplicates } from '../utils/duplicateDetector';
 import { autoDetectDosageForm, getDosageFormBadgeColor } from './BatchReviewTable';
 
 interface BillingLedgerProps {
@@ -159,90 +161,8 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   const [duplicatesOnly, setDuplicatesOnly] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  // ── خوارزمية كشف الفواتير المكررة ديناميكياً ──
-  const duplicateInfoMap = React.useMemo(() => {
-    const map = new Map<string, { isDuplicate: boolean; isOriginal: boolean; duplicateCount: number; matchedWithId?: string; reason: string }>();
-
-    const areItemsMatch = (itemsA?: any[], itemsB?: any[]) => {
-      if (!itemsA || !itemsB || itemsA.length !== itemsB.length || itemsA.length === 0) return false;
-      const normalize = (it: any) => ({
-        name: String(it.product_name_snapshot || it.custom_product_name || it.product_name || it.name || it.product_id || '').trim().toLowerCase().replace(/[^a-z0-9\u0621-\u064A]/gi, ''),
-        qty: Number(it.sold_quantity || it.quantity || 0)
-      });
-      const sA = [...itemsA].map(normalize).sort((x, y) => x.name.localeCompare(y.name));
-      const sB = [...itemsB].map(normalize).sort((x, y) => x.name.localeCompare(y.name));
-      return sA.every((ia, idx) => {
-        const ib = sB[idx];
-        if (!ib) return false;
-        const nameMatch = ia.name === ib.name || ia.name.includes(ib.name) || ib.name.includes(ia.name);
-        return nameMatch && ia.qty === ib.qty;
-      });
-    };
-
-    // ترتيب الفواتير زمنياً: الأقدم هي الأصلية
-    const sorted = [...invoices].sort((a, b) => new Date(a.created_at || a.invoice_date).getTime() - new Date(b.created_at || b.invoice_date).getTime());
-
-    for (let i = 0; i < sorted.length; i++) {
-      const invA = sorted[i];
-      if (map.has(invA.id)) continue;
-
-      const group: Invoice[] = [invA];
-      const numA = String(invA.invoice_number || '').trim();
-      const dateA = String(invA.invoice_date || '').split('T')[0];
-      const phA = String(invA.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-
-      for (let j = i + 1; j < sorted.length; j++) {
-        const invB = sorted[j];
-        if (map.has(invB.id)) continue;
-
-        const numB = String(invB.invoice_number || '').trim();
-        const dateB = String(invB.invoice_date || '').split('T')[0];
-        const phB = String(invB.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-
-        // 1. تطابق رقم الفاتورة غير الافتراضي
-        const sameNumber = numA && numB && numA === numB && !numA.toUpperCase().startsWith('INV-');
-
-        // 2. تطابق الصيدلية والتاريخ والبنود
-        const samePh = phA && phB && (phA.includes(phB) || phB.includes(phA));
-        const sameDate = dateA && dateB && dateA === dateB;
-        const sameItems = samePh && sameDate && areItemsMatch(invA.items, invB.items);
-
-        if (sameNumber || sameItems) {
-          group.push(invB);
-        }
-      }
-
-      if (group.length > 1) {
-        group.forEach((item, index) => {
-          if (index === 0) {
-            map.set(item.id, {
-              isDuplicate: true,
-              isOriginal: true,
-              duplicateCount: group.length - 1,
-              reason: `يوجد ${group.length - 1} نسخ مكررة من هذه الفاتورة`
-            });
-          } else {
-            map.set(item.id, {
-              isDuplicate: true,
-              isOriginal: false,
-              duplicateCount: group.length - 1,
-              matchedWithId: group[0].id,
-              reason: `نسخة مكررة مطابقة للفاتورة الأصلية (${group[0].invoice_number || 'الأولى'})`
-            });
-          }
-        });
-      } else {
-        map.set(invA.id, {
-          isDuplicate: false,
-          isOriginal: false,
-          duplicateCount: 0,
-          reason: ''
-        });
-      }
-    }
-
-    return map;
-  }, [invoices]);
+  // ── خوارزمية كشف الفواتير المكررة ديناميكياً (تطابق الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها معاً) ──
+  const duplicateInfoMap = React.useMemo(() => detectLocalInvoiceDuplicates(invoices), [invoices]);
 
   // إجمالي النسخ المكررة غير الأصلية
   const duplicateCopiesCount = React.useMemo(() => {
@@ -592,9 +512,9 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                         key={inv.id}
                         style={{
                           background: isDup
-                            ? (isOriginal ? '#fffbeb' : '#fef2f2')
-                            : undefined,
-                          transition: 'background-color 0.4s ease'
+                            ? (isOriginal ? '#fffbeb' : '#fee2e2')
+                            : '#ffffff',
+                          transition: 'background-color 0.25s ease'
                         }}
                       >
                         <td style={{ fontWeight: 800, color: isDup && !isOriginal ? '#b91c1c' : 'var(--gray-900)' }}>
@@ -762,7 +682,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                     className="mobile-invoice-card"
                     style={{
                       borderLeft: isDup ? (isOriginal ? '4px solid #f59e0b' : '4px solid #ef4444') : '4px solid var(--primary)',
-                      background: isDup ? (isOriginal ? '#fffbeb' : '#fef2f2') : '#ffffff'
+                      background: isDup ? (isOriginal ? '#fffbeb' : '#fee2e2') : '#ffffff'
                     }}
                   >
                     {/* Header Row: Invoice Number, Duplicate Badge, Status Badge */}
@@ -943,8 +863,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
         const selectedDupInfo = duplicateInfoMap.get(selectedInvoice.id);
         const canModifySelected = isAdmin || (selectedInvoice.rep_id === user.id && selectedInvoice.status === 'pending_review');
         return (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) setSelectedInvoice(null); }}>
-          <div className="modal-card-floating" style={{ maxWidth: 880 }}>
+        <FloatingModal maxWidth={880} onClose={() => setSelectedInvoice(null)}>
 
             {/* Modal Header */}
             <div className="modal-header">
@@ -1275,15 +1194,13 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
               )}
             </div>
 
-          </div>
-        </div>
+        </FloatingModal>
         );
       })()}
 
       {/* ── Image Preview Modal ────────────────────────────────────────────── */}
       {previewImageUrl && (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) setPreviewImageUrl(null); }}>
-          <div className="modal-card-floating" style={{ maxWidth: 720 }}>
+        <FloatingModal maxWidth={720} onClose={() => setPreviewImageUrl(null)}>
             <div className="modal-header">
               <h5 className="modal-title">مستند الفاتورة الأصلي</h5>
               <button
@@ -1296,14 +1213,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             <div className="modal-body" style={{ textAlign: 'center' }}>
               <img src={previewImageUrl} alt="أصل الفاتورة" style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', borderRadius: 12 }} />
             </div>
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
       {/* ── Reject Reason Modal ────────────────────────────────────────────── */}
       {rejectingInvoiceId && (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) { setRejectingInvoiceId(null); setRejectionReason(''); } }}>
-          <div className="modal-card-floating" style={{ maxWidth: 460 }}>
+        <FloatingModal maxWidth={460} onClose={() => { setRejectingInvoiceId(null); setRejectionReason(''); }}>
             <div className="modal-header">
               <h5 className="modal-title" style={{ color: 'var(--danger)' }}>
                 تأكيد رفض الفاتورة
@@ -1342,14 +1257,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                 تأكيد الرفض
               </button>
             </div>
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
       {/* ── Delete Confirmation Modal ───────────────────────────────────────── */}
       {deletingId && (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget && !deleteLoading) { setDeletingId(null); setDeleteError(null); } }}>
-          <div className="modal-card-floating" style={{ maxWidth: 440 }}>
+        <FloatingModal maxWidth={440} onClose={() => { if (!deleteLoading) { setDeletingId(null); setDeleteError(null); } }}>
             <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
                 <Trash2 size={22} style={{ color: 'var(--danger)' }} />
@@ -1399,14 +1312,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                 }
               </button>
             </div>
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
       {/* ── Edit Invoice Modal (تعديل كامل لبيانات وبنود الفاتورة) ──────────── */}
       {editingInvoice && (
-        <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget && !editSubmitting) setEditingInvoice(null); }}>
-          <div className="modal-card-floating" style={{ maxWidth: 920 }}>
+        <FloatingModal maxWidth={920} onClose={() => { if (!editSubmitting) setEditingInvoice(null); }}>
             {/* Header */}
             <div className="modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1708,8 +1619,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
               </div>
 
             </form>
-          </div>
-        </div>
+        </FloatingModal>
       )}
 
     </div>

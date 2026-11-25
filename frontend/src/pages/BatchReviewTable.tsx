@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Product, Pharmacy, Invoice } from '../types';
+import { FloatingModal } from '../components/FloatingModal';
 import {
   FileText, CheckCircle2, AlertCircle, Edit3, Trash2,
   Save, Eye, Plus, ChevronDown, ChevronUp, RefreshCw,
@@ -935,48 +936,42 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
 
       {/* نافذة معاينة الصورة المكبرة (Lightbox) */}
       {previewImg && (
-        <div
-          className="modal-backdrop-floating"
-          onClick={() => setPreviewImg(null)}
-          style={{ zIndex: 99999, cursor: 'zoom-out' }}
+        <FloatingModal
+          onClose={() => setPreviewImg(null)}
+          maxWidth="92vw"
+          backdropStyle={{ zIndex: 99999, cursor: 'zoom-out' }}
+          cardStyle={{
+            maxHeight: '92vh',
+            padding: '0.75rem',
+            background: '#0f172a',
+            borderRadius: 14,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            position: 'relative'
+          }}
         >
-          <div
-            className="modal-card-floating"
-            style={{
-              maxWidth: '92vw',
-              maxHeight: '92vh',
-              padding: '0.75rem',
-              background: '#0f172a',
-              borderRadius: 14,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              position: 'relative'
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', color: 'white' }}>
-              <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>🔍 معاينة الفاتورة الأصلية لمطابقة القراءة</span>
-              <button
-                onClick={() => setPreviewImg(null)}
-                style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: 4 }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <img
-              src={previewImg}
-              alt="Invoice Preview"
-              style={{
-                maxWidth: '100%',
-                maxHeight: '80vh',
-                objectFit: 'contain',
-                borderRadius: 8,
-                boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
-              }}
-            />
+          <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', color: 'white' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>🔍 معاينة الفاتورة الأصلية لمطابقة القراءة</span>
+            <button
+              onClick={() => setPreviewImg(null)}
+              style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: 4 }}
+            >
+              <X size={20} />
+            </button>
           </div>
-        </div>
+          <img
+            src={previewImg}
+            alt="Invoice Preview"
+            style={{
+              maxWidth: '100%',
+              maxHeight: '80vh',
+              objectFit: 'contain',
+              borderRadius: 8,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
+            }}
+          />
+        </FloatingModal>
       )}
 
     </div>

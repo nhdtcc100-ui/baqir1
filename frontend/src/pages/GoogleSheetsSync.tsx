@@ -7,17 +7,8 @@ import {
   AlertTriangle, DownloadCloud, Trash2
 } from 'lucide-react';
 import { getDosageFormBadgeColor } from './BatchReviewTable';
-
-interface DuplicateSheetGroup {
-  key: string;
-  invoice_number: string;
-  invoice_date: string;
-  pharmacy_name: string;
-  timestamp: string;
-  rowsCount: number;
-  totalAmount: number;
-  productsSummary: string;
-}
+import { analyzeSheetDuplicates, SheetDuplicateGroup } from '../utils/duplicateDetector';
+import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
 
 export const GoogleSheetsSync: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -50,6 +41,8 @@ export const GoogleSheetsSync: React.FC = () => {
   const [showCodeGuide, setShowCodeGuide] = useState(false);
   const [outboxCount, setOutboxCount] = useState(() => getPendingSheetsOutbox().length);
   const [skippedNotices, setSkippedNotices] = useState<Array<{ id?: string; invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>>([]);
+  const [scriptOutdated, setScriptOutdated] = useState(false);
+  const [repairingSheet, setRepairingSheet] = useState(false);
 
   const [gapStatus, setGapStatus] = useState<{
     system_invoices_count: number;
@@ -77,14 +70,16 @@ export const GoogleSheetsSync: React.FC = () => {
       await api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
       setOutboxCount(getPendingSheetsOutbox().length);
       setSkippedNotices(api.getPendingSkippedSheetDuplicates());
-      const [dataRes, configRes, gapRes] = await Promise.all([
+      const [dataRes, configRes, gapRes, scriptStatus] = await Promise.all([
         api.getSheetsData(),
         api.getSheetsConfig(),
-        api.getSheetsGapStatus().catch(() => null)
+        api.getSheetsGapStatus().catch(() => null),
+        api.checkWebhookScriptStatus().catch(() => ({ scriptVersion: 0, isOutdated: false }))
       ]);
       setSheetData(dataRes);
       setConfig(configRes);
       setGapStatus(gapRes);
+      setScriptOutdated(Boolean(scriptStatus?.isOutdated));
       setWebhookInput(configRes.webhook_url || '');
     } catch (e: any) {
       setError(e.message || 'تعذر جلب بيانات كوكل شيت');
@@ -165,10 +160,27 @@ export const GoogleSheetsSync: React.FC = () => {
   };
 
   const handleCopyCode = () => {
-    if (!config?.apps_script_code) return;
-    navigator.clipboard.writeText(config.apps_script_code);
+    const code = config?.apps_script_code && config.apps_script_code.includes('SCRIPT_VERSION')
+      ? config.apps_script_code
+      : APPS_SCRIPT_V2_CODE;
+    navigator.clipboard.writeText(code);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2500);
+  };
+
+  const handleRepairSheet = async () => {
+    setRepairingSheet(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.repairGoogleSheet();
+      setSuccessMsg(res.message);
+      await loadData();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر تنفيذ الإصلاح التلقائي للشيت');
+    } finally {
+      setRepairingSheet(false);
+    }
   };
 
   const rows = useMemo(() => {
@@ -180,74 +192,27 @@ export const GoogleSheetsSync: React.FC = () => {
     });
   }, [sheetData]);
 
-  // كشف الفواتير المكررة في الشيت لتوفير زر حذف موحد للفاتورة المكررة بالكامل (كل أصنافها دفعة واحدة)
-  const { duplicateGroups, duplicateInvNumbers } = useMemo(() => {
-    const groupsMap = new Map<string, any[]>();
-    for (const r of rows) {
-      const num = String(r.invoice_number || '').trim();
-      const ph = String(r.pharmacy_name || '').trim();
-      const dt = String(r.invoice_date || '').trim();
+  // رصد الصفوف المزاحة من السكربت القديم (مثال: اسم الدواء دخل في المحافظة والكمية في الدواء)
+  const hasShiftedRows = useMemo(() => {
+    return rows.some(r => {
+      const prod = String(r.product_name || '').trim();
+      const rep = String(r.rep_name || '').trim();
       const ts = String(r.timestamp || '').trim();
-      const gKey = `${num || ph}::${dt}::${ts}`;
-      if (!groupsMap.has(gKey)) groupsMap.set(gKey, []);
-      groupsMap.get(gKey)!.push(r);
-    }
-
-    const byInvoiceSig = new Map<string, string[]>();
-    for (const [gKey, gRows] of groupsMap.entries()) {
-      const first = gRows[0];
-      const num = String(first.invoice_number || '').trim();
-      const ph = String(first.pharmacy_name || '').trim().toLowerCase();
-      const dt = String(first.invoice_date || '').trim();
-      const itemsSig = gRows.map(x => `${String(x.product_name || '').trim().toLowerCase()}:${x.quantity}`).sort().join('|');
-      const sig = num ? `INV:${num}` : `META:${ph}:${dt}:${itemsSig}`;
-      if (!byInvoiceSig.has(sig)) byInvoiceSig.set(sig, []);
-      byInvoiceSig.get(sig)!.push(gKey);
-
-      // كذلك التحقق داخل المجموعة نفسها إذا تكرر نفس الدواء بنفس الفاتورة
-      const seenProd = new Set<string>();
-      for (const itemRow of gRows) {
-        const pk = String(itemRow.product_name || '').trim().toLowerCase();
-        if (pk && seenProd.has(pk) && byInvoiceSig.get(sig)!.length === 1) {
-          byInvoiceSig.get(sig)!.push(`${gKey}::same_ts`);
-          break;
-        }
-        seenProd.add(pk);
-      }
-    }
-
-    const dupGroups: DuplicateSheetGroup[] = [];
-    const dupInvSet = new Set<string>();
-    for (const [, gKeys] of byInvoiceSig.entries()) {
-      if (gKeys.length > 1) {
-        const copies = gKeys.slice(1);
-        for (const cKey of copies) {
-          const cleanKey = cKey.replace('::same_ts', '');
-          const gRows = groupsMap.get(cleanKey) || [];
-          if (gRows.length === 0) continue;
-          const first = gRows[0];
-          const invNum = String(first.invoice_number || '').trim();
-          if (invNum) dupInvSet.add(invNum);
-          dupGroups.push({
-            key: cKey,
-            invoice_number: invNum || 'بدون رقم',
-            invoice_date: String(first.invoice_date || ''),
-            pharmacy_name: String(first.pharmacy_name || ''),
-            timestamp: String(first.timestamp || ''),
-            rowsCount: gRows.length,
-            totalAmount: gRows.reduce((s, x) => s + (Number(x.line_total) || 0), 0),
-            productsSummary: gRows.map(x => `${x.product_name} (${x.quantity})`).join('، ')
-          });
-        }
-      }
-    }
-
-    return { duplicateGroups: dupGroups, duplicateInvNumbers: dupInvSet };
+      const area = String(r.area || '').trim();
+      const city = String(r.city || '').trim();
+      const numericProd = /^\d+$/.test(prod);
+      const areaLooksCity = area === 'بغداد' && city.length > 2 && numericProd;
+      const repLooksTs = !ts && rep.includes(':') && /\d/.test(rep);
+      return areaLooksCity || repLooksTs;
+    });
   }, [rows]);
 
-  const handleDeleteDuplicateInvoice = async (grp: DuplicateSheetGroup) => {
+  // كشف الفواتير المكررة في الشيت بالشرط المركب الكامل (الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها معاً)
+  const { duplicateGroups, duplicateRowIndices } = useMemo(() => analyzeSheetDuplicates(rows), [rows]);
+
+  const handleDeleteDuplicateInvoice = async (grp: SheetDuplicateGroup) => {
     const proceed = window.confirm(
-      `⚠️ حذف الفاتورة المكررة بالكامل (${grp.invoice_number})?\n\nسيتم حذف جميع أصناف ومكونات هذه النسخة المكررة (${grp.rowsCount} بنود) من الشيت والنظام دفعة واحدة.`
+      `⚠️ حذف الفاتورة المكررة بالكامل (${grp.invoice_number})?\n\nسيتم حذف جميع أصناف ومكونات هذه النسخة المكررة (${grp.rowsCount} بنود) من الشيت والنظام دفعة واحدة وإرجاع الصف السليم للون الأبيض.`
     );
     if (!proceed) return;
 
@@ -258,9 +223,10 @@ export const GoogleSheetsSync: React.FC = () => {
       await api.deleteDuplicateSheetInvoice({
         invoice_number: grp.invoice_number === 'بدون رقم' ? '' : grp.invoice_number,
         pharmacy_name: grp.pharmacy_name,
-        invoice_date: grp.invoice_date
+        invoice_date: grp.invoice_date,
+        timestamp: grp.timestamp
       });
-      setSuccessMsg(`تم إرسال أمر حذف الفاتورة المكررة بالكامل (${grp.invoice_number} — ${grp.rowsCount} بنود) إلى كوكل شيت ✅`);
+      setSuccessMsg(`تم إرسال أمر حذف الفاتورة المكررة بالكامل (${grp.invoice_number} — ${grp.rowsCount} بنود) وإعادة الصف السليم للون الأبيض ✅`);
       await loadData();
     } catch (e: any) {
       setError(e?.message || 'تعذر حذف الفاتورة المكررة');
@@ -282,7 +248,9 @@ export const GoogleSheetsSync: React.FC = () => {
     return baseHeaders;
   }, [sheetData]);
 
-  const filteredRows = rows.filter(r => {
+  const rowsWithIndex = useMemo(() => rows.map((row, rowIndex) => ({ row, rowIndex })), [rows]);
+
+  const filteredRowsWithIndex = rowsWithIndex.filter(({ row: r }) => {
     if (!searchTerm.trim()) return true;
     const s = searchTerm.toLowerCase();
     const cellMatch = Array.isArray(r.cells) && r.cells.some((c: any) => String(c || '').toLowerCase().includes(s));
@@ -297,6 +265,7 @@ export const GoogleSheetsSync: React.FC = () => {
       (r.dosage_form && String(r.dosage_form).toLowerCase().includes(s))
     );
   });
+  const filteredRows = filteredRowsWithIndex.map(x => x.row);
 
   const totalValue = filteredRows.reduce((sum, r) => sum + (Number(r.line_total) || 0), 0);
   const totalPieces = filteredRows.reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
@@ -385,6 +354,43 @@ export const GoogleSheetsSync: React.FC = () => {
         <div className="alert-success" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <CheckCircle2 size={20} style={{ color: '#059669' }} />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {(scriptOutdated || hasShiftedRows) && (
+        <div className="card" style={{ background: '#fef2f2', border: '2px solid #ef4444', padding: '1rem 1.2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem' }}>
+            <div style={{ flex: '1 1 280px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
+                <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
+                <span>تنبيه هام: كود Google Apps Script المنشور على الشيت قديم (يُسبب إزاحة عمود المنتج للمكان وإنشاء صف جديد)</span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.6 }}>
+                لإصلاح التعديل في نفس الصف فوراً، ومنع ظهور اسم الدواء في عمود المكان/المحافظة، وتفعيل التلوين التلقائي للأحمر والأبيض داخل الشيت: انسخ الكود الجديد (الإصدار 2) والصقه في <strong>Extensions ← Apps Script</strong> ثم اعمل <strong>Deploy ← New version</strong> ثم اضغط «إصلاح وترتيب الشيت».
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => { handleCopyCode(); setShowCodeGuide(true); }}
+                className="btn-clay btn-primary btn-sm"
+                style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
+              >
+                {copiedCode ? <Check size={15} /> : <Copy size={15} />}
+                {copiedCode ? 'تم نسخ كود v2!' : 'نسخ كود Apps Script v2 📋'}
+              </button>
+              <button
+                type="button"
+                onClick={handleRepairSheet}
+                disabled={repairingSheet}
+                className="btn-clay btn-secondary btn-sm"
+                style={{ fontWeight: 800 }}
+              >
+                <RefreshCw size={15} className={repairingSheet ? 'animate-spin' : ''} />
+                {repairingSheet ? 'جارِ الإصلاح...' : 'إصلاح الصفوف وتلوين الشيت الآن 🛠️'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -652,7 +658,7 @@ export const GoogleSheetsSync: React.FC = () => {
             textAlign: 'left',
             fontFamily: 'Consolas, Monaco, monospace'
           }}>
-            {config?.apps_script_code || '// يتم تحديث الكود عبر السيرفر الخلفي'}
+            {config?.apps_script_code && config.apps_script_code.includes('SCRIPT_VERSION') ? config.apps_script_code : APPS_SCRIPT_V2_CODE}
           </pre>
         </div>
       )}
@@ -726,19 +732,17 @@ export const GoogleSheetsSync: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row, idx) => {
-                  const invNum = String(row.invoice_number || '').trim();
-                  const isDupRow = invNum && duplicateInvNumbers.has(invNum);
-                  const matchingDupGroup = isDupRow
-                    ? duplicateGroups.find(g => g.invoice_number === invNum)
-                    : undefined;
+                {filteredRowsWithIndex.map(({ row, rowIndex }, idx) => {
+                  const isDupRow = duplicateRowIndices.has(rowIndex);
+                  const matchingDupGroup = duplicateGroups.find(g => g.rowIndices.includes(rowIndex));
 
                   return (
                     <tr
-                      key={idx}
+                      key={rowIndex}
                       style={{
                         height: 'auto',
-                        background: isDupRow ? '#fef2f2' : undefined
+                        background: isDupRow ? '#fee2e2' : '#ffffff',
+                        color: isDupRow ? '#991b1b' : '#0f172a'
                       }}
                     >
                       <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--gray-500)', whiteSpace: 'nowrap', verticalAlign: 'middle', padding: '0.6rem 0.75rem' }}>
