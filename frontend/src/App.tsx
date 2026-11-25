@@ -90,8 +90,32 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (currentUser) loadData();
+    if (currentUser) {
+      api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
+      loadData();
+    }
   }, [currentUser]);
+
+  // Ensure pending Google Sheets syncs flush on reconnect, page return, or exit
+  useEffect(() => {
+    const flushNow = () => {
+      api.flushSheetsSyncOutbox({ keepalive: true, useBeacon: true }).catch(() => {});
+    };
+    const onVisChange = () => {
+      if (document.visibilityState === 'hidden') flushNow();
+      else api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
+    };
+    window.addEventListener('online', flushNow);
+    window.addEventListener('pagehide', flushNow);
+    window.addEventListener('beforeunload', flushNow);
+    document.addEventListener('visibilitychange', onVisChange);
+    return () => {
+      window.removeEventListener('online', flushNow);
+      window.removeEventListener('pagehide', flushNow);
+      window.removeEventListener('beforeunload', flushNow);
+      document.removeEventListener('visibilitychange', onVisChange);
+    };
+  }, []);
 
   // Lock background page scrolling while mobile sidebar drawer is open
   useEffect(() => {
@@ -523,11 +547,11 @@ export function App() {
 
           <button
             type="button"
-            onClick={() => navigate('pharmacies')}
-            className={`mobile-bottom-nav-item ${activeTab === 'pharmacies' ? 'active' : ''}`}
+            onClick={() => navigate('sheets')}
+            className={`mobile-bottom-nav-item ${activeTab === 'sheets' ? 'active' : ''}`}
           >
-            <div className="bottom-nav-icon"><Building2 size={20} /></div>
-            <span className="bottom-nav-label">الصيدليات</span>
+            <div className="bottom-nav-icon"><FileSpreadsheet size={20} /></div>
+            <span className="bottom-nav-label">كوكل شيت</span>
           </button>
 
           <button

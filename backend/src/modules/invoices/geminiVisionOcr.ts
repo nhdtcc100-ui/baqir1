@@ -191,20 +191,9 @@ function classifyGeminiFailure(err: any): { statusCode?: number; shouldTripCircu
   };
 }
 
-const GROQ_VISION_MODELS = ['qwen/qwen3.8-27b'];
-const OPENROUTER_VISION_MODELS = [
-  'google/gemma-4-31b-it:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'openrouter/free'
-];
-
-function detectServerAiProvider(apiKey: string): 'groq' | 'openrouter' | 'gemini' {
-  const k = (apiKey || '').trim();
-  if (k.startsWith('gsk_')) return 'groq';
-  if (k.startsWith('sk-or-')) return 'openrouter';
-  return 'gemini';
-}
-
+/**
+ * دالة مساعدة لتطبيع مخرجات JSON القادمة من Google Gemini Vision
+ */
 function normalizeParsedOcrInvoice(
   responseText: string,
   usedModel: string,
@@ -214,7 +203,7 @@ function normalizeParsedOcrInvoice(
   if (!jsonMatch) {
     return {
       result: null,
-      errorMessage: 'AI Vision did not return valid JSON',
+      errorMessage: 'Gemini did not return valid JSON',
       shouldTripCircuit: false,
       usedModel
     };
@@ -270,81 +259,8 @@ function normalizeParsedOcrInvoice(
   };
 }
 
-async function extractWithOpenAiCompatibleServer(
-  provider: 'groq' | 'openrouter',
-  apiKey: string,
-  base64Image: string,
-  mimeType: string
-): Promise<GeminiDetailedOutcome> {
-  if (mimeType === 'application/pdf') {
-    return {
-      result: null,
-      statusCode: 400,
-      errorMessage: `${provider} Vision supports image files only (not PDF)`,
-      shouldTripCircuit: false
-    };
-  }
-  const endpoint = provider === 'groq'
-    ? 'https://api.groq.com/openai/v1/chat/completions'
-    : 'https://openrouter.ai/api/v1/chat/completions';
-  const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_VISION_MODELS;
-
-  let lastStatus: number | undefined;
-  let lastError = '';
-  let anyTrip = false;
-
-  for (const model of models) {
-    try {
-      console.log(`🤖 Invoking ${provider.toUpperCase()} Vision with model: ${model}...`);
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey.trim()}`,
-          ...(provider === 'openrouter' ? { 'X-Title': 'PharmaSales CRM' } : {})
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.1,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: INVOICE_EXTRACTION_PROMPT },
-              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } }
-            ]
-          }]
-        })
-      });
-
-      if (!res.ok) {
-        const errJson: any = await res.json().catch(() => ({}));
-        const rawMsg = errJson?.error?.message || res.statusText || '';
-        lastStatus = res.status;
-        lastError = `${provider} (${res.status}): ${rawMsg}`;
-        if (res.status === 403 || res.status === 429) anyTrip = true;
-        console.warn(`⚠️ ${provider} model ${model} failed (${res.status}): ${rawMsg.slice(0, 90)}`);
-        continue;
-      }
-
-      const data: any = await res.json();
-      const rawText = String(data?.choices?.[0]?.message?.content || '').trim();
-      console.log(`✅ ${provider.toUpperCase()} Vision succeeded using: ${model}`);
-      return normalizeParsedOcrInvoice(rawText, `${provider}:${model}`, 0.93);
-    } catch (err: any) {
-      lastError = String(err?.message || err);
-    }
-  }
-
-  return {
-    result: null,
-    statusCode: lastStatus,
-    errorMessage: lastError || `All ${provider} models failed`,
-    shouldTripCircuit: anyTrip
-  };
-}
-
 /**
- * استدعاء AI Vision (يدعم Groq gsk_ و OpenRouter sk-or- و Google Gemini) مع إرجاع تفاصيل الحالة لدعم قاطع الدائرة والمحاولات
+ * استدعاء Google Gemini Vision مع إرجاع تفاصيل الحالة لدعم قاطع الدائرة والمحاولات
  */
 export async function extractInvoiceWithGeminiDetailed(
   imagePath: string,
@@ -361,7 +277,7 @@ export async function extractInvoiceWithGeminiDetailed(
   }
 
   try {
-    const candidateModels = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-2.5-flash'];
+    const candidateModels = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
     const imageBuffer = fs.readFileSync(imagePath);
     const base64Image = imageBuffer.toString('base64');
@@ -373,11 +289,6 @@ export async function extractInvoiceWithGeminiDetailed(
     else if (ext.endsWith('.heic')) mimeType = 'image/heic';
     else if (ext.endsWith('.heif')) mimeType = 'image/heif';
     else if (ext.endsWith('.pdf')) mimeType = 'application/pdf';
-
-    const provider = detectServerAiProvider(apiKey);
-    if (provider === 'groq' || provider === 'openrouter') {
-      return await extractWithOpenAiCompatibleServer(provider, apiKey, base64Image, mimeType);
-    }
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
@@ -426,7 +337,7 @@ export async function extractInvoiceWithGeminiDetailed(
 
   } catch (err: any) {
     const info = classifyGeminiFailure(err);
-    console.error('AI Vision OCR error:', info.message);
+    console.error('Gemini Vision OCR error:', info.message);
     return {
       result: null,
       statusCode: info.statusCode,

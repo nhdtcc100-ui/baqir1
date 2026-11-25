@@ -651,7 +651,10 @@ router.put('/:id/review',
     try {
       const { status, rejection_reason } = req.body;
       const invoice = await InvoiceService.review(req.params.id, status, rejection_reason);
-      sendSuccess(res, invoice, status === 'approved' ? 'تم اعتماد الفاتورة بنجاح' : 'تم رفض الفاتورة');
+      GoogleSheetsService.replaceInvoice(invoice, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+        console.warn('[GoogleSheets] Review sync err:', e?.message || e);
+      });
+      sendSuccess(res, invoice, status === 'approved' ? 'تم اعتماد الفاتورة بنجاح ومزامنتها' : 'تم رفض الفاتورة');
     } catch (e) { next(e); }
   }
 );
@@ -670,8 +673,8 @@ router.put('/:id',
         if (invoice.status !== 'pending_review') { sendError(res, 'لا يمكن تعديل الفاتورة بعد اعتمادها أو رفضها', 400); return; }
       }
       const updated = await InvoiceService.update(req.params.id, req.body);
-      // مزامنة الفاتورة المعدلة فوراً مع كوكل شيت
-      GoogleSheetsService.appendInvoice(updated, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+      // مزامنة الفاتورة المعدلة فوراً مع كوكل شيت (استبدال السطور القديمة بالجديدة)
+      GoogleSheetsService.replaceInvoice(updated, invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
         console.error('[GoogleSheets] Update sync err:', e);
       });
       sendSuccess(res, updated, 'تم تعديل بيانات الفاتورة بنجاح ومزامنتها مع كوكل شيت');
@@ -691,6 +694,11 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
       if (invoice.status !== 'pending_review') { sendError(res, 'لا يمكن حذف الفاتورة بعد اعتمادها أو رفضها', 400); return; }
     }
     await InvoiceService.deleteById(req.params.id);
+    if (invoice.invoice_number) {
+      GoogleSheetsService.deleteInvoiceRows(invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+        console.warn('[GoogleSheets] Delete sync err:', e?.message || e);
+      });
+    }
     sendSuccess(res, { id: req.params.id }, 'تم حذف الفاتورة بنجاح');
   } catch (e) { next(e); }
 });

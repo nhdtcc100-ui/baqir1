@@ -1,6 +1,5 @@
 import { User, Pharmacy, Product, Invoice, KPISummary } from '../types';
 import { prepareInvoiceFile, PreparedInvoiceFile } from '../utils/imageCompressor';
-import { runLocalBrowserTesseractOcr } from '../utils/localOcrFallback';
 import { detectDosageFormClient, detectAreaFromText } from '../utils/invoiceTableParser';
 
 const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
@@ -546,31 +545,12 @@ export function clearClientOcrCircuitBreaker(apiKey?: string) {
   }
 }
 
-export function detectAiKeyProvider(key: string): AiVisionProvider {
-  const k = (key || '').trim();
-  if (k.startsWith('gsk_')) return 'groq';
-  if (k.startsWith('sk-or-')) return 'openrouter';
-  return 'gemini';
-}
-
-const GROQ_VISION_MODELS = [
-  'qwen/qwen3.8-27b',
-  'meta-llama/llama-4-scout-17b-16e-instruct'
-];
-
-const OPENROUTER_FREE_VISION_MODELS = [
-  'google/gemma-4-31b-it:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'nvidia/nemotron-3.5-super-vl:free',
-  'openrouter/free'
-];
-
 function normalizeVisionJsonResponse(rawText: string) {
   const cleaned = (rawText || '').replace(/```json\s*|```/gi, '').trim();
   const jsonStart = cleaned.indexOf('{');
   const jsonEnd = cleaned.lastIndexOf('}');
   if (jsonStart < 0 || jsonEnd < 0) {
-    throw new Error('لم يُرجع الذكاء الاصطناعي بيانات جدول صالحة (JSON).');
+    throw new Error('لم يُرجع Google Gemini بيانات جدول صالحة (JSON).');
   }
   const parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
   if (Array.isArray(parsed.items)) {
@@ -587,114 +567,11 @@ function normalizeVisionJsonResponse(rawText: string) {
   return parsed;
 }
 
-/**
- * استدعاء مشترك لنقاط Vision المتوافقة مع OpenAI (Groq Free / OpenRouter Free) مع Retry (3x)
- */
-async function runOpenAiCompatibleVisionOcr(
-  provider: 'groq' | 'openrouter',
-  fileData: { base64: string; mimeType: string; dataUrl: string },
-  apiKey: string,
-  onProgress?: (pct: number, msg: string) => void
-) {
-  if (fileData.mimeType === 'application/pdf') {
-    throw new Error(`قراءة ملفات PDF مباشرة غير مدعومة عبر ${provider === 'groq' ? 'Groq' : 'OpenRouter'} — التقط صورة للفاتورة بدلاً من PDF.`);
-  }
-
-  const endpoint = provider === 'groq'
-    ? 'https://api.groq.com/openai/v1/chat/completions'
-    : 'https://openrouter.ai/api/v1/chat/completions';
-  const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_FREE_VISION_MODELS;
-  const providerLabel = provider === 'groq' ? 'Groq Vision AI' : 'OpenRouter Free AI';
-  let lastError: any = null;
-
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i];
-    for (let attempt = 1; attempt <= CLIENT_OCR_MAX_RETRIES; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 32000);
-      try {
-        onProgress?.(55 + i * 9, `جاري القراءة الذكية عبر ${providerLabel} (${model.split('/').pop()})...`);
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey.trim()}`
-        };
-        if (provider === 'openrouter') {
-          headers['X-Title'] = 'PharmaSales CRM';
-        }
-
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          signal: controller.signal,
-          body: JSON.stringify({
-            model,
-            temperature: 0.1,
-            messages: [
-              {
-                role: 'user',
-                content: [
-                  { type: 'text', text: IRAQI_PHARMA_OCR_PROMPT },
-                  { type: 'image_url', image_url: { url: fileData.dataUrl || `data:${fileData.mimeType};base64,${fileData.base64}` } }
-                ]
-              }
-            ]
-          })
-        });
-
-        if (!res.ok) {
-          const errJson = await res.json().catch(() => ({}));
-          const apiMsg = errJson?.error?.message || res.statusText || '';
-          const msg = `${providerLabel} (${res.status}): ${apiMsg || 'فشل الطلب'}`;
-          if (res.status === 401 || res.status === 403) {
-            throw Object.assign(new Error(`مفتاح ${providerLabel} غير صالح أو مرفوض (${res.status}).`), {
-              fatalAuth: true,
-              statusCode: res.status,
-              shouldTripCircuit: res.status === 403
-            });
-          }
-          lastError = Object.assign(new Error(msg), {
-            statusCode: res.status,
-            shouldTripCircuit: res.status === 429
-          });
-          if ((res.status === 429 || res.status >= 500) && attempt < CLIENT_OCR_MAX_RETRIES) {
-            await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
-            continue;
-          }
-          break;
-        }
-
-        const data = await res.json();
-        const rawText = String(data?.choices?.[0]?.message?.content || '');
-        const parsed = normalizeVisionJsonResponse(rawText);
-        return { parsed, modelUsed: `${providerLabel}: ${model.split('/').pop()}` };
-      } catch (err: any) {
-        if (err?.fatalAuth) throw err;
-        lastError = err?.name === 'AbortError'
-          ? Object.assign(new Error(`انتهت مهلة الاتصال بـ ${providerLabel}`), { statusCode: 408 })
-          : err;
-        if (attempt < CLIENT_OCR_MAX_RETRIES) {
-          await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
-          continue;
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  throw lastError || new Error(`تعذّر تحليل الفاتورة عبر ${providerLabel}.`);
-}
-
 async function runBrowserGeminiOcr(
   fileData: { base64: string; mimeType: string; dataUrl: string },
   apiKey: string,
   onProgress?: (pct: number, msg: string) => void
 ) {
-  const provider = detectAiKeyProvider(apiKey);
-  if (provider === 'groq' || provider === 'openrouter') {
-    return runOpenAiCompatibleVisionOcr(provider, fileData, apiKey, onProgress);
-  }
-
   let lastError: any = null;
 
   for (let mIdx = 0; mIdx < GEMINI_CANDIDATE_MODELS.length; mIdx++) {
@@ -705,7 +582,7 @@ async function runBrowserGeminiOcr(
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 30000);
       try {
-        onProgress?.(55 + mIdx * 8, `جاري القراءة الذكية عبر (${modelName})...`);
+        onProgress?.(55 + mIdx * 8, `جاري القراءة الذكية عبر Google Gemini (${modelName})...`);
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -778,7 +655,7 @@ async function runBrowserGeminiOcr(
     }
   }
 
-  throw lastError || new Error('تعذر تحليل الفاتورة عبر جميع نماذج Gemini.');
+  throw lastError || new Error('تعذر تحليل الفاتورة عبر جميع نماذج Google Gemini.');
 }
 
 /**
@@ -829,8 +706,273 @@ async function fetchAdminSheetUsersInBrowser(): Promise<Array<User & { password_
   return [];
 }
 
-// Helper to push an invoice locally and optionally fire webhook
-function persistLocalInvoice(payload: any): Invoice {
+export interface SheetRowPayload {
+  invoice_number: string;
+  invoice_date: string;
+  warehouse_name: string;
+  pharmacy_name: string;
+  area: string;
+  city: string;
+  product_name: string;
+  dosage_form: string;
+  quantity: number;
+  unit_price: number;
+  bonus_quantity: number;
+  line_total: number;
+  total_invoice: number;
+  rep_name: string;
+  status: string;
+  timestamp: string;
+}
+
+export interface SkippedSheetDuplicateNotice {
+  id: string;
+  invoice_number: string;
+  pharmacy_name: string;
+  invoice_date: string;
+  reason: string;
+  detectedAt: string;
+}
+
+export interface PendingSheetsSyncJob {
+  id: string;
+  action: 'replace_invoice' | 'delete_invoice' | 'batchAppend';
+  invoice_number?: string;
+  previous_invoice_number?: string;
+  delete_mode?: 'all' | 'duplicate_copy';
+  rows?: SheetRowPayload[];
+  createdAt: string;
+}
+
+const LS_SHEETS_OUTBOX_KEY = 'pharma_sheets_sync_outbox_v1';
+const LS_SHEETS_SKIPPED_DUPS_KEY = 'pharma_sheets_skipped_duplicates_v1';
+
+export function getPendingSkippedSheetDuplicates(): SkippedSheetDuplicateNotice[] {
+  try {
+    const raw = localStorage.getItem(LS_SHEETS_SKIPPED_DUPS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+export function addSkippedSheetDuplicateNotices(items: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>) {
+  if (!items || items.length === 0) return;
+  try {
+    const current = getPendingSkippedSheetDuplicates();
+    const mapped: SkippedSheetDuplicateNotice[] = items.map(it => ({
+      ...it,
+      id: `skip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      detectedAt: new Date().toISOString()
+    }));
+    const merged = [...mapped, ...current].filter((v, i, arr) =>
+      arr.findIndex(x => x.invoice_number === v.invoice_number && x.pharmacy_name === v.pharmacy_name && x.reason === v.reason) === i
+    ).slice(0, 20);
+    localStorage.setItem(LS_SHEETS_SKIPPED_DUPS_KEY, JSON.stringify(merged));
+  } catch { /* ignore */ }
+}
+
+export function clearSkippedSheetDuplicateNotices() {
+  try { localStorage.removeItem(LS_SHEETS_SKIPPED_DUPS_KEY); } catch { /* ignore */ }
+}
+
+export function getPendingSheetsOutbox(): PendingSheetsSyncJob[] {
+  try {
+    const raw = localStorage.getItem(LS_SHEETS_OUTBOX_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+function savePendingSheetsOutbox(jobs: PendingSheetsSyncJob[]) {
+  try {
+    if (jobs.length === 0) localStorage.removeItem(LS_SHEETS_OUTBOX_KEY);
+    else localStorage.setItem(LS_SHEETS_OUTBOX_KEY, JSON.stringify(jobs.slice(-40)));
+  } catch { /* ignore */ }
+}
+
+export function formatInvoiceToSheetRows(inv: any): SheetRowPayload[] {
+  const items = inv?.items || [];
+  const nowStr = new Date().toLocaleString('ar-IQ', {
+    timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  });
+  const statusText = inv?.status === 'approved' ? 'معتمدة ✓' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
+  const phName = String(inv?.pharmacy_name || 'صيدلية معتمدة').trim();
+  const phCity = String(inv?.pharmacy_city || 'بغداد').trim();
+  const phArea = String(inv?.pharmacy_area || (inv as any)?.area || detectAreaFromText(phName) || 'مركز المدينة').trim();
+
+  return items.map((it: any) => {
+    const qty = Number(it.sold_quantity || it.quantity || 1);
+    const price = Number(it.historical_unit_price || it.custom_unit_price || it.unit_price || 0);
+    const bonus = Number(it.bonus_quantity ?? it.custom_bonus ?? 0);
+    const lineTotal = Number(it.line_total || qty * price);
+    const prodName = String(it.product_name_snapshot || it.custom_product_name || it.product_name || 'مستحضر دوائي').trim();
+    const dosage = String(it.dosage_form || detectDosageFormClient(prodName)).trim();
+    return {
+      invoice_number: String(inv?.invoice_number || '').trim(),
+      invoice_date: String(inv?.invoice_date || '').split('T')[0],
+      warehouse_name: String(inv?.warehouse_name || 'مذخر الشغف الحديث').trim(),
+      pharmacy_name: phName,
+      area: phArea,
+      city: phCity,
+      product_name: prodName,
+      dosage_form: ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(dosage) ? dosage : detectDosageFormClient(prodName),
+      quantity: qty,
+      unit_price: price,
+      bonus_quantity: bonus,
+      line_total: lineTotal,
+      total_invoice: Number(inv?.total_sales_amount || lineTotal),
+      rep_name: String(inv?.rep_name || 'مندوب علمي').trim(),
+      status: statusText,
+      timestamp: nowStr
+    };
+  });
+}
+
+async function fetchLiveSheetRowsCompact(): Promise<any[]> {
+  try {
+    const sheetId = getSavedSheetId();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3200);
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`, { signal: controller.signal })
+      .finally(() => clearTimeout(timer));
+    if (!res.ok) return [];
+    const text = await res.text();
+    const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
+    if (!m?.[1]) return [];
+    const parsed = JSON.parse(m[1]);
+    return (parsed.table?.rows || []).map((r: any) => {
+      const c = r.c || [];
+      const val = (i: number) => String(c[i]?.f ?? c[i]?.v ?? '').trim();
+      return {
+        invoice_number: val(0),
+        invoice_date: val(1),
+        pharmacy_name: val(3),
+        product_name: val(6),
+        quantity: Number(c[8]?.v || 0),
+        unit_price: Number(c[9]?.v || 0),
+        status: val(14)
+      };
+    }).filter((r: any) => r.invoice_number !== '123' && (r.invoice_number || r.pharmacy_name || r.product_name));
+  } catch {
+    return [];
+  }
+}
+
+function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
+  if (!sheetRows || sheetRows.length === 0) return { isDuplicate: false, isExactMatch: false, reason: '' };
+  const invNum = String(inv?.invoice_number || '').trim();
+  const phName = String(inv?.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
+  const invDate = String(inv?.invoice_date || '').split('T')[0];
+  const items = inv?.items || [];
+  const statusText = inv?.status === 'approved' ? 'معتمدة' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
+  const itemsSig = items
+    .map((it: any) => `${String(it.product_name_snapshot || it.custom_product_name || it.product_name || '').trim().toLowerCase()}:${Number(it.sold_quantity || it.quantity || 0)}:${Number(it.historical_unit_price || it.custom_unit_price || it.unit_price || 0)}`)
+    .sort()
+    .join('|');
+
+  const byInv = new Map<string, any[]>();
+  for (const r of sheetRows) {
+    const k = String(r.invoice_number || `${r.pharmacy_name}::${r.invoice_date}`).trim();
+    if (!byInv.has(k)) byInv.set(k, []);
+    byInv.get(k)!.push(r);
+  }
+
+  if (invNum && byInv.has(invNum)) {
+    const exRows = byInv.get(invNum)!;
+    const exStatus = String(exRows[0]?.status || '').replace(' ✓', '').trim();
+    const exItemsSig = exRows
+      .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
+      .sort()
+      .join('|');
+    if (exStatus === statusText && exItemsSig === itemsSig) {
+      return { isDuplicate: true, isExactMatch: true, reason: `الفاتورة رقم (${invNum}) موجودة مسبقاً بنفس الأصناف والحالة في كوكل شيت` };
+    }
+    return { isDuplicate: false, isExactMatch: false, reason: '' };
+  }
+
+  if (phName && invDate && items.length > 0) {
+    for (const [exNum, exRows] of byInv.entries()) {
+      const exPh = String(exRows[0]?.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
+      const exDate = String(exRows[0]?.invoice_date || '').split('T')[0];
+      if (exPh === phName && exDate === invDate) {
+        const exItemsSig = exRows
+          .map(x => `${String(x.product_name || '').trim().toLowerCase()}:${Number(x.quantity || 0)}:${Number(x.unit_price || 0)}`)
+          .sort()
+          .join('|');
+        if (exItemsSig === itemsSig) {
+          return { isDuplicate: true, isExactMatch: false, reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name} / ${invDate}) موجودة مسبقاً برقم (${exNum})` };
+        }
+      }
+    }
+  }
+  return { isDuplicate: false, isExactMatch: false, reason: '' };
+}
+
+function enqueueSheetsSyncJob(job: Omit<PendingSheetsSyncJob, 'id' | 'createdAt'>) {
+  const existing = getPendingSheetsOutbox();
+  const entry: PendingSheetsSyncJob = {
+    ...job,
+    id: `sync-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    createdAt: new Date().toISOString()
+  };
+  const filtered = job.invoice_number
+    ? existing.filter(j => j.invoice_number !== job.invoice_number)
+    : existing;
+  savePendingSheetsOutbox([...filtered, entry]);
+}
+
+async function flushSheetsSyncOutboxInternal(opts?: { keepalive?: boolean; useBeacon?: boolean }): Promise<{ flushed: number; remaining: number }> {
+  const webhookUrl = getSavedWebhookUrl();
+  const jobs = getPendingSheetsOutbox();
+  if (!webhookUrl || !webhookUrl.startsWith('http') || jobs.length === 0) {
+    return { flushed: 0, remaining: jobs.length };
+  }
+
+  let flushed = 0;
+  const remaining: PendingSheetsSyncJob[] = [];
+
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
+    const body = JSON.stringify({
+      action: job.action,
+      spreadsheetId: getSavedSheetId(),
+      sheetName: 'الفواتير',
+      invoice_number: job.invoice_number,
+      previous_invoice_number: job.previous_invoice_number,
+      delete_mode: job.delete_mode,
+      rows: job.rows || []
+    });
+
+    if (opts?.useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function' && body.length < 60000) {
+      const ok = navigator.sendBeacon(webhookUrl, new Blob([body], { type: 'text/plain;charset=utf-8' }));
+      if (ok) {
+        flushed++;
+        continue;
+      }
+    }
+
+    try {
+      const canKeepalive = Boolean(opts?.keepalive) && body.length < 60000;
+      await fetch(webhookUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        keepalive: canKeepalive,
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body
+      });
+      flushed++;
+    } catch {
+      remaining.push(...jobs.slice(i));
+      break;
+    }
+  }
+
+  savePendingSheetsOutbox(remaining);
+  return { flushed, remaining: remaining.length };
+}
+
+// Helper to push an invoice locally and enqueue persistent exit-safe webhook sync
+function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }): Invoice {
   const pharmacies = getStoredPharmacies();
   const invoices = getStoredInvoices();
   const curUser = getCurrentUser();
@@ -906,19 +1048,36 @@ function persistLocalInvoice(payload: any): Invoice {
   invoices.unshift(newInv);
   saveStoredInvoices(invoices);
 
-  // Silently notify Apps Script webhook in background if configured
-  const webhookUrl = getSavedWebhookUrl();
-  if (webhookUrl && webhookUrl.startsWith('http')) {
-    try {
-      fetch(webhookUrl, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'append_invoice', invoice: newInv })
-      }).catch(() => {});
-    } catch { /* ignore */ }
+  if (!opts?.skipSheetCheck) {
+    const rows = formatInvoiceToSheetRows(newInv);
+    enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: newInv.invoice_number, rows });
+    flushSheetsSyncOutboxInternal({ keepalive: true }).catch(() => {});
   }
 
+  return newInv;
+}
+
+async function persistLocalInvoiceAndSync(payload: any): Promise<Invoice> {
+  const newInv = persistLocalInvoice(payload, { skipSheetCheck: true });
+  const sheetRows = await fetchLiveSheetRowsCompact();
+  const dupCheck = checkClientInvoiceDuplicateInSheet(newInv, sheetRows);
+
+  if (dupCheck.isDuplicate) {
+    addSkippedSheetDuplicateNotices([{
+      invoice_number: String(newInv.invoice_number || ''),
+      pharmacy_name: newInv.pharmacy_name || '',
+      invoice_date: (newInv.invoice_date || '').split('T')[0],
+      reason: dupCheck.reason
+    }]);
+    return newInv;
+  }
+
+  const rows = formatInvoiceToSheetRows(newInv);
+  enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(newInv.invoice_number || ''), rows });
+  await Promise.race([
+    flushSheetsSyncOutboxInternal({ keepalive: true }),
+    new Promise(r => setTimeout(r, 3000))
+  ]).catch(() => {});
   return newInv;
 }
 
@@ -1164,7 +1323,7 @@ export const api = {
       return await handleResponse<Invoice>(res);
     } catch (err: any) {
       if (isNetworkError(err)) {
-        return persistLocalInvoice(payload);
+        return await persistLocalInvoiceAndSync(payload);
       }
       throw err;
     }
@@ -1180,6 +1339,7 @@ export const api = {
       product_id: string;
       sold_quantity: number;
       custom_product_name?: string;
+      dosage_form?: string;
       custom_unit_price?: number;
       custom_bonus?: number;
       ocr_confidence?: number;
@@ -1222,6 +1382,7 @@ export const api = {
               id: `item-${Date.now()}-${i}`,
               product_id: it.product_id || 'pr-1',
               product_name_snapshot: it.custom_product_name || 'مستحضر دوائي',
+              dosage_form: it.dosage_form || detectDosageFormClient(it.custom_product_name || ''),
               sold_quantity: qty,
               historical_unit_price: price,
               bonus_quantity: bonus,
@@ -1246,6 +1407,18 @@ export const api = {
         };
         list[idx] = updated;
         saveStoredInvoices(list);
+
+        enqueueSheetsSyncJob({
+          action: 'replace_invoice',
+          invoice_number: updated.invoice_number,
+          previous_invoice_number: old.invoice_number,
+          rows: formatInvoiceToSheetRows(updated)
+        });
+        await Promise.race([
+          flushSheetsSyncOutboxInternal({ keepalive: true }),
+          new Promise(r => setTimeout(r, 3000))
+        ]).catch(() => {});
+
         return updated;
       }
       throw err;
@@ -1271,6 +1444,18 @@ export const api = {
         if (idx === -1) throw new Error('الفاتورة غير موجودة');
         list[idx] = { ...list[idx], status, rejection_reason };
         saveStoredInvoices(list);
+
+        enqueueSheetsSyncJob({
+          action: 'replace_invoice',
+          invoice_number: list[idx].invoice_number,
+          previous_invoice_number: list[idx].invoice_number,
+          rows: formatInvoiceToSheetRows(list[idx])
+        });
+        await Promise.race([
+          flushSheetsSyncOutboxInternal({ keepalive: true }),
+          new Promise(r => setTimeout(r, 3000))
+        ]).catch(() => {});
+
         return list[idx];
       }
       throw err;
@@ -1286,60 +1471,32 @@ export const api = {
       await handleResponse<{ id: string }>(res);
     } catch (err: any) {
       if (isNetworkError(err)) {
-        const list = getStoredInvoices().filter(i => i.id !== id);
+        const all = getStoredInvoices();
+        const target = all.find(i => i.id === id);
+        const list = all.filter(i => i.id !== id);
         saveStoredInvoices(list);
+        if (target?.invoice_number) {
+          enqueueSheetsSyncJob({
+            action: 'delete_invoice',
+            invoice_number: target.invoice_number,
+            delete_mode: 'all'
+          });
+          await Promise.race([
+            flushSheetsSyncOutboxInternal({ keepalive: true }),
+            new Promise(r => setTimeout(r, 2500))
+          ]).catch(() => {});
+        }
         return;
       }
       throw err;
     }
   },
 
-  // ── Test AI Vision API Key from Browser (Auto-detects Groq / OpenRouter / Gemini) ──
+  // ── Test Google Gemini API Key from Browser (Gemini Only) ──
   async testGeminiKey(rawKey: string): Promise<{ valid: boolean; model?: string; provider?: AiVisionProvider; message: string }> {
     const key = rawKey.trim();
     if (!key) {
-      return { valid: false, message: 'يرجى إدخال مفتاح الذكاء الاصطناعي أولاً (Groq gsk_ أو OpenRouter sk-or- أو Gemini).' };
-    }
-
-    const provider = detectAiKeyProvider(key);
-
-    if (provider === 'groq' || provider === 'openrouter') {
-      const endpoint = provider === 'groq'
-        ? 'https://api.groq.com/openai/v1/chat/completions'
-        : 'https://openrouter.ai/api/v1/chat/completions';
-      const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_FREE_VISION_MODELS;
-      const label = provider === 'groq' ? 'Groq Vision' : 'OpenRouter Free';
-      let lastErr = `تعذر التحقق من مفتاح ${label}`;
-      for (const model of models) {
-        try {
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${key}`,
-              ...(provider === 'openrouter' ? { 'X-Title': 'PharmaSales CRM' } : {})
-            },
-            body: JSON.stringify({
-              model,
-              max_tokens: 10,
-              messages: [{ role: 'user', content: 'Say OK' }]
-            })
-          });
-          if (res.ok) {
-            setSavedGeminiKey(key);
-            clearClientOcrCircuitBreaker(key);
-            return { valid: true, model, provider, message: `تم التحقق! ${label} يعمل مجاناً عبر (${model.split('/').pop()}) ✅` };
-          }
-          const errJson = await res.json().catch(() => ({}));
-          lastErr = `${label} (${res.status}): ${errJson?.error?.message || res.statusText}`;
-          if (res.status === 401 || res.status === 403) {
-            return { valid: false, provider, message: `مفتاح ${label} مرفوض (${res.status}) — تأكد من نسخه كاملاً.` };
-          }
-        } catch (e: any) {
-          lastErr = `تعذر الاتصال بـ ${label}: ${e?.message || 'خطأ شبكة'}`;
-        }
-      }
-      return { valid: false, provider, message: lastErr };
+      return { valid: false, message: 'يرجى إدخال مفتاح Google Gemini API أولاً.' };
     }
 
     let lastMsg = 'تعذر التحقق من المفتاح';
@@ -1357,7 +1514,7 @@ export const api = {
         if (res.ok) {
           setSavedGeminiKey(key);
           clearClientOcrCircuitBreaker(key);
-          return { valid: true, model, provider: 'gemini', message: `تم التحقق! Gemini يعمل بنجاح على (${model}) ✅` };
+          return { valid: true, model, provider: 'gemini', message: `تم التحقق! Google Gemini يعمل بنجاح على (${model}) ✅` };
         }
         const errJson = await res.json().catch(() => ({}));
         const rawErrMsg = errJson?.error?.message || res.statusText || '';
@@ -1394,7 +1551,7 @@ export const api = {
     confidence: number;
     raw_text?: string;
     offline_mode?: boolean;
-    ocr_engine?: 'backend' | 'gemini-browser' | 'tesseract-browser' | 'offline-manual';
+    ocr_engine?: 'backend' | 'gemini-browser' | 'offline-manual';
     ocr_warning?: string;
     ocr_error?: string;
     queued_offline?: boolean;
@@ -1615,56 +1772,7 @@ export const api = {
         };
       }
 
-      // المسار الاحتياطي 2: القراءة المحلية في المتصفح (Tesseract.js + محلل الجداول العراقي) -> needs_review: true
-      if (!prepared.inspection.isPdf) {
-        try {
-          report('analyze', 55, 'جاري القراءة بالمحرك المحلي الاحتياطي...');
-          const localParsed = await runLocalBrowserTesseractOcr(
-            prepared.file,
-            MOCK_PRODUCTS,
-            getStoredPharmacies(),
-            (pct, msg) => report('analyze', pct, msg)
-          );
-
-          const out = {
-            extracted_items: localParsed.items.map(it => ({
-              product_id: it.matched_product_id,
-              product_name: it.product_name,
-              dosage_form: it.dosage_form,
-              quantity: it.quantity,
-              unit_price: it.unit_price,
-              bonus_quantity: it.bonus_quantity
-            })),
-            invoice_number: localParsed.invoice_number || undefined,
-            invoice_date: localParsed.invoice_date || new Date().toISOString().split('T')[0],
-            pharmacy_name: localParsed.pharmacy_name || undefined,
-            pharmacy_area: localParsed.pharmacy_area || undefined,
-            image_url: fileData.dataUrl,
-            confidence: localParsed.confidence_score,
-            raw_text: localParsed.raw_text,
-            offline_mode: false,
-            ocr_engine: 'tesseract-browser' as const,
-            needs_review: true,
-            needs_review_reason: geminiErrorMsg
-              ? `تمت القراءة بالمحرك المحلي الاحتياطي (${geminiErrorMsg}) — دقته أقل مع الفواتير الطبية العربية، وتحتاج مراجعة يدوية.`
-              : 'تمت القراءة بالمحرك المحلي المجاني (بدون مفتاح ذكاء اصطناعي) — دقته أقل مع العربي، وتحتاج مراجعة يدوية للكميات والأسعار.',
-            cached: false,
-            circuit_breaker_open: circuitOpen,
-            ocr_error: geminiErrorMsg,
-            ocr_warning: geminiErrorMsg
-              ? `تعذرت القراءة الذكية (${geminiErrorMsg}) — تم التحويل للمحرك المحلي؛ هذه الفاتورة تحتاج مراجعة قبل الحفظ.`
-              : !geminiKey
-                ? 'تمت القراءة بالمحرك المحلي المجاني — هذه الفاتورة تحتاج مراجعة يدوية، وللحصول على دقة 98% أضف مفتاح Groq gsk_ مجاني بالأعلى.'
-                : prepared.warning,
-            prepared_info: prepSummary
-          };
-          storeCache(out, prepared);
-          report('done', 100, 'اكتملت القراءة المحلية (تحتاج مراجعة)');
-          return out;
-        } catch (tessErr: any) {
-          console.warn('Local browser Tesseract OCR failed:', tessErr?.message || tessErr);
-        }
-      }
+      // (تمت إزالة القراءة المحلية OCR — الاعتماد على Google Gemini Vision فقط)
 
       // المسار النهائي: إرفاق الصورة آمن مع إبلاغ صريح بالسبب ووسم تحتاج مراجعة
       report('done', 100, 'تم إرفاق الفاتورة');
@@ -1687,8 +1795,8 @@ export const api = {
         ocr_warning: geminiErrorMsg
           ? `فشلت القراءة الذكية: ${geminiErrorMsg}`
           : prepared.inspection.isPdf
-            ? 'قراءة ملفات PDF تلقائياً على الموبايل تتطلب إدخال مفتاح Google Gemini API في إعدادات OCR بالأعلى.'
-            : (prepared.warning || 'لم يتم تفعيل مفتاح ذكاء اصطناعي أو خادم — يمكنك تعبئة البيانات يدوياً أو إضافة مفتاح Groq بالأعلى.'),
+            ? 'قراءة ملفات PDF تلقائياً على الموبايل تتطلب إدخال مفتاح Google Gemini API في إعدادات Gemini بالأعلى.'
+            : (prepared.warning || 'لم يتم تفعيل مفتاح Google Gemini أو الخادم — يمكنك تعبئة البيانات يدوياً أو إضافة مفتاح Google Gemini بالأعلى.'),
         prepared_info: prepSummary
       };
     }
@@ -1745,7 +1853,7 @@ export const api = {
   },
 
   // ── Batch Invoices Creation ──
-  async createInvoicesBatch(invoices: any[]): Promise<{ count: number; invoices: Invoice[] }> {
+  async createInvoicesBatch(invoices: any[]): Promise<{ count: number; invoices: Invoice[]; skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> }> {
     try {
       const res = await fetchApi('/invoices/batch', {
         method: 'POST',
@@ -1755,14 +1863,42 @@ export const api = {
       return await handleResponse(res);
     } catch (err: any) {
       if (isNetworkError(err)) {
-        const created = invoices.map(inv => persistLocalInvoice(inv));
-        return { count: created.length, invoices: created };
+        const sheetRows = await fetchLiveSheetRowsCompact();
+        const created: Invoice[] = [];
+        const skipped: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> = [];
+
+        for (const invPayload of invoices) {
+          const newInv = persistLocalInvoice(invPayload, { skipSheetCheck: true });
+          created.push(newInv);
+          const dup = checkClientInvoiceDuplicateInSheet(newInv, sheetRows);
+          if (dup.isDuplicate) {
+            skipped.push({
+              invoice_number: String(newInv.invoice_number || ''),
+              pharmacy_name: newInv.pharmacy_name || '',
+              invoice_date: (newInv.invoice_date || '').split('T')[0],
+              reason: dup.reason
+            });
+          } else {
+            enqueueSheetsSyncJob({
+              action: 'replace_invoice',
+              invoice_number: String(newInv.invoice_number || ''),
+              rows: formatInvoiceToSheetRows(newInv)
+            });
+          }
+        }
+        if (skipped.length > 0) addSkippedSheetDuplicateNotices(skipped);
+        await Promise.race([
+          flushSheetsSyncOutboxInternal({ keepalive: true }),
+          new Promise(r => setTimeout(r, 3500))
+        ]).catch(() => {});
+
+        return { count: created.length, invoices: created, skipped_duplicates: skipped };
       }
       throw err;
     }
   },
 
-  // ── Google Sheets Database Integration (with Direct gviz/tq Fallback) ──
+  // ── Google Sheets Database Integration (GViz ALL-Column First + Persistent Sync) ──
   async getSheetsData(): Promise<{
     headers: string[];
     rows: Array<{
@@ -1782,6 +1918,7 @@ export const api = {
       timestamp: string;
       area?: string;
       dosage_form?: string;
+      cells?: string[];
     }>;
     rawCount: number;
     sheet_id: string;
@@ -1796,27 +1933,18 @@ export const api = {
         const sheetUrl = getSavedSheetUrl();
         const localInvs = getStoredInvoices();
         const localRows = localInvs.flatMap(inv =>
-          (inv.items || []).map(it => ({
-            invoice_number: inv.invoice_number || '',
-            invoice_date: (inv.invoice_date || '').split('T')[0],
-            warehouse_name: 'المستودع الرئيسي',
-            pharmacy_name: inv.pharmacy_name || '',
-            city: inv.pharmacy_city || 'بغداد',
-            area: inv.pharmacy_area || '',
-            product_name: it.product_name_snapshot || '',
-            dosage_form: (it as any).dosage_form || '',
-            quantity: Number(it.sold_quantity || 0),
-            unit_price: Number(it.historical_unit_price || 0),
-            bonus_quantity: Number(it.bonus_quantity || 0),
-            line_total: Number(it.line_total || 0),
-            total_invoice: Number(inv.total_sales_amount || 0),
-            rep_name: inv.rep_name || '',
-            status: inv.status === 'approved' ? 'معتمدة' : inv.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق',
-            timestamp: inv.created_at || ''
+          formatInvoiceToSheetRows(inv).map(sr => ({
+            ...sr,
+            cells: [
+              sr.invoice_number, sr.invoice_date, sr.warehouse_name, sr.pharmacy_name,
+              sr.area, sr.city, sr.product_name, sr.dosage_form,
+              String(sr.quantity), String(sr.unit_price), String(sr.bonus_quantity), String(sr.line_total),
+              String(sr.total_invoice), sr.rep_name, sr.status, sr.timestamp
+            ]
           }))
         );
 
-        // Try direct public gviz read from browser
+        // Try direct public gviz read from browser — reads all 17+ real columns cleanly
         try {
           const gRes = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`);
           if (gRes.ok) {
@@ -1824,11 +1952,12 @@ export const api = {
             const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
             if (m && m[1]) {
               const parsed = JSON.parse(m[1]);
-              const cols = (parsed.table?.cols || []).map((c: any) => String(c.label || ''));
+              const cols: string[] = (parsed.table?.cols || []).map((c: any) => String(c.label || c.id || '').trim());
               const rows = (parsed.table?.rows || []).map((r: any) => {
                 const c = r.c || [];
                 const val = (i: number) => String(c[i]?.f ?? c[i]?.v ?? '').trim();
                 const num = (i: number) => Number(c[i]?.v || 0);
+                const cells = cols.map((_, ci) => val(ci));
                 return {
                   invoice_number: val(0),
                   invoice_date: val(1),
@@ -1845,9 +1974,10 @@ export const api = {
                   total_invoice: num(12),
                   rep_name: val(13),
                   status: val(14),
-                  timestamp: val(15)
+                  timestamp: val(15),
+                  cells
                 };
-              }).filter((r: any) => r.invoice_number || r.pharmacy_name);
+              }).filter((r: any) => r.invoice_number !== '123' && (r.invoice_number || r.pharmacy_name || r.product_name));
               if (rows.length > 0) {
                 return { headers: cols, rows, rawCount: rows.length, sheet_id: sheetId, sheet_url: sheetUrl };
               }
@@ -1856,7 +1986,12 @@ export const api = {
         } catch { /* fall back to local rows */ }
 
         return {
-          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'الصيدلية', 'المنطقة', 'المادة الدوائية', 'الكمية', 'السعر', 'البونص', 'المجموع', 'المندوب', 'الحالة'],
+          headers: [
+            'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان',
+            'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+            'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
+            'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
+          ],
           rows: localRows,
           rawCount: localRows.length,
           sheet_id: sheetId,
@@ -1873,6 +2008,7 @@ export const api = {
     message: string;
     mode: string;
     timestamp: string;
+    skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>;
   }> {
     try {
       const res = await fetchApi('/sheets/sync-all', {
@@ -1883,19 +2019,48 @@ export const api = {
     } catch (err: any) {
       if (isNetworkError(err)) {
         const invs = getStoredInvoices();
-        const webhookUrl = getSavedWebhookUrl();
-        if (webhookUrl) {
-          await fetch(webhookUrl, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({ action: 'sync_all', invoices: invs })
-          }).catch(() => {});
+        const sheetRows = await fetchLiveSheetRowsCompact();
+        const skipped: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> = [];
+        const seenLocalSig = new Set<string>();
+        const rowsToSend: SheetRowPayload[] = [];
+        let syncedCount = 0;
+
+        for (const inv of invs) {
+          const ph = String(inv.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
+          const dt = (inv.invoice_date || '').split('T')[0];
+          const sig = `${ph}::${dt}::${(inv.items || []).map(x => `${x.product_name_snapshot || ''}:${x.sold_quantity}`).sort().join('|')}`;
+          if (ph && seenLocalSig.has(sig)) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: 'نسخة مكررة داخل النظام' });
+            continue;
+          }
+          if (ph) seenLocalSig.add(sig);
+
+          const dup = checkClientInvoiceDuplicateInSheet(inv, sheetRows);
+          if (dup.isDuplicate) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: dup.reason });
+            continue;
+          }
+          const formatted = formatInvoiceToSheetRows(inv);
+          rowsToSend.push(...formatted);
+          enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(inv.invoice_number || ''), rows: formatted });
+          syncedCount++;
         }
+
+        if (skipped.length > 0) addSkippedSheetDuplicateNotices(skipped);
+        await Promise.race([
+          flushSheetsSyncOutboxInternal({ keepalive: true }),
+          new Promise(r => setTimeout(r, 4000))
+        ]).catch(() => {});
+
         return {
           success: true,
-          rows_count: invs.length,
-          message: `تمت المزامنة السحابية لـ ${invs.length} فواتير بنجاح 🚀`,
+          rows_count: rowsToSend.length,
+          skipped_duplicates: skipped,
+          message: skipped.length > 0
+            ? `تمت مزامنة ${syncedCount} فواتير جديدة/معدلة (${rowsToSend.length} سطراً) وتخطي ${skipped.length} فواتير مكررة فقط.`
+            : syncedCount > 0
+              ? `تمت المزامنة السحابية لـ ${syncedCount} فواتير (${rowsToSend.length} سطراً) بنجاح 🚀`
+              : 'كافة الفواتير متطابقة ومزامنة بالفعل مع كوكل شيت ✅',
           mode: 'cloud-direct',
           timestamp: new Date().toISOString()
         };
@@ -1926,14 +2091,24 @@ export const api = {
     } catch (err: any) {
       if (isNetworkError(err)) {
         const invs = getStoredInvoices();
+        const sheetRows = await fetchLiveSheetRowsCompact();
+        const sheetNums = new Set(sheetRows.map(r => String(r.invoice_number || '').trim()).filter(Boolean));
+        const unuploaded = invs.filter(inv => !checkClientInvoiceDuplicateInSheet(inv, sheetRows).isDuplicate && !sheetNums.has(String(inv.invoice_number || '').trim()));
         return {
           system_invoices_count: invs.length,
-          sheet_rows_count: invs.length,
-          sheet_unique_invoices_count: invs.length,
-          unuploaded_count: 0,
-          unuploaded_invoices: [],
+          sheet_rows_count: sheetRows.length || invs.length,
+          sheet_unique_invoices_count: sheetNums.size || invs.length,
+          unuploaded_count: unuploaded.length,
+          unuploaded_invoices: unuploaded.map(inv => ({
+            id: inv.id,
+            invoice_number: String(inv.invoice_number || ''),
+            invoice_date: inv.invoice_date,
+            pharmacy_name: inv.pharmacy_name || '',
+            total_sales_amount: Number(inv.total_sales_amount || 0),
+            items_count: inv.items?.length || 0
+          })),
           missing_in_system_count: 0,
-          has_gap: false
+          has_gap: unuploaded.length > 0
         };
       }
       throw err;
@@ -1945,6 +2120,7 @@ export const api = {
     synced_count: number;
     rows_count: number;
     message: string;
+    skipped_duplicates?: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>;
   }> {
     try {
       const res = await fetchApi('/sheets/sync-unuploaded', {
@@ -1954,11 +2130,73 @@ export const api = {
       return await handleResponse(res);
     } catch (err: any) {
       if (isNetworkError(err)) {
-        return { success: true, synced_count: 0, rows_count: 0, message: 'جميع الفواتير متزامنة محلياً وسحابياً' };
+        const invs = getStoredInvoices();
+        const sheetRows = await fetchLiveSheetRowsCompact();
+        const skipped: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> = [];
+        let synced = 0;
+        let rowsCount = 0;
+
+        for (const inv of invs) {
+          const dup = checkClientInvoiceDuplicateInSheet(inv, sheetRows);
+          if (dup.isDuplicate) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: (inv.invoice_date || '').split('T')[0], reason: dup.reason });
+            continue;
+          }
+          const rows = formatInvoiceToSheetRows(inv);
+          enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(inv.invoice_number || ''), rows });
+          synced++;
+          rowsCount += rows.length;
+        }
+        if (skipped.length > 0) addSkippedSheetDuplicateNotices(skipped);
+        await Promise.race([
+          flushSheetsSyncOutboxInternal({ keepalive: true }),
+          new Promise(r => setTimeout(r, 3500))
+        ]).catch(() => {});
+
+        return {
+          success: true,
+          synced_count: synced,
+          rows_count: rowsCount,
+          skipped_duplicates: skipped,
+          message: skipped.length > 0
+            ? `تم رفع ${synced} فواتير جديدة وتخطي ${skipped.length} فواتير مكررة موجودة بالشيت`
+            : `تمت مزامنة ${synced} فواتير غير مرفوعة (${rowsCount} سطراً) بنجاح`
+        };
       }
       throw err;
     }
   },
+
+  async flushSheetsSyncOutbox(opts?: { keepalive?: boolean; useBeacon?: boolean }) {
+    return flushSheetsSyncOutboxInternal(opts);
+  },
+
+  async deleteDuplicateSheetInvoice(target: { invoice_number: string; pharmacy_name?: string; invoice_date?: string }) {
+    const cleanNum = String(target.invoice_number || '').trim();
+    const list = getStoredInvoices();
+    if (cleanNum) {
+      const matching = list.filter(i => String(i.invoice_number || '').trim() === cleanNum);
+      if (matching.length > 1) {
+        const toDelete = matching[matching.length - 1];
+        saveStoredInvoices(list.filter(i => i.id !== toDelete.id));
+      } else if (matching.length === 1) {
+        saveStoredInvoices(list.filter(i => i.id !== matching[0].id));
+      }
+      enqueueSheetsSyncJob({
+        action: 'delete_invoice',
+        invoice_number: cleanNum,
+        delete_mode: 'duplicate_copy'
+      });
+      await Promise.race([
+        flushSheetsSyncOutboxInternal({ keepalive: true }),
+        new Promise(r => setTimeout(r, 3000))
+      ]).catch(() => {});
+    }
+  },
+
+  getPendingSkippedSheetDuplicates,
+  addSkippedSheetDuplicateNotices,
+  clearSkippedSheetDuplicateNotices,
 
   async importMissingFromSheets(): Promise<{
     imported_count: number;

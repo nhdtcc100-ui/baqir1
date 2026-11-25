@@ -323,7 +323,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
               <span className="badge" style={{ background: 'rgba(255,255,255,0.18)', color: '#a5f3fc', border: '1px solid rgba(255,255,255,0.25)' }}>
-                ✨ فحص وتدقيق الذكاء الاصطناعي (OCR)
+                ✨ فحص وتدقيق Google Gemini AI
               </span>
               <span className="badge" style={{ background: '#10b981', color: 'white' }}>
                 {totalInvoices} فواتير مكتشفة
@@ -749,7 +749,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleRemoveItem(inv.id, it.id)}
-                                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: 2 }}
+                                style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: 6, color: '#dc2626', cursor: 'pointer', padding: '4px 6px', touchAction: 'manipulation' }}
                                 title="حذف هذا الصنف"
                               >
                                 <Trash2 size={15} />
@@ -779,9 +779,9 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                             type="button"
                             onClick={() => handleRemoveItem(inv.id, it.id)}
                             className="btn-clay btn-danger btn-sm"
-                            style={{ padding: '0.25rem 0.55rem', fontSize: '0.74rem' }}
+                            style={{ padding: '0.35rem 0.7rem', fontSize: '0.78rem', background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', fontWeight: 800, touchAction: 'manipulation' }}
                           >
-                            <Trash2 size={13} /> حذف
+                            <Trash2 size={14} /> حذف الصنف
                           </button>
                         </div>
 

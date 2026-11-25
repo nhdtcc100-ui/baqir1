@@ -11,7 +11,6 @@ import {
   getPendingOcrQueue,
   removePendingOcrQueueItem,
   PendingOcrQueueItem,
-  detectAiKeyProvider,
   getClientOcrCircuitBreakerStatus
 } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
@@ -361,7 +360,6 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   ]);
 
   const removeItem = (id: string) => {
-    if (items.length <= 1) return;
     setItems(prev => prev.filter(i => i.id !== id));
   };
 
@@ -379,7 +377,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       return updated;
     }));
 
-  // ── Shared Helper: Map OCR extracted items into Form LineItems ────────────
+  // ── Shared Helper: Map Gemini extracted items into Form LineItems ────────
   const mapExtractedItems = useCallback((
     extractedItems: Array<{ product_id?: string; product_name: string; dosage_form?: string; quantity: number; unit_price?: number; bonus_quantity?: number }> | undefined,
     confidence: number
@@ -409,10 +407,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     });
   }, [products, fixedBonusEnabled]);
 
-  const computeNeedsReview = (res: { needs_review?: boolean; ocr_engine?: string; offline_mode?: boolean; confidence?: number }) =>
-    Boolean(res.needs_review ?? (res.ocr_engine === 'tesseract-browser' || res.offline_mode || Number(res.confidence || 0) < 0.75));
+  const computeNeedsReview = (res: { needs_review?: boolean; offline_mode?: boolean; confidence?: number }) =>
+    Boolean(res.needs_review ?? (res.offline_mode || Number(res.confidence || 0) < 0.75));
 
-  // ── Smart OCR execution (Inspect → Prep → Cache/Retry/Breaker → Upload/Gemini/Tesseract) ────────
+  // ── Smart Gemini Vision execution (Inspect → Prep → Cache/Retry/Breaker → Gemini Vision) ────────
   const processOcr = async (file: File) => {
     setOcrLoading(true);
     setOcrDone(false);
@@ -443,14 +441,14 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       if (result.ocr_warning) setOcrWarning(result.ocr_warning);
       if (result.queued_offline) setPendingQueue(getPendingOcrQueue());
 
-      // الوضع السحابي اليدوي (عدم توفر خادم ولا مفتاح ولا قراءة محلية)
+      // الوضع اليدوي (عدم توفر خادم أو مفتاح Gemini)
       if (result.offline_mode) {
         setOfflineAttached(true);
         setOcrConfidence(0);
         if (result.ocr_error && !result.ocr_warning) {
           setOcrWarning(result.ocr_error);
         }
-        setOcrSummary('تم إرفاق صورة الفاتورة بنجاح — أكمل البيانات يدوياً أو فعّل مفتاح AI للقراءتها آلياً.');
+        setOcrSummary('تم إرفاق صورة الفاتورة بنجاح — أكمل البيانات يدوياً أو أضف مفتاح Google Gemini لقراءتها آلياً.');
         return;
       }
 
@@ -489,10 +487,8 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setOcrConfidence(Math.round((result.confidence || 0.7) * 100));
       setOcrDone(true);
       const engineLabel = result.ocr_engine === 'gemini-browser'
-        ? 'AI Vision'
-        : result.ocr_engine === 'tesseract-browser'
-          ? 'القراءة المحلية التلقائية'
-          : 'الخادم الذكي';
+        ? 'Google Gemini AI'
+        : 'خادم Gemini AI';
       setOcrSummary(
         mappedItems.length > 0
           ? `تم استخراج ${mappedItems.length} أصناف عبر (${engineLabel})${result.pharmacy_name ? ' — ' + result.pharmacy_name : ''}`
@@ -844,6 +840,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       return;
     }
     if (!invoiceNumber.trim()) { setError('يرجى إدخال رقم الفاتورة'); return; }
+    if (items.length === 0) {
+      setError('لا توجد أصناف في الفاتورة — اضغط "+ إضافة صنف آخر" لإضافة صنف واحد على الأقل.');
+      return;
+    }
     if (items.some(i => !i.product_id || i.sold_quantity < 1)) {
       setError('يرجى التحقق من بنود الفاتورة — كل صنف يحتاج منتجاً وكمية صحيحة');
       return;
@@ -1161,9 +1161,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   onClick={() => setShowOcrSettings(v => !v)}
                   className="btn-clay btn-secondary btn-sm"
                   style={{ fontSize: '0.74rem', padding: '0.32rem 0.7rem' }}
-                  title="إعدادات القراءة الذكية عبر المتصفح أو الخادم"
+                  title="إعدادات مفتاح Google Gemini للقراءة الآلية"
                 >
-                  <Settings size={13} /> إعدادات OCR
+                  <Settings size={13} /> إعدادات Gemini
                 </button>
               </div>
 
@@ -1180,31 +1180,25 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   );
                 }
                 if (hasGemini) {
-                  const provider = detectAiKeyProvider(geminiKeyInput);
-                  const providerTitle = provider === 'groq'
-                    ? 'Groq Vision AI (مجاني)'
-                    : provider === 'openrouter'
-                      ? 'OpenRouter Free Vision AI'
-                      : 'Google Gemini Vision AI';
                   const breaker = getClientOcrCircuitBreakerStatus(geminiKeyInput);
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                       <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 700 }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                           <Sparkles size={15} style={{ color: '#059669', flexShrink: 0 }} />
-                          القراءة الذكية عبر {providerTitle} مفعّلة على هاتفك
+                          القراءة الذكية عبر Google Gemini Vision AI مفعّلة على هاتفك
                         </span>
                         <button
                           type="button"
                           onClick={() => setShowOcrSettings(v => !v)}
                           style={{ background: 'none', border: 'none', color: '#047857', fontWeight: 800, cursor: 'pointer', fontSize: '0.74rem', textDecoration: 'underline', padding: 0 }}
                         >
-                          تعديل / تبديل المزوّد
+                          تعديل المفتاح
                         </button>
                       </div>
                       {breaker.open && (
                         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 9, padding: '0.45rem 0.75rem', fontSize: '0.74rem', color: '#92400e', fontWeight: 700 }}>
-                          ⏸️ قاطع الدائرة مفعّل ({Math.max(1, Math.ceil(breaker.remainingMs / 60000))} دقيقة متبقية بعد خطأ {breaker.statusCode || '403/429'}) — يتم التحويل تلقائياً للمحرك المحلي الاحتياطي، أو أدخل مفتاحاً جديداً.
+                          ⏸️ قاطع الدائرة مفعّل ({Math.max(1, Math.ceil(breaker.remainingMs / 60000))} دقيقة متبقية بعد خطأ {breaker.statusCode || '403/429'}) — أدخل مفتاح Gemini جديداً أو أكمل البيانات يدوياً.
                         </div>
                       )}
                     </div>
@@ -1215,7 +1209,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
                       <strong style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <AlertTriangle size={16} style={{ color: '#d97706', flexShrink: 0 }} />
-                        مفتاح القراءة الذكية غير مُعد بعد (تعمل الآن القراءة المحلية فقط)
+                        مفتاح Google Gemini غير مُعد بعد (إدخال يدوي حالياً)
                       </strong>
                       <button
                         type="button"
@@ -1223,11 +1217,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                         className="btn-clay btn-primary btn-sm"
                         style={{ background: '#d97706', borderColor: '#b45309', fontSize: '0.74rem', padding: '0.28rem 0.65rem' }}
                       >
-                        <Key size={13} /> تفعيل مجاناً الآن
+                        <Key size={13} /> إضافة مفتاح Gemini
                       </button>
                     </div>
                     <div style={{ fontSize: '0.75rem', lineHeight: 1.45, color: '#78350f' }}>
-                      لقراءة الفواتير بدقة 98% مباشرة من الموبايل بدون بطاقة ائتمان، أضف مفتاحاً مجانياً من Groq أو OpenRouter أو Gemini داخل الإعدادات.
+                      تعمل القراءة الآلية للفواتير عبر Google Gemini Vision فقط — أضف مفتاح Gemini API في الإعدادات.
                     </div>
                   </div>
                 );
@@ -1245,35 +1239,15 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>
-                      🔑 مفتاح الذكاء الاصطناعي (يعمل بـ Groq أو OpenRouter مجاناً بدون بطاقة، أو Gemini):
+                      🔑 مفتاح Google Gemini API:
                     </span>
-                  </div>
-
-                  {/* روابط مجانية للحصول على مفتاح يعمل فوراً بدون بطاقة ائتمان */}
-                  <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
-                    <a
-                      href="https://console.groq.com/keys"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: '0.72rem', fontWeight: 800, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
-                    >
-                      🟢 Groq مجاني (بلا بطاقة gsk_) <ExternalLink size={11} />
-                    </a>
-                    <a
-                      href="https://openrouter.ai/keys"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: '0.72rem', fontWeight: 800, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
-                    >
-                      🔵 OpenRouter مجاني (sk-or-) <ExternalLink size={11} />
-                    </a>
                     <a
                       href="https://aistudio.google.com/apikey"
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ fontSize: '0.72rem', fontWeight: 800, background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
                     >
-                      🟡 Google Gemini <ExternalLink size={11} />
+                      🟡 الحصول على مفتاح من Google AI Studio <ExternalLink size={11} />
                     </a>
                   </div>
 
@@ -1282,7 +1256,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       type={showGeminiKeyText ? 'text' : 'password'}
                       className="clay-input"
                       style={{ flex: '1 1 180px', padding: '0.48rem 0.65rem', fontSize: '0.85rem', direction: 'ltr', textAlign: 'left' }}
-                      placeholder="gsk_... أو sk-or-... أو AIzaSy... / AQ..."
+                      placeholder="AIzaSy... / AQ..."
                       value={geminiKeyInput}
                       onChange={e => {
                         setGeminiKeyInput(e.target.value);
@@ -1312,6 +1286,20 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     >
                       {keyTestLoading ? 'جاري الاختبار...' : 'اختبار وحفظ 🔍'}
                     </button>
+                    {geminiKeyInput && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGeminiKeyInput('');
+                          setSavedGeminiKey('');
+                          setKeyTestResult(null);
+                        }}
+                        className="btn-clay btn-secondary btn-sm"
+                        style={{ fontSize: '0.74rem', color: '#dc2626' }}
+                      >
+                        مسح
+                      </button>
+                    )}
                   </div>
 
                   {keyTestResult && (
@@ -1514,9 +1502,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                         <div style={{ flex: 1 }}>
                           <div style={{ fontWeight: 800, color: '#92400e', display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
                             <span>
-                              ⚠️ تحتاج مراجعة — {ocrEngineUsed === 'tesseract-browser'
-                                ? `تمت القراءة بالمحرك المحلي (${ocrConfidence}%)`
-                                : `دقة القراءة (${ocrConfidence}%)`}
+                              ⚠️ تحتاج مراجعة — {ocrEngineUsed === 'gemini-browser'
+                                ? `تمت القراءة عبر Gemini (${ocrConfidence}%)`
+                                : `نتيجة أولية (${ocrConfidence}%)`}
                             </span>
                             <span className="badge" style={{ background: '#f59e0b', color: '#ffffff', fontSize: '0.7rem', padding: '2px 7px' }}>
                               تحتاج مراجعة
@@ -2008,25 +1996,33 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       <button
                         type="button"
                         onClick={() => removeItem(item.id)}
-                        disabled={items.length <= 1}
                         style={{
-                          background: 'none',
-                          border: 'none',
-                          color: items.length <= 1 ? 'var(--gray-300)' : 'var(--danger)',
-                          cursor: items.length <= 1 ? 'default' : 'pointer',
+                          background: '#fee2e2',
+                          border: '1px solid #fca5a5',
+                          borderRadius: 8,
+                          color: '#dc2626',
+                          cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           gap: 4,
-                          padding: 4
+                          padding: '0.35rem 0.55rem',
+                          fontWeight: 800,
+                          touchAction: 'manipulation'
                         }}
+                        title="حذف الصنف"
                       >
                         <Trash2 size={16} />
-                        <span className="mobile-only-inline" style={{ fontSize: '0.76rem' }}>حذف الصنف</span>
+                        <span className="mobile-only-inline" style={{ fontSize: '0.78rem' }}>حذف الصنف</span>
                       </button>
                     </div>
                   );
                 })}
+                {items.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '1.1rem', background: '#fffbeb', border: '1px dashed #f59e0b', borderRadius: 12, color: '#92400e', fontSize: '0.84rem', fontWeight: 700 }}>
+                    لا توجد أصناف حالياً — اضغط زر "+ إضافة صنف آخر" بالأعلى لإضافة صنف.
+                  </div>
+                )}
                 </div>
               </div>
             </div>

@@ -65,10 +65,11 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setEditInvoiceDate((inv.invoice_date || '').split('T')[0]);
     setEditItems(
       (inv.items && inv.items.length > 0)
-        ? inv.items.map(it => ({
-            id: it.id || Math.random().toString(),
+        ? inv.items.map((it, idx) => ({
+            id: it.id || `edit-item-${idx}-${Date.now()}`,
             product_id: it.product_id,
             product_name_snapshot: it.product_name_snapshot,
+            dosage_form: (it as any).dosage_form,
             sold_quantity: it.sold_quantity,
             historical_unit_price: it.historical_unit_price,
             bonus_quantity: it.bonus_quantity
@@ -78,9 +79,52 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setEditError(null);
   };
 
+  const handleRemoveEditItem = (idxToRemove: number) => {
+    setEditItems(prev => prev.filter((_, i) => i !== idxToRemove));
+  };
+
+  const handleDeleteSingleItemFromDetails = async (inv: Invoice, itemIdx: number) => {
+    const currentItems = inv.items || [];
+    if (currentItems.length <= 1) {
+      if (window.confirm('هذا آخر صنف في الفاتورة. هل تريد حذف الفاتورة بالكامل؟')) {
+        await api.deleteInvoice(inv.id);
+        onDeleteInvoice?.(inv.id);
+        setSelectedInvoice(null);
+      }
+      return;
+    }
+    const targetItem = currentItems[itemIdx];
+    if (!window.confirm(`هل تريد حذف الصنف "${targetItem?.product_name_snapshot || ''}" من الفاتورة؟`)) return;
+    const remaining = currentItems.filter((_, i) => i !== itemIdx);
+    try {
+      const updated = await api.updateInvoice(inv.id, {
+        pharmacy_id: inv.pharmacy_id,
+        pharmacy_area: inv.pharmacy_area || (inv as any).area || '',
+        invoice_number: inv.invoice_number,
+        invoice_date: (inv.invoice_date || '').split('T')[0],
+        items: remaining.map(it => ({
+          product_id: it.product_id,
+          sold_quantity: Math.max(1, Number(it.sold_quantity) || 1),
+          custom_product_name: it.product_name_snapshot,
+          dosage_form: (it as any).dosage_form,
+          custom_unit_price: Number(it.historical_unit_price) || 0,
+          custom_bonus: Number(it.bonus_quantity) || 0
+        }))
+      });
+      onUpdateInvoice?.(updated);
+      setSelectedInvoice(updated);
+    } catch (err: any) {
+      alert(err?.message || 'فشل حذف الصنف من الفاتورة');
+    }
+  };
+
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingInvoice) return;
+    if (editItems.length === 0) {
+      setEditError('يرجى إضافة صنف واحد على الأقل قبل حفظ الفاتورة.');
+      return;
+    }
     setEditSubmitting(true);
     setEditError(null);
     try {
@@ -93,6 +137,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
           product_id: it.product_id,
           sold_quantity: Math.max(1, parseInt(it.sold_quantity) || 1),
           custom_product_name: it.product_name_snapshot?.trim(),
+          dosage_form: it.dosage_form,
           custom_unit_price: parseFloat(it.historical_unit_price) || 0,
           custom_bonus: it.bonus_quantity !== undefined ? Math.max(0, parseInt(it.bonus_quantity) || 0) : undefined
         }))
@@ -840,26 +885,49 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                       )}
 
                       {canModify && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(inv)}
-                            className="btn-clay btn-secondary btn-sm"
-                            style={{ padding: '0.35rem 0.6rem' }}
-                            title="تعديل الفاتورة"
-                          >
-                            <Edit3 size={14} style={{ color: 'var(--primary)' }} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setDeletingId(inv.id)}
-                            className="btn-clay btn-danger btn-sm"
-                            style={{ padding: '0.35rem 0.6rem' }}
-                            title="حذف الفاتورة"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </>
+                        isDup && !isOriginal ? (
+                          <div style={{ display: 'flex', gap: '0.4rem', width: '100%', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(inv)}
+                              className="btn-clay btn-secondary btn-sm"
+                              style={{ padding: '0.4rem 0.65rem' }}
+                              title="تعديل الفاتورة"
+                            >
+                              <Edit3 size={14} style={{ color: 'var(--primary)' }} /> تعديل
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingId(inv.id)}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{ flex: 1, justifyContent: 'center', background: '#dc2626', color: 'white', fontWeight: 800, padding: '0.45rem 0.75rem' }}
+                              title="حذف الفاتورة المكررة بالكامل مع جميع أصنافها"
+                            >
+                              <Trash2 size={14} /> حذف الفاتورة المكررة بالكامل ({inv.items?.length || 1} أصناف)
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(inv)}
+                              className="btn-clay btn-secondary btn-sm"
+                              style={{ padding: '0.35rem 0.6rem' }}
+                              title="تعديل الفاتورة"
+                            >
+                              <Edit3 size={14} style={{ color: 'var(--primary)' }} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingId(inv.id)}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{ padding: '0.35rem 0.6rem' }}
+                              title="حذف الفاتورة"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        )
                       )}
                     </div>
                   </div>
@@ -871,14 +939,17 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
       </div>
 
       {/* ── Invoice Reader & Line Items Modal (قراءة كامل تفاصيل الفاتورة) ──── */}
-      {selectedInvoice && (
+      {selectedInvoice && (() => {
+        const selectedDupInfo = duplicateInfoMap.get(selectedInvoice.id);
+        const canModifySelected = isAdmin || (selectedInvoice.rep_id === user.id && selectedInvoice.status === 'pending_review');
+        return (
         <div className="modal-backdrop-floating" onClick={e => { if (e.target === e.currentTarget) setSelectedInvoice(null); }}>
           <div className="modal-card-floating" style={{ maxWidth: 880 }}>
 
             {/* Modal Header */}
             <div className="modal-header">
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem', flexWrap: 'wrap' }}>
                   <span className="badge badge-primary">
                     <FileText size={13} /> قراءة وتدقيق الفاتورة
                   </span>
@@ -888,6 +959,11 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                     <span className="badge badge-danger"><AlertCircle size={12} /> مرفوضة</span>
                   ) : (
                     <span className="badge badge-warning"><Clock size={12} /> قيد التدقيق والمراجعة</span>
+                  )}
+                  {selectedDupInfo?.isDuplicate && !selectedDupInfo?.isOriginal && (
+                    <span className="badge" style={{ background: '#dc2626', color: 'white', fontWeight: 800 }}>
+                      ⚠️ نسخة مكررة
+                    </span>
                   )}
                 </div>
                 <h3 className="modal-title">
@@ -977,6 +1053,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                           <th style={{ textAlign: 'center' }}>البونص (10+1)</th>
                           <th style={{ textAlign: 'center' }}>إجمالي القطع</th>
                           <th style={{ textAlign: 'left' }}>المجموع الصافي</th>
+                          {canModifySelected && <th style={{ textAlign: 'center' }}>حذف الصنف</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -1028,6 +1105,19 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                             <td style={{ textAlign: 'left', fontWeight: 900, color: 'var(--primary)' }}>
                               {Number(item.line_total).toLocaleString()} د.ع
                             </td>
+                            {canModifySelected && (
+                              <td style={{ textAlign: 'center' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSingleItemFromDetails(selectedInvoice, idx)}
+                                  className="btn-clay btn-danger btn-sm"
+                                  style={{ padding: '0.28rem 0.55rem' }}
+                                  title="حذف هذا الصنف"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -1067,6 +1157,16 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                             <span>البونص: <strong style={{ color: '#b45309' }}>+{item.bonus_quantity}</strong></span>
                             <span style={{ color: 'var(--primary)', fontWeight: 900 }}>المجموع: {Number(item.line_total).toLocaleString()} د.ع</span>
                           </div>
+                          {canModifySelected && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSingleItemFromDetails(selectedInvoice, idx)}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{ marginTop: 4, width: '100%', justifyContent: 'center', background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5', fontWeight: 800 }}
+                            >
+                              <Trash2 size={14} /> حذف الصنف
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -1114,7 +1214,7 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
 
             {/* Modal Actions */}
             <div style={{ borderTop: '1px solid var(--gray-200)', paddingTop: '1rem', marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
                 <button
                   type="button"
                   onClick={() => setSelectedInvoice(null)}
@@ -1123,19 +1223,31 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                   إغلاق
                 </button>
 
-                {(isAdmin || (selectedInvoice.rep_id === user.id && selectedInvoice.status === 'pending_review')) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const inv = selectedInvoice;
-                      setSelectedInvoice(null);
-                      handleOpenEdit(inv);
-                    }}
-                    className="btn-clay btn-primary btn-sm"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                  >
-                    <Edit3 size={15} /> تعديل الفاتورة
-                  </button>
+                {canModifySelected && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const inv = selectedInvoice;
+                        setSelectedInvoice(null);
+                        handleOpenEdit(inv);
+                      }}
+                      className="btn-clay btn-primary btn-sm"
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                    >
+                      <Edit3 size={15} /> تعديل الفاتورة
+                    </button>
+                    {selectedDupInfo?.isDuplicate && !selectedDupInfo?.isOriginal && (
+                      <button
+                        type="button"
+                        onClick={() => setDeletingId(selectedInvoice.id)}
+                        className="btn-clay btn-danger btn-sm"
+                        style={{ background: '#dc2626', color: 'white', fontWeight: 800 }}
+                      >
+                        <Trash2 size={15} /> حذف الفاتورة المكررة بالكامل
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -1165,7 +1277,8 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
 
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Image Preview Modal ────────────────────────────────────────────── */}
       {previewImageUrl && (
@@ -1506,18 +1619,35 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
                       {/* Delete item */}
                       <button
                         type="button"
-                        onClick={() => {
-                          if (editItems.length <= 1) return;
-                          setEditItems(prev => prev.filter((_, i) => i !== idx));
+                        onClick={() => handleRemoveEditItem(idx)}
+                        style={{
+                          background: '#fee2e2',
+                          border: '1px solid #fca5a5',
+                          color: '#dc2626',
+                          cursor: 'pointer',
+                          padding: '0.35rem 0.65rem',
+                          borderRadius: 8,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 4,
+                          fontWeight: 800,
+                          fontSize: '0.78rem',
+                          touchAction: 'manipulation'
                         }}
-                        disabled={editItems.length <= 1}
-                        style={{ background: 'none', border: 'none', color: editItems.length <= 1 ? 'var(--gray-300)' : 'var(--danger)', cursor: 'pointer', padding: 4 }}
+                        title="حذف هذا الصنف"
                       >
-                        <Trash2 size={16} />
+                        <Trash2 size={15} />
+                        <span className="mobile-only-inline">حذف الصنف</span>
                       </button>
                     </div>
                   );
                 })}
+                {editItems.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '1.1rem', background: '#fffbeb', border: '1px dashed #f59e0b', borderRadius: 10, color: '#92400e', fontSize: '0.84rem', fontWeight: 700 }}>
+                    تم حذف جميع الأصناف — اضغط زر "+ إضافة صنف آخر" بالأعلى لإضافة صنف جديد.
+                  </div>
+                )}
                 </div>
               </div>
 

@@ -35,7 +35,7 @@ router.post('/sync-all',
       const repId = role === 'medical_rep' ? userId : undefined;
       const invoices = await InvoiceService.findAll({ repId });
 
-      const result = await GoogleSheetsService.syncBatchInvoices(invoices);
+      const result = await GoogleSheetsService.syncBatchInvoices(invoices, req.user?.webhookUrl, req.user?.sheetId, { skipExistingDuplicates: true });
       sendSuccess(res, result, result.message);
     } catch (e) { next(e); }
   }
@@ -127,13 +127,14 @@ router.post('/sync-unuploaded',
         return;
       }
 
-      const result = await GoogleSheetsService.syncBatchInvoices(unuploaded);
+      const result = await GoogleSheetsService.syncBatchInvoices(unuploaded, req.user?.webhookUrl, req.user?.sheetId, { skipExistingDuplicates: true });
       sendSuccess(res, {
         success: result.success,
-        synced_count: unuploaded.length,
+        synced_count: result.synced_count ?? unuploaded.length,
         rows_count: result.rows_count,
-        message: `تم تصدير ورفع ${unuploaded.length} فواتير غير مرفوعة (${result.rows_count} سطراً) إلى كوكل شيت وسد الفجوة بنجاح!`
-      }, `تم تصدير ورفع ${unuploaded.length} فواتير غير مرفوعة (${result.rows_count} سطراً) إلى كوكل شيت وسد الفجوة بنجاح!`);
+        skipped_duplicates: result.skipped_duplicates || [],
+        message: result.message
+      }, result.message);
     } catch (e) { next(e); }
   }
 );

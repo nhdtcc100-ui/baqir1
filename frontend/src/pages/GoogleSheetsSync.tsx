@@ -1,21 +1,32 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api';
+import React, { useState, useEffect, useMemo } from 'react';
+import { api, getPendingSheetsOutbox } from '../services/api';
 import {
   FileSpreadsheet, ExternalLink, RefreshCw, UploadCloud,
   CheckCircle2, AlertCircle, Copy, Check, Settings,
   Database, Table, Clock, ShieldCheck, Sparkles, Search,
-  AlertTriangle, DownloadCloud
+  AlertTriangle, DownloadCloud, Trash2
 } from 'lucide-react';
 import { getDosageFormBadgeColor } from './BatchReviewTable';
+
+interface DuplicateSheetGroup {
+  key: string;
+  invoice_number: string;
+  invoice_date: string;
+  pharmacy_name: string;
+  timestamp: string;
+  rowsCount: number;
+  totalAmount: number;
+  productsSummary: string;
+}
 
 export const GoogleSheetsSync: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [deletingDupKey, setDeletingDupKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Data states
   const [sheetData, setSheetData] = useState<{
     headers: string[];
     rows: any[];
@@ -37,8 +48,9 @@ export const GoogleSheetsSync: React.FC = () => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showCodeGuide, setShowCodeGuide] = useState(false);
+  const [outboxCount, setOutboxCount] = useState(() => getPendingSheetsOutbox().length);
+  const [skippedNotices, setSkippedNotices] = useState<Array<{ id?: string; invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>>([]);
 
-  // حالة الفجوة والمزامنة لسد أي كاب
   const [gapStatus, setGapStatus] = useState<{
     system_invoices_count: number;
     sheet_rows_count: number;
@@ -62,6 +74,9 @@ export const GoogleSheetsSync: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
+      await api.flushSheetsSyncOutbox({ keepalive: true }).catch(() => {});
+      setOutboxCount(getPendingSheetsOutbox().length);
+      setSkippedNotices(api.getPendingSkippedSheetDuplicates());
       const [dataRes, configRes, gapRes] = await Promise.all([
         api.getSheetsData(),
         api.getSheetsConfig(),
@@ -89,7 +104,9 @@ export const GoogleSheetsSync: React.FC = () => {
     try {
       const res = await api.syncAllToSheets();
       setSuccessMsg(res.message);
-      // Re-fetch sheet data
+      if (Array.isArray(res.skipped_duplicates) && res.skipped_duplicates.length > 0) {
+        api.addSkippedSheetDuplicateNotices(res.skipped_duplicates);
+      }
       await loadData();
     } catch (e: any) {
       setError(e.message || 'فشلت المزامنة مع كوكل شيت');
@@ -105,6 +122,9 @@ export const GoogleSheetsSync: React.FC = () => {
     try {
       const res = await api.syncUnuploadedToSheets();
       setSuccessMsg(res.message);
+      if (Array.isArray(res.skipped_duplicates) && res.skipped_duplicates.length > 0) {
+        api.addSkippedSheetDuplicateNotices(res.skipped_duplicates);
+      }
       await loadData();
     } catch (e: any) {
       setError(e.message || 'فشل رفع الفواتير غير المرفوعة');
@@ -151,14 +171,123 @@ export const GoogleSheetsSync: React.FC = () => {
     setTimeout(() => setCopiedCode(false), 2500);
   };
 
-  const rows = (sheetData?.rows || []).filter(r => {
-    const num = String(r.invoice_number || '').trim();
-    return num && num !== '123' && r.pharmacy_name;
-  });
+  const rows = useMemo(() => {
+    return (sheetData?.rows || []).filter(r => {
+      const num = String(r.invoice_number || '').trim();
+      const ph = String(r.pharmacy_name || '').trim();
+      const prod = String(r.product_name || '').trim();
+      return num !== '123' && (Boolean(num) || Boolean(ph) || Boolean(prod));
+    });
+  }, [sheetData]);
+
+  // كشف الفواتير المكررة في الشيت لتوفير زر حذف موحد للفاتورة المكررة بالكامل (كل أصنافها دفعة واحدة)
+  const { duplicateGroups, duplicateInvNumbers } = useMemo(() => {
+    const groupsMap = new Map<string, any[]>();
+    for (const r of rows) {
+      const num = String(r.invoice_number || '').trim();
+      const ph = String(r.pharmacy_name || '').trim();
+      const dt = String(r.invoice_date || '').trim();
+      const ts = String(r.timestamp || '').trim();
+      const gKey = `${num || ph}::${dt}::${ts}`;
+      if (!groupsMap.has(gKey)) groupsMap.set(gKey, []);
+      groupsMap.get(gKey)!.push(r);
+    }
+
+    const byInvoiceSig = new Map<string, string[]>();
+    for (const [gKey, gRows] of groupsMap.entries()) {
+      const first = gRows[0];
+      const num = String(first.invoice_number || '').trim();
+      const ph = String(first.pharmacy_name || '').trim().toLowerCase();
+      const dt = String(first.invoice_date || '').trim();
+      const itemsSig = gRows.map(x => `${String(x.product_name || '').trim().toLowerCase()}:${x.quantity}`).sort().join('|');
+      const sig = num ? `INV:${num}` : `META:${ph}:${dt}:${itemsSig}`;
+      if (!byInvoiceSig.has(sig)) byInvoiceSig.set(sig, []);
+      byInvoiceSig.get(sig)!.push(gKey);
+
+      // كذلك التحقق داخل المجموعة نفسها إذا تكرر نفس الدواء بنفس الفاتورة
+      const seenProd = new Set<string>();
+      for (const itemRow of gRows) {
+        const pk = String(itemRow.product_name || '').trim().toLowerCase();
+        if (pk && seenProd.has(pk) && byInvoiceSig.get(sig)!.length === 1) {
+          byInvoiceSig.get(sig)!.push(`${gKey}::same_ts`);
+          break;
+        }
+        seenProd.add(pk);
+      }
+    }
+
+    const dupGroups: DuplicateSheetGroup[] = [];
+    const dupInvSet = new Set<string>();
+    for (const [, gKeys] of byInvoiceSig.entries()) {
+      if (gKeys.length > 1) {
+        const copies = gKeys.slice(1);
+        for (const cKey of copies) {
+          const cleanKey = cKey.replace('::same_ts', '');
+          const gRows = groupsMap.get(cleanKey) || [];
+          if (gRows.length === 0) continue;
+          const first = gRows[0];
+          const invNum = String(first.invoice_number || '').trim();
+          if (invNum) dupInvSet.add(invNum);
+          dupGroups.push({
+            key: cKey,
+            invoice_number: invNum || 'بدون رقم',
+            invoice_date: String(first.invoice_date || ''),
+            pharmacy_name: String(first.pharmacy_name || ''),
+            timestamp: String(first.timestamp || ''),
+            rowsCount: gRows.length,
+            totalAmount: gRows.reduce((s, x) => s + (Number(x.line_total) || 0), 0),
+            productsSummary: gRows.map(x => `${x.product_name} (${x.quantity})`).join('، ')
+          });
+        }
+      }
+    }
+
+    return { duplicateGroups: dupGroups, duplicateInvNumbers: dupInvSet };
+  }, [rows]);
+
+  const handleDeleteDuplicateInvoice = async (grp: DuplicateSheetGroup) => {
+    const proceed = window.confirm(
+      `⚠️ حذف الفاتورة المكررة بالكامل (${grp.invoice_number})?\n\nسيتم حذف جميع أصناف ومكونات هذه النسخة المكررة (${grp.rowsCount} بنود) من الشيت والنظام دفعة واحدة.`
+    );
+    if (!proceed) return;
+
+    setDeletingDupKey(grp.key);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      await api.deleteDuplicateSheetInvoice({
+        invoice_number: grp.invoice_number === 'بدون رقم' ? '' : grp.invoice_number,
+        pharmacy_name: grp.pharmacy_name,
+        invoice_date: grp.invoice_date
+      });
+      setSuccessMsg(`تم إرسال أمر حذف الفاتورة المكررة بالكامل (${grp.invoice_number} — ${grp.rowsCount} بنود) إلى كوكل شيت ✅`);
+      await loadData();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر حذف الفاتورة المكررة');
+    } finally {
+      setDeletingDupKey(null);
+    }
+  };
+
+  const dynamicHeaders = useMemo(() => {
+    const baseHeaders = sheetData?.headers && sheetData.headers.length > 0
+      ? sheetData.headers
+      : [
+          'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية',
+          'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية',
+          'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)',
+          'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)',
+          'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
+        ];
+    return baseHeaders;
+  }, [sheetData]);
+
   const filteredRows = rows.filter(r => {
     if (!searchTerm.trim()) return true;
     const s = searchTerm.toLowerCase();
+    const cellMatch = Array.isArray(r.cells) && r.cells.some((c: any) => String(c || '').toLowerCase().includes(s));
     return (
+      cellMatch ||
       (r.invoice_number && String(r.invoice_number).toLowerCase().includes(s)) ||
       (r.pharmacy_name && String(r.pharmacy_name).toLowerCase().includes(s)) ||
       (r.product_name && String(r.product_name).toLowerCase().includes(s)) ||
@@ -179,20 +308,25 @@ export const GoogleSheetsSync: React.FC = () => {
       {/* Page Header */}
       <div className="page-header" style={{ marginBottom: 0 }}>
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
             <span className="badge badge-success" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <Database size={13} /> كوكل شيت كقاعدة بيانات حية
             </span>
             <span className={`badge ${config?.is_connected ? 'badge-primary' : 'badge-warning'}`} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <ShieldCheck size={13} /> {config?.is_connected ? 'مزامنة تلقائية فورية مفعلة' : 'قراءة عامة نشطة'}
             </span>
+            {outboxCount > 0 && (
+              <span className="badge" style={{ background: '#fef3c7', color: '#92400e', fontWeight: 800 }}>
+                ⏳ {outboxCount} تحديثات بانتظار المزامنة
+              </span>
+            )}
           </div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <FileSpreadsheet size={28} style={{ color: '#10b981' }} />
             إدارة ومزامنة كوكل شيت (Google Sheets)
           </h1>
           <p className="page-subtitle">
-            ربط مباشر مع ملف كوكل شيت: عرض البيانات الحية، وتصدير جميع الفواتير والتقارير بتنسيق احترافي منسق بالعربية.
+            عرض جميع الأعمدة والبيانات الحية بمقاس تلقائي (Fit to Row / Fit to Column) مع مزامنة مستمرة لكل تعديل أو اعتماد أو حذف.
           </p>
         </div>
 
@@ -222,7 +356,6 @@ export const GoogleSheetsSync: React.FC = () => {
               disabled={syncingUnuploaded || syncing}
               className="btn-clay btn-primary"
               style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309' }}
-              title="رفع الفواتير غير المرفوعة فقط دون تكرار البقية"
             >
               <UploadCloud size={16} className={syncingUnuploaded ? 'animate-spin' : ''} />
               {syncingUnuploaded ? 'جارِ الرفع...' : `رفع غير المرفوعة (${gapStatus.unuploaded_count}) ⚡`}
@@ -241,7 +374,6 @@ export const GoogleSheetsSync: React.FC = () => {
         </div>
       </div>
 
-      {/* Messages */}
       {error && (
         <div className="alert-danger" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <AlertCircle size={20} />
@@ -256,10 +388,88 @@ export const GoogleSheetsSync: React.FC = () => {
         </div>
       )}
 
-      {/* ── لوحة مراقبة الفجوات والمزامنة (Zero Gap Dashboard) ── */}
+      {skippedNotices.length > 0 && (
+        <div className="card" style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', padding: '0.95rem 1.15rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.55rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#92400e', fontWeight: 900, fontSize: '0.92rem' }}>
+              <AlertTriangle size={19} style={{ color: '#d97706', flexShrink: 0 }} />
+              <span>تنبيه: تم تخطي رفع ({skippedNotices.length}) فواتير مكررة موجودة مسبقاً في كوكل شيت (لم يُعد رفعها)</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                api.clearSkippedSheetDuplicateNotices();
+                setSkippedNotices([]);
+              }}
+              className="btn-clay btn-secondary btn-sm"
+              style={{ fontSize: '0.74rem', padding: '0.25rem 0.65rem' }}
+            >
+              إخفاء التنبيه
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {skippedNotices.map((n, idx) => (
+              <div key={n.id || idx} style={{ fontSize: '0.8rem', color: '#78350f', background: 'rgba(255,255,255,0.75)', padding: '0.45rem 0.7rem', borderRadius: 8, border: '1px solid #fde68a' }}>
+                • فاتورة رقم <strong>{n.invoice_number || 'بدون رقم'}</strong> — <strong>{n.pharmacy_name || 'صيدلية'}</strong> ({n.invoice_date || '—'}): {n.reason}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate invoices in Google Sheets — 1-click full invoice delete */}
+      {duplicateGroups.length > 0 && (
+        <div className="card" style={{ background: '#fef2f2', border: '1.5px solid #f87171', padding: '1rem 1.2rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', marginBottom: '0.75rem', color: '#991b1b', fontWeight: 900 }}>
+            <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
+            <span>تم رصد ({duplicateGroups.length}) نسخ مكررة في سجل كوكل شيت — احذف الفاتورة المكررة بالكامل بضغطة واحدة:</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {duplicateGroups.map(grp => (
+              <div
+                key={grp.key}
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #fecaca',
+                  borderRadius: 12,
+                  padding: '0.75rem 0.95rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.65rem'
+                }}
+              >
+                <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                  <div style={{ fontWeight: 900, fontSize: '0.9rem', color: '#991b1b' }}>
+                    ⚠️ فاتورة مكررة #{grp.invoice_number} — {grp.pharmacy_name || 'صيدلية'}
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: '#475569', marginTop: 2, lineHeight: 1.45 }}>
+                    التاريخ: <strong>{grp.invoice_date || '—'}</strong> • عدد المواد: <strong>{grp.rowsCount}</strong> • الإجمالي: <strong>{grp.totalAmount.toLocaleString()} د.ع</strong>
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: 2 }}>
+                    المكونات: {grp.productsSummary}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteDuplicateInvoice(grp)}
+                  disabled={deletingDupKey === grp.key}
+                  className="btn-clay btn-danger btn-sm"
+                  style={{ background: '#dc2626', color: 'white', fontWeight: 800, padding: '0.55rem 0.95rem', width: 'auto' }}
+                >
+                  <Trash2 size={15} />
+                  {deletingDupKey === grp.key ? 'جارِ الحذف...' : `حذف الفاتورة المكررة بالكامل (${grp.rowsCount} أصناف)`}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Zero Gap Dashboard */}
       {gapStatus && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          {/* Quick Metrics Bar */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
             <div className="card" style={{ padding: '0.85rem 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <Database size={24} style={{ color: 'var(--primary)' }} />
@@ -302,43 +512,6 @@ export const GoogleSheetsSync: React.FC = () => {
             </div>
           </div>
 
-          {/* Alert for unuploaded invoices */}
-          {gapStatus.unuploaded_count > 0 && (
-            <div style={{
-              background: '#fffbeb',
-              border: '1px solid #fde68a',
-              borderRadius: 12,
-              padding: '0.85rem 1.25rem',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: '0.75rem'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-                <AlertTriangle size={22} style={{ color: '#d97706', flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#92400e' }}>
-                    تنبيه سد الفجوة: يوجد {gapStatus.unuploaded_count} فواتير مسجلة في النظام لم تُرفع إلى كوكل شيت بعد!
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: '#b45309' }}>
-                    اضغط زر "رفع الفواتير غير المرفوعة فقط" لنقلها مباشرة إلى كوكل شيت دون تكرار الفواتير السابقة.
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={handleSyncUnuploaded}
-                disabled={syncingUnuploaded || syncing}
-                className="btn-clay btn-primary"
-                style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309', padding: '0.5rem 1.25rem' }}
-              >
-                <UploadCloud size={16} className={syncingUnuploaded ? 'animate-spin' : ''} />
-                {syncingUnuploaded ? 'جارِ رفع الفجوة...' : `🚀 رفع الفواتير غير المرفوعة فقط (${gapStatus.unuploaded_count})`}
-              </button>
-            </div>
-          )}
-
-          {/* Alert for missing in system invoices */}
           {gapStatus.missing_in_system_count > 0 && (
             <div style={{
               background: '#f0f9ff',
@@ -355,10 +528,7 @@ export const GoogleSheetsSync: React.FC = () => {
                 <DownloadCloud size={22} style={{ color: '#0284c7', flexShrink: 0 }} />
                 <div>
                   <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#0369a1' }}>
-                    فواتير في كوكل شيت غير مسجلة في المنصة: يوجد {gapStatus.missing_in_system_count} فواتير في الشيت.
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: '#0284c7' }}>
-                    يمكنك استيرادها تلقائياً إلى قاعدة بيانات النظام بنقرة واحدة لسد الفجوة بالكامل.
+                    فواتير في كوكل شيت غير مسجلة في المنصة: يوجد {gapStatus.missing_in_system_count} فواتير.
                   </div>
                 </div>
               </div>
@@ -373,32 +543,11 @@ export const GoogleSheetsSync: React.FC = () => {
               </button>
             </div>
           )}
-
-          {/* Perfect Zero Gap confirmation */}
-          {!gapStatus.has_gap && (
-            <div style={{
-              background: '#f0fdf4',
-              border: '1px solid #bbf7d0',
-              borderRadius: 12,
-              padding: '0.65rem 1.25rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              color: '#15803d',
-              fontSize: '0.82rem',
-              fontWeight: 700
-            }}>
-              <CheckCircle2 size={18} style={{ color: '#16a34a' }} />
-              <span>تطابق بنسبة 100% — كافة فواتير النظام مرفوعة في كوكل شيت، لا توجد أي فجوة بيانات (Zero Gap)!</span>
-            </div>
-          )}
         </div>
       )}
 
-      {/* Top Cards: Settings & Instructions */}
+      {/* Top Cards: Settings & Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
-
-        {/* Webhook Connection Card */}
         <div className="card" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <h5 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -409,10 +558,6 @@ export const GoogleSheetsSync: React.FC = () => {
               {config?.is_connected ? '🟢 متصل' : '⚪ غير مفعل'}
             </span>
           </div>
-
-          <p style={{ fontSize: '0.8rem', color: 'var(--gray-500)', marginBottom: '0.85rem' }}>
-            لإرسال الفواتير فوراً لكوكل شيت بشكل آلي بدون أي تدخل يدوي، ضع رابط الويب هوك الناتج من نشر Google Apps Script هنا:
-          </p>
 
           <form onSubmit={handleSaveWebhook} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <input
@@ -433,23 +578,22 @@ export const GoogleSheetsSync: React.FC = () => {
             </button>
           </form>
 
-          <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ marginTop: '0.75rem' }}>
             <button
               type="button"
               onClick={() => setShowCodeGuide(!showCodeGuide)}
               style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700, padding: 0 }}
             >
-              {showCodeGuide ? '▼ إخفاء خطوات الإعداد والكود' : '► كيف أحصل على هذا الرابط في دقيقة واحدة؟ (عرض الكود)'}
+              {showCodeGuide ? '▼ إخفاء كود Apps Script المحدّث' : '► عرض كود Apps Script المحدّث (لتفعيل الحذف والتعديل الكامل في الشيت)'}
             </button>
           </div>
         </div>
 
-        {/* Quick Stats Card */}
         <div className="card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div>
             <h5 style={{ fontWeight: 800, margin: '0 0 0.75rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Table size={18} style={{ color: '#10b981' }} />
-              إحصائيات بيانات كوكل شيت الحالية
+              إحصائيات بيانات كوكل شيت ({dynamicHeaders.length} أعمدة)
             </h5>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))', gap: '0.75rem', textAlign: 'center' }}>
               <div style={{ background: 'var(--gray-50)', padding: '0.6rem', borderRadius: 10 }}>
@@ -474,16 +618,14 @@ export const GoogleSheetsSync: React.FC = () => {
             </span>
           </div>
         </div>
-
       </div>
 
-      {/* Collapsible Apps Script Setup Guide */}
       {showCodeGuide && (
         <div className="card" style={{ background: '#f8fafc', border: '1px solid #cbd5e1', padding: '1.25rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
             <h5 style={{ fontWeight: 800, margin: 0, color: '#1e293b', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Sparkles size={18} style={{ color: 'var(--primary)' }} />
-              كود الربط التلقائي الجاهز (Google Apps Script)
+              كود الربط التلقائي المحدّث (يدعم الاستبدال والحذف والاعتماد وملاءمة الأعمدة)
             </h5>
             <button
               onClick={handleCopyCode}
@@ -494,17 +636,10 @@ export const GoogleSheetsSync: React.FC = () => {
               {copiedCode ? 'تم النسخ بنجاح!' : 'نسخ الكود بالكامل'}
             </button>
           </div>
-
-          <ol style={{ fontSize: '0.82rem', color: '#475569', lineHeight: 1.9, paddingRight: '1.25rem', margin: '0 0 1rem 0' }}>
-            <li>افتح جدول كوكل شيت من الزر بالأعلى، واضغط من القائمة: <strong>الإضافات (Extensions) ← تطبيقات البرمجة (Apps Script)</strong>.</li>
-            <li>امسح أي كود موجود في المحرر بالكامل، والصق الكود المنسوخ بالكامل من المربع أدناه ثم اضغط <strong>حفظ (Save 💾)</strong>.</li>
-            <li style={{ color: '#0369a1', fontWeight: 700 }}>
-              💡 <strong>لإصلاح الجدول المتداخل فوراً:</strong> اختر من شريط الأدوات بالأعلى الدالة <code>testRun</code> ثم اضغط زر <strong>تشغيل (Run ▶)</strong>؛ سيقوم السكربت فوراً بحذف السطور التالفة وإعادة ضبط الأعمدة الـ 16 وإزالة أي تلوين.
-            </li>
-            <li>للتثبيت الدائم: اضغط في الأعلى <strong>نشر (Deploy) ← إدارة عمليات النشر (Manage deployments)</strong> ← اضغط على أيقونة القلم (تعديل Edit) ← اختر من الإصدار (Version): <strong>إصدار جديد (New version)</strong> ← اضغط <strong>نشر (Deploy)</strong>.</li>
-            <li>سيبقى رابط الويب هوك نفسه يعمل بدون الحاجة لتغييره، وسيكون الجدول مضبوطاً ومحدثاً تلقائياً!</li>
+          <ol style={{ fontSize: '0.82rem', color: '#475569', lineHeight: 1.85, paddingRight: '1.25rem', margin: '0 0 1rem 0' }}>
+            <li>من كوكل شيت افتح <strong>Extensions ← Apps Script</strong> والصق الكود ثم اضغط حفظ.</li>
+            <li>لتحديث النشر دون تغيير الرابط: <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong>.</li>
           </ol>
-
           <pre style={{
             background: '#0f172a',
             color: '#38bdf8',
@@ -517,27 +652,29 @@ export const GoogleSheetsSync: React.FC = () => {
             textAlign: 'left',
             fontFamily: 'Consolas, Monaco, monospace'
           }}>
-            {config?.apps_script_code || '// جارِ تحميل الكود...'}
+            {config?.apps_script_code || '// يتم تحديث الكود عبر السيرفر الخلفي'}
           </pre>
         </div>
       )}
 
-      {/* Main Data Table */}
-      <div className="card" style={{ padding: '1.25rem' }}>
+      {/* Main Live Data Table — ALL Columns, Fit to Column & Fit to Row */}
+      <div className="card" style={{ padding: '1.15rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
           <div>
-            <h4 style={{ fontWeight: 800, margin: '0 0 0.25rem 0' }}>سجل البيانات الحية المسحوبة من كوكل شيت</h4>
+            <h4 style={{ fontWeight: 800, margin: '0 0 0.25rem 0' }}>
+              سجل البيانات الحية المسحوبة من كوكل شيت ({filteredRows.length} سطر • {dynamicHeaders.length} عمود)
+            </h4>
             <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>
-              يتم عرض جميع الفواتير والمواد المسجلة في ملف Google Sheets
+              عرض كامل لجميع الأعمدة والصفوف بدون قص النصوص (Fit to Row & Fit to Column) — اسحب أفقياً لرؤية جميع الأعمدة.
             </span>
           </div>
 
-          <div style={{ position: 'relative', width: 280 }}>
+          <div style={{ position: 'relative', width: 'min(100%, 280px)' }}>
             <Search size={16} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--gray-400)' }} />
             <input
               type="text"
               className="clay-input"
-              placeholder="بحث في فواتير كوكل شيت..."
+              placeholder="بحث في كافة أعمدة كوكل شيت..."
               style={{ width: '100%', paddingRight: '2rem', fontSize: '0.82rem' }}
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
@@ -554,9 +691,6 @@ export const GoogleSheetsSync: React.FC = () => {
           <div style={{ textAlign: 'center', padding: '3.5rem 1rem', background: 'var(--gray-50)', borderRadius: 12 }}>
             <FileSpreadsheet size={48} style={{ color: 'var(--gray-300)', marginBottom: 12 }} />
             <h5 style={{ fontWeight: 800, color: 'var(--gray-700)', marginBottom: 6 }}>لا توجد بيانات مسجلة في كوكل شيت حتى الآن</h5>
-            <p style={{ fontSize: '0.82rem', color: 'var(--gray-500)', maxWidth: 450, margin: '0 auto 1.25rem' }}>
-              جدول كوكل شيت فارغ حالياً. اضغط على زر "مزامنة وتصدير جميع الفواتير" لإرسال فواتير النظام الحالية وتنسيق الجدول تلقائياً بالعناوين والألوان.
-            </p>
             <button
               onClick={handleSyncAll}
               disabled={syncing}
@@ -567,45 +701,71 @@ export const GoogleSheetsSync: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div style={{ overflowX: 'auto', width: '100%' }}>
-            <table className="clay-table" style={{ width: '100%', minWidth: 1200, fontSize: '0.82rem', tableLayout: 'fixed' }}>
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', width: '100%', borderRadius: 12, border: '1px solid var(--gray-200)' }}>
+            <table
+              className="clay-table"
+              style={{
+                width: 'max-content',
+                minWidth: '100%',
+                tableLayout: 'auto',
+                fontSize: '0.82rem',
+                margin: 0
+              }}
+            >
               <thead>
                 <tr>
-                  <th style={{ textAlign: 'center' }}>#</th>
-                  <th>رقم الفاتورة</th>
-                  <th>التاريخ</th>
-                  <th>المذخر</th>
-                  <th>الصيدلية</th>
-                  <th>المنطقة / المكان</th>
-                  <th>المدينة</th>
-                  <th>المادة الدوائية</th>
-                  <th>نوع المادة</th>
-                  <th style={{ textAlign: 'center' }}>الكمية</th>
-                  <th style={{ textAlign: 'center' }}>سعر المفرد</th>
-                  <th style={{ textAlign: 'center' }}>البونص</th>
-                  <th style={{ textAlign: 'center' }}>المجموع</th>
-                  <th>المندوب</th>
-                  <th style={{ textAlign: 'center' }}>الحالة</th>
-                  <th>وقت الإدراج</th>
+                  <th style={{ textAlign: 'center', whiteSpace: 'nowrap', padding: '0.65rem 0.75rem' }}>#</th>
+                  {dynamicHeaders.map((h, hIdx) => (
+                    <th key={hIdx} style={{ whiteSpace: 'nowrap', padding: '0.65rem 0.85rem', textAlign: 'center' }}>
+                      {h || `عمود ${hIdx + 1}`}
+                    </th>
+                  ))}
+                  {duplicateGroups.length > 0 && (
+                    <th style={{ whiteSpace: 'nowrap', padding: '0.65rem 0.85rem', textAlign: 'center' }}>إجراء التكرار</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {filteredRows.map((row, idx) => {
+                  const invNum = String(row.invoice_number || '').trim();
+                  const isDupRow = invNum && duplicateInvNumbers.has(invNum);
+                  const matchingDupGroup = isDupRow
+                    ? duplicateGroups.find(g => g.invoice_number === invNum)
+                    : undefined;
+
                   return (
-                    <tr key={idx}>
-                      <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>{idx + 1}</td>
-                      <td style={{ fontWeight: 800, color: 'var(--primary)', whiteSpace: 'nowrap' }}>
-                        {row.invoice_number}
+                    <tr
+                      key={idx}
+                      style={{
+                        height: 'auto',
+                        background: isDupRow ? '#fef2f2' : undefined
+                      }}
+                    >
+                      <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--gray-500)', whiteSpace: 'nowrap', verticalAlign: 'middle', padding: '0.6rem 0.75rem' }}>
+                        {idx + 1}
                       </td>
-                      <td style={{ color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{row.invoice_date}</td>
-                      <td style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.warehouse_name || 'مذخر أدوية'}</td>
-                      <td style={{ fontWeight: 700, color: 'var(--gray-800)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.pharmacy_name}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}><span className="badge badge-gray">{row.area || '—'}</span></td>
-                      <td style={{ whiteSpace: 'nowrap' }}><span className="badge badge-gray">{row.city || 'بغداد'}</span></td>
-                      <td style={{ fontWeight: 700, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.product_name}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {(() => {
-                          const raw = String(row.dosage_form || '').trim();
+                      {dynamicHeaders.map((_, cIdx) => {
+                        const cellVal = Array.isArray(row.cells) && row.cells[cIdx] !== undefined
+                          ? String(row.cells[cIdx])
+                          : (() => {
+                              const fallbackMap = [
+                                row.invoice_number, row.invoice_date, row.warehouse_name, row.pharmacy_name,
+                                row.area, row.city, row.product_name, row.dosage_form,
+                                row.quantity, row.unit_price, row.bonus_quantity, row.line_total,
+                                row.total_invoice, row.rep_name, row.status, row.timestamp
+                              ];
+                              return fallbackMap[cIdx] !== undefined ? String(fallbackMap[cIdx]) : '';
+                            })();
+
+                        if (cIdx === 0) {
+                          return (
+                            <td key={cIdx} style={{ fontWeight: 800, color: isDupRow ? '#b91c1c' : 'var(--primary)', whiteSpace: 'nowrap', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                              {cellVal || '—'}
+                            </td>
+                          );
+                        }
+                        if (cIdx === 7) {
+                          const raw = cellVal.trim();
                           const form = ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(raw)
                             ? raw
                             : (raw.includes('drop') || raw.includes('قطر') ? 'قطرة' :
@@ -613,32 +773,72 @@ export const GoogleSheetsSync: React.FC = () => {
                                raw.includes('oint') || raw.includes('مرهم') ? 'مرهم' : 'حبوب');
                           const badge = getDosageFormBadgeColor(form);
                           return (
-                            <span className="badge" style={{ fontSize: '0.72rem', background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, fontWeight: 800 }}>
-                              {form}
-                            </span>
+                            <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                              <span className="badge" style={{ fontSize: '0.74rem', background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, fontWeight: 800 }}>
+                                {form}
+                              </span>
+                            </td>
                           );
-                        })()}
-                      </td>
-                      <td style={{ textAlign: 'center', fontWeight: 800, whiteSpace: 'nowrap' }}>{row.quantity}</td>
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>{(Number(row.unit_price) || 0).toLocaleString()} د.ع</td>
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <span className={`badge ${Number(row.bonus_quantity) > 0 ? 'badge-warning' : 'badge-gray'}`}>
-                          +{row.bonus_quantity || 0}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'center', fontWeight: 800, color: 'var(--primary)', whiteSpace: 'nowrap' }}>
-                        {(Number(row.line_total) || 0).toLocaleString()} د.ع
-                      </td>
-                      <td style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.rep_name || 'مندوب علمي'}</td>
-                      <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <span className={`badge ${row.status === 'معتمدة ✓' || row.status === 'معتمدة' ? 'badge-success' : 'badge-warning'}`}>
-                          {row.status || 'قيد التدقيق'}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: '0.75rem', color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>
-                        <Clock size={11} style={{ display: 'inline', marginLeft: 3 }} />
-                        {row.timestamp || '—'}
-                      </td>
+                        }
+                        if (cIdx === 9 || cIdx === 11 || cIdx === 12) {
+                          const n = Number(String(cellVal).replace(/[^\d.-]/g, ''));
+                          return (
+                            <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', fontWeight: cIdx === 11 || cIdx === 12 ? 800 : 600, color: cIdx === 11 ? 'var(--primary)' : undefined, verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                              {cellVal ? (isNaN(n) ? cellVal : `${n.toLocaleString()} د.ع`) : '—'}
+                            </td>
+                          );
+                        }
+                        if (cIdx === 14) {
+                          return (
+                            <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                              <span className={`badge ${cellVal.includes('معتمدة') ? 'badge-success' : cellVal.includes('مرفوضة') ? 'badge-danger' : 'badge-warning'}`}>
+                                {cellVal || 'قيد التدقيق'}
+                              </span>
+                            </td>
+                          );
+                        }
+                        const isWrapCol = [2, 3, 6, 13].includes(cIdx) || cIdx >= 16;
+                        return (
+                          <td
+                            key={cIdx}
+                            style={{
+                              whiteSpace: isWrapCol ? 'normal' : 'nowrap',
+                              wordBreak: isWrapCol ? 'break-word' : undefined,
+                              minWidth: isWrapCol ? 150 : undefined,
+                              maxWidth: isWrapCol ? 280 : undefined,
+                              lineHeight: 1.45,
+                              verticalAlign: 'middle',
+                              textAlign: [8, 10].includes(cIdx) ? 'center' : undefined,
+                              fontWeight: cIdx === 3 || cIdx === 6 ? 700 : undefined,
+                              padding: '0.6rem 0.85rem'
+                            }}
+                          >
+                            {cIdx === 15 ? (
+                              <span style={{ fontSize: '0.76rem', color: 'var(--gray-500)', whiteSpace: 'nowrap' }}>
+                                <Clock size={11} style={{ display: 'inline', marginLeft: 3 }} />
+                                {cellVal || '—'}
+                              </span>
+                            ) : (cellVal || '—')}
+                          </td>
+                        );
+                      })}
+                      {duplicateGroups.length > 0 && (
+                        <td style={{ whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                          {matchingDupGroup ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDuplicateInvoice(matchingDupGroup)}
+                              disabled={deletingDupKey === matchingDupGroup.key}
+                              className="btn-clay btn-danger btn-sm"
+                              style={{ background: '#dc2626', color: 'white', fontWeight: 800, padding: '0.3rem 0.65rem', fontSize: '0.74rem' }}
+                            >
+                              <Trash2 size={13} /> حذف الفاتورة المكررة ({matchingDupGroup.rowsCount})
+                            </button>
+                          ) : (
+                            <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -651,4 +851,3 @@ export const GoogleSheetsSync: React.FC = () => {
     </div>
   );
 };
-

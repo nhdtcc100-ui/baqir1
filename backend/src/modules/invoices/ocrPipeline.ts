@@ -1,22 +1,19 @@
 /**
- * Invoice OCR Pipeline — Resilient Server-Side Extraction Engine
+ * Gemini-Only Invoice Extraction Pipeline — Resilient Server-Side Engine
  *
  * المزايا الأساسية:
- * 1. Cache (SHA-256): يمنع إرسال نفس صورة الفاتورة مرتين إلى Gemini (يحفظ الحصة والزمن).
- * 2. Retry (3 محاولات مع Exponential Backoff): يعيد المحاولة تلقائياً عند الأخطاء المؤقتة.
- * 3. Circuit Breaker (قاطع دائرة لمدة 10 دقائق): عند تلقي 429 أو 403 من Gemini، يفتح القاطع
- *    لمدة 10 دقائق لهذا المفتاح ويتحوّل فوراً إلى Tesseract المحلي المجاني دون تأخير المستخدم.
- * 4. needsReview: أي نتيجة قادمة من المحرك المحلي (Tesseract / GenericTableParser / Fallback) أو ذات ثقة
- *    أقل من 75% تُوسَم بـ needsReview: true لأن دقتها مع الفواتير العربية تتطلب مراجعة بشرية قبل الاعتماد.
+ * 1. Google Gemini Vision فقط (تمت إزالة Tesseract OCR المحلي).
+ * 2. Cache (SHA-256): يمنع إرسال نفس صورة الفاتورة مرتين إلى Gemini.
+ * 3. Retry (3 محاولات مع Exponential Backoff): يعيد المحاولة تلقائياً عند الأخطاء المؤقتة.
+ * 4. Circuit Breaker (قاطع دائرة لمدة 10 دقائق): عند تلقي 429 أو 403 من Gemini، يفتح القاطع
+ *    لمدة 10 دقائق لهذا المفتاح ويرجع للمدخل اليدوي مباشرة بانتظار المراجعة.
+ * 5. needsReview: أي نتيجة ذات ثقة < 75% أو عند تعذر القراءة الآلية تُوسَم بـ needsReview: true.
  */
 
 import crypto from 'crypto';
 import fs from 'fs';
-import sharp from 'sharp';
-import { createWorker } from 'tesseract.js';
 import { ENV } from '../../config/env';
 import { extractInvoiceWithGeminiDetailed, GeminiDetailedOutcome, detectDosageForm } from './geminiVisionOcr';
-import { GenericTableParser } from './genericTableParser';
 
 export interface PipelineRawItem {
   product_id?: string;
@@ -29,7 +26,7 @@ export interface PipelineRawItem {
 }
 
 export interface OcrPipelineResult {
-  ocr_engine: 'gemini_vision' | 'tesseract_generic' | 'fingerprint_fallback' | 'manual_fallback' | 'none';
+  ocr_engine: 'gemini_vision' | 'manual_fallback' | 'none';
   invoice_number: string;
   invoice_date: string;
   pharmacy_name: string;
@@ -54,7 +51,6 @@ export interface RunPipelineOptions {
   products: any[];
   /** حقن اختياري للاختبارات الآلية */
   geminiRunner?: (filePath: string, apiKey?: string) => Promise<GeminiDetailedOutcome>;
-  tesseractRunner?: (filePath: string) => Promise<{ text: string; confidence: number }>;
 }
 
 const CACHE_TTL_MS = 30 * 60 * 1000;      // 30 دقيقة
@@ -133,33 +129,6 @@ function getCachedResult(cacheKey: string): OcrPipelineResult | null {
   return entry.value;
 }
 
-async function defaultTesseractRecognize(filePath: string): Promise<{ text: string; confidence: number }> {
-  const buf = await sharp(filePath)
-    .resize({ width: 2000, withoutEnlargement: false })
-    .sharpen({ sigma: 1.5 })
-    .normalize()
-    .toBuffer();
-
-  const worker = await createWorker('ara+eng');
-  let bestText = '';
-  let bestConf = 0;
-
-  try {
-    for (const angle of [0, 90, 180, 270]) {
-      const b = angle === 0 ? buf : await sharp(buf).rotate(angle).toBuffer();
-      const ret = await worker.recognize(b);
-      if ((ret.data.confidence || 0) > bestConf) {
-        bestConf = ret.data.confidence || 0;
-        bestText = ret.data.text || '';
-      }
-    }
-  } finally {
-    await worker.terminate().catch(() => {});
-  }
-
-  return { text: bestText, confidence: bestConf };
-}
-
 /**
  * استدعاء Gemini مع Retry 3 مرات + Exponential Backoff، واحترام قاطع الدائرة 10 دقائق عند 403/429
  */
@@ -188,7 +157,6 @@ async function invokeGeminiWithRetryAndBreaker(
       return { outcome, circuitOpen: false };
     }
 
-    // 403 (حصة/فوترة مقيدة) أو 400 (مفتاح غير صالح) -> لا جدوى من إعادة المحاولة؛ فعّل القاطع عند 403/429
     if (outcome.shouldTripCircuit || outcome.statusCode === 403) {
       if (attempt < MAX_RETRY_ATTEMPTS && outcome.statusCode === 429) {
         const waitMs = 600 * Math.pow(2, attempt - 1);
@@ -203,7 +171,6 @@ async function invokeGeminiWithRetryAndBreaker(
       return { outcome, circuitOpen: true };
     }
 
-    // أخطاء مؤقتة -> Retry مع Backoff
     if (attempt < MAX_RETRY_ATTEMPTS) {
       const waitMs = 500 * Math.pow(2, attempt - 1);
       await new Promise(r => setTimeout(r, waitMs));
@@ -214,7 +181,7 @@ async function invokeGeminiWithRetryAndBreaker(
 }
 
 /**
- * الدالة الرئيسية لخط أنابيب قراءة الفواتير (Cache -> Gemini + Retry + Breaker -> Tesseract + GenericTableParser + needsReview)
+ * الدالة الرئيسية لقراءة الفواتير عبر Google Gemini فقط (Cache -> Gemini + Retry + Circuit Breaker -> Manual Fallback)
  */
 export async function runInvoiceOcrPipeline(
   filePath: string,
@@ -245,17 +212,16 @@ export async function runInvoiceOcrPipeline(
   const cacheKey = `${sha256}:${keyFingerprint(opts.customGeminiKey)}:${isPdf ? 'pdf' : 'img'}`;
   const cachedHit = getCachedResult(cacheKey);
   if (cachedHit) {
-    console.log(`⚡ [OCR Cache Hit] SHA-256 ${sha256.slice(0, 12)} -> engine=${cachedHit.ocr_engine}`);
+    console.log(`⚡ [Gemini Cache Hit] SHA-256 ${sha256.slice(0, 12)} -> engine=${cachedHit.ocr_engine}`);
     return { ...cachedHit, cached: true };
   }
 
   const geminiRunner = opts.geminiRunner || extractInvoiceWithGeminiDetailed;
-  const tesseractRunner = opts.tesseractRunner || defaultTesseractRecognize;
 
   let geminiError: string | undefined;
   let circuitOpen = false;
 
-  // ── 2. Path 1: Gemini Vision (with Retry x3 + Circuit Breaker 10m) ────────
+  // ── 2. Google Gemini Vision (with Retry x3 + Circuit Breaker 10m) ────────
   const effectiveKey = (opts.customGeminiKey || '').trim() || ENV.GEMINI_API_KEY;
   if (effectiveKey) {
     const gemTry = await invokeGeminiWithRetryAndBreaker(filePath, opts.customGeminiKey, geminiRunner);
@@ -290,103 +256,22 @@ export async function runInvoiceOcrPipeline(
       return out;
     }
   } else {
-    geminiError = 'لم يتم توفير مفتاح Gemini API';
+    geminiError = 'لم يتم توفير مفتاح Google Gemini API';
   }
 
-  // ── 3. Path 2: Local Tesseract + GenericTableParser (Fallback — needsReview: true) ──
-  if (isPdf) {
-    const pdfFallback: OcrPipelineResult = {
-      ocr_engine: 'manual_fallback',
-      invoice_number: defaultInvNum,
-      invoice_date: defaultDate,
-      pharmacy_name: '',
-      pharmacy_area: '',
-      raw_items: [],
-      confidence: 0,
-      needsReview: true,
-      needsReviewReason: `ملف PDF يتطلب تدقيقاً يدوياً${geminiError ? ` (${geminiError})` : ''}.`,
-      cached: false,
-      circuitBreakerOpen: circuitOpen,
-      geminiError
-    };
-    return pdfFallback;
-  }
-
-  let recognizedText = '';
-  let confidence = 0.45;
-  try {
-    const tess = await tesseractRunner(filePath);
-    recognizedText = tess.text || '';
-    if (tess.confidence > 10) confidence = Math.min(0.85, tess.confidence / 100);
-  } catch (err: any) {
-    console.warn('Tesseract pipeline fallback warning:', err?.message || err);
-  }
-
-  let invoiceNumber = defaultInvNum;
-  let invoiceDate = defaultDate;
-
-  const invMatch =
-    recognizedText.match(/(?:رقم\s*الفاتورة|فاتورة\s*رقم|Invoice\s*(?:no|#)?)\s*[:\s]*([0-9A-Za-z\-]+)/i) ||
-    recognizedText.match(/\b(SAL-\d{2}-\d+)\b/i) ||
-    recognizedText.match(/\b(\d{5,8})\b/);
-  if (invMatch?.[1]) invoiceNumber = invMatch[1].trim();
-
-  const dateMatch =
-    recognizedText.match(/(202\d)[\/\-](\d{1,2})[\/\-](\d{1,2})/) ||
-    recognizedText.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](202\d)/);
-  if (dateMatch) {
-    invoiceDate = dateMatch[1]?.startsWith('202')
-      ? `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`
-      : `${dateMatch[3]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[1].padStart(2, '0')}`;
-  }
-
-  const generic = GenericTableParser.parse(recognizedText, opts.products, opts.pharmacies);
-  if (generic.items.length > 0) {
-    const out: OcrPipelineResult = {
-      ocr_engine: 'tesseract_generic',
-      invoice_number: generic.invoice_number || invoiceNumber,
-      invoice_date: generic.invoice_date || invoiceDate,
-      pharmacy_name: generic.pharmacy_name || '',
-      pharmacy_area: '',
-      matched_pharmacy_id: generic.matched_pharmacy_id,
-      raw_items: generic.items.map(it => ({
-        product_id: it.matched_product_id,
-        product_name: it.product_name,
-        dosage_form: detectDosageForm(it.product_name),
-        quantity: it.quantity,
-        unit_price: it.unit_price,
-        bonus_quantity: it.bonus_quantity,
-        line_total: it.line_total
-      })),
-      recognized_text: recognizedText,
-      confidence: Math.min(0.8, generic.confidence_score),
-      needsReview: true, // إجباري لأي قراءة من Tesseract مع النصوص العربية
-      needsReviewReason: 'تمت القراءة بالمحرك المحلي الاحتياطي (Tesseract) — تحتاج مراجعة دقيقة للأسماء والأرقام قبل الحفظ.',
-      cached: false,
-      circuitBreakerOpen: circuitOpen,
-      geminiError
-    };
-    setCachedResult(cacheKey, out);
-    return out;
-  }
-
-  // ── 4. Path 3: Fingerprint Known Warehouses Fallback (needsReview: true) ──
-  const t = (recognizedText + ' ' + opts.originalName).toLowerCase();
-  const fpResult = resolveKnownWarehouseFingerprint(t, opts.products, invoiceNumber, invoiceDate);
-
+  // ── 3. Manual Fallback (Gemini Only mode — no local Tesseract OCR) ────────
   const fallbackOut: OcrPipelineResult = {
-    ocr_engine: fpResult.matched ? 'fingerprint_fallback' : 'manual_fallback',
-    invoice_number: fpResult.invoiceNumber,
-    invoice_date: fpResult.invoiceDate,
-    pharmacy_name: fpResult.pharmacyHint,
+    ocr_engine: 'manual_fallback',
+    invoice_number: defaultInvNum,
+    invoice_date: defaultDate,
+    pharmacy_name: '',
     pharmacy_area: '',
-    raw_items: fpResult.items,
-    recognized_text: recognizedText,
-    confidence: fpResult.confidence,
+    raw_items: [],
+    confidence: 0,
     needsReview: true,
-    needsReviewReason: fpResult.matched
-      ? 'تم الاستخراج عبر مطابقة القالب المحلي الاحتياطي — تحتاج مراجعة قبل الحفظ.'
-      : `تعذر استخراج الأصناف آلياً بالمحرك المحلي${geminiError ? ` (${geminiError})` : ''} — تحتاج تعبئة ومراجعة يدوية.`,
+    needsReviewReason: geminiError
+      ? `تعذرت القراءة عبر Gemini (${geminiError}) — يرجى إدخال ومراجعة البيانات يدوياً.`
+      : 'مطلوب مفتاح Google Gemini للقراءة الآلية — يرجى تعبئة ومراجعة الفاتورة يدوياً.',
     cached: false,
     circuitBreakerOpen: circuitOpen,
     geminiError
@@ -394,84 +279,4 @@ export async function runInvoiceOcrPipeline(
 
   setCachedResult(cacheKey, fallbackOut);
   return fallbackOut;
-}
-
-function resolveKnownWarehouseFingerprint(
-  t: string,
-  products: any[],
-  fallbackInvNum: string,
-  fallbackDate: string
-): {
-  matched: boolean;
-  invoiceNumber: string;
-  invoiceDate: string;
-  pharmacyHint: string;
-  items: PipelineRawItem[];
-  confidence: number;
-} {
-  const fbProd = products[0] || { id: '', name: 'مستحضر دوائي', base_price: 5000 };
-
-  if (t.includes('شغف') || t.includes('elicasal') || t.includes('130683')) {
-    const pr = products.find(p => p.name.toLowerCase().includes('elicasal')) || fbProd;
-    return {
-      matched: true,
-      invoiceNumber: '130683',
-      invoiceDate: '2026-04-13',
-      pharmacyHint: 'الفلق',
-      items: [{ product_id: pr.id, product_name: 'elicasal oint 30g jamjoom', dosage_form: 'مرهم', quantity: 100, unit_price: 5750, bonus_quantity: 10, line_total: 575000 }],
-      confidence: 0.72
-    };
-  }
-  if (t.includes('السعفة') || t.includes('fusibact') || t.includes('44941')) {
-    const p1 = products.find(p => p.name.toLowerCase().includes('fusibact')) || fbProd;
-    const p2 = products.find(p => p.name.toLowerCase().includes('elica -m')) || fbProd;
-    const p3 = products.find(p => p.name.toLowerCase().includes('drups') || p.name.toLowerCase().includes('hyfresh')) || fbProd;
-    return {
-      matched: true,
-      invoiceNumber: '44941',
-      invoiceDate: '2026-07-25',
-      pharmacyHint: 'صفا الورد',
-      items: [
-        { product_id: p1.id, product_name: 'Fusibact 2% cream', dosage_form: 'كريم', quantity: 112, unit_price: 2842, bonus_quantity: 11, line_total: 318304 },
-        { product_id: p2.id, product_name: 'Elica -M cream 0.1%', dosage_form: 'كريم', quantity: 300, unit_price: 5855, bonus_quantity: 30, line_total: 1756500 },
-        { product_id: p3.id, product_name: 'Hy Fresh drups', dosage_form: 'قطرة', quantity: 320, unit_price: 5247, bonus_quantity: 32, line_total: 1679040 }
-      ],
-      confidence: 0.72
-    };
-  }
-  if (t.includes('mazaya') || t.includes('مزايا') || t.includes('sal-01-')) {
-    if (t.includes('loxtra') || t.includes('607115')) {
-      const pr = products.find(p => p.name.toLowerCase().includes('loxtra')) || fbProd;
-      return {
-        matched: true,
-        invoiceNumber: 'SAL-01-607115',
-        invoiceDate: '2026-07-13',
-        pharmacyHint: 'الصحة العالمية',
-        items: [{ product_id: pr.id, product_name: 'loxtra 5ml drop', dosage_form: 'قطرة', quantity: 10, unit_price: 4828, bonus_quantity: 1, line_total: 48280 }],
-        confidence: 0.72
-      };
-    }
-    const p1 = products.find(p => p.name.toLowerCase().includes('30g oint')) || fbProd;
-    const p2 = products.find(p => p.name.toLowerCase().includes('30g cream')) || fbProd;
-    return {
-      matched: true,
-      invoiceNumber: 'SAL-01-596911',
-      invoiceDate: '2026-07-05',
-      pharmacyHint: 'الأماكن',
-      items: [
-        { product_id: p1.id, product_name: 'elica 30g oint', dosage_form: 'مرهم', quantity: 20, unit_price: 4828, bonus_quantity: 2, line_total: 96560 },
-        { product_id: p2.id, product_name: 'Elica m 30g cream', dosage_form: 'كريم', quantity: 20, unit_price: 5706, bonus_quantity: 2, line_total: 114120 }
-      ],
-      confidence: 0.72
-    };
-  }
-
-  return {
-    matched: false,
-    invoiceNumber: fallbackInvNum,
-    invoiceDate: fallbackDate,
-    pharmacyHint: '',
-    items: [],
-    confidence: 0.3
-  };
 }
