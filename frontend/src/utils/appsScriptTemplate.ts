@@ -1,18 +1,41 @@
 /**
- * كود Google Apps Script الموحّد المحدّث (الإصدار 7)
+ * كود Google Apps Script الموحّد المحدّث (الإصدار 9)
  * يدعم:
- * 1. الفصل التام بين التعديل (edit_invoice) والإضافة (add_invoice) + التحديث في نفس الصف (In-Place Update)
- * 2. إضافة وترتيب عمود "المنطقة / المكان" مباشرة بعد "المدينة / المحافظة" وإصلاح الجداول القديمة 14/16 عمود تلقائياً دون فقدان البيانات
- * 3. دعم قواعد البيانات المتعددة لكل مستخدم عبر payload.spreadsheetId
- * 4. إدارة قاعدة بيانات المستخدمين على الشيت الرئيسي (الاسم | الرمز السري | صفحة كوكل شيت | اي بي اي سكربت)
- * 5. حماية الشيت الرئيسي من دوال تنسيق الفواتير + تلوين المكررات بالأحمر #fee2e2 وإرجاع السليم للأبيض #ffffff + حماية الأصلية عند الحذف
+ * 1. ترتيب الأعمدة الموحّد: (المنطقة / المكان = E) قبل (المدينة / المحافظة = F) في جميع الشيتات مع ترحيل آمن دون فقدان البيانات
+ * 2. استنساخ أوراق وجداول Pivot Tables تلقائياً من شيت الأدمن القالب إلى جميع شيتات المندوبين عبر PivotTable API
+ * 3. التوجيه المركزي الموحد: أي تعديل في سكربت الأدمن ينعكس على الجميع مع دعم المكتبة (HEAD) وتوحيد عمود D
+ * 4. إدارة الشيت الرئيسي (5 أعمدة بما فيها عمود E: اي بي اي جمناي) + تعميم تلقائي عند التعديل اليدوي onEdit
+ * 5. حماية الشيت الرئيسي + تلوين المكررات #fee2e2 / #ffffff + حماية النسخة الأصلية عند حذف المكرر
  */
+export const APPS_SCRIPT_THIN_WRAPPER = `// ضع هذا الكود المختصر (مرة واحدة فقط) في شيت المندوب بعد إضافة مشروع سكربت الأدمن كـ Library باسم AdminLib (الوضع: HEAD)
+function onEdit(e) { return AdminLib.onEdit(e); }
+function doGet(e) { return AdminLib.doGet(e); }
+function doPost(e) { return AdminLib.doPost(e); }
+function testRun() { return AdminLib.testRun(); }`;
+
 export const APPS_SCRIPT_V2_CODE = `var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
-var SCRIPT_VERSION = 8;
+var SCRIPT_VERSION = 9;
+var TEMPLATE_SYNC_GUARD = false;
+
+var DATA_COL_KEYS = [
+  'invoice_number', 'invoice_date', 'warehouse_name', 'pharmacy_name',
+  'area', 'city', 'product_name', 'dosage_form',
+  'quantity', 'unit_price', 'bonus_quantity', 'line_total',
+  'total_invoice', 'rep_name', 'status', 'timestamp', 'loyalty'
+];
+
+function extractSheetIdFromUrl(val) {
+  var s = String(val || '').trim();
+  if (!s) return '';
+  var m = s.match(/\\/spreadsheets\\/d\\/([a-zA-Z0-9-_]+)/);
+  if (m && m[1]) return m[1];
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(s)) return s;
+  return '';
+}
 
 function getTargetSpreadsheet(customSpreadsheetId) {
-  var targetId = String(customSpreadsheetId || '').trim();
+  var targetId = extractSheetIdFromUrl(customSpreadsheetId) || String(customSpreadsheetId || '').trim();
   if (targetId && targetId !== SPREADSHEET_ID) {
     try {
       var opened = SpreadsheetApp.openById(targetId);
@@ -20,13 +43,22 @@ function getTargetSpreadsheet(customSpreadsheetId) {
     } catch (e) {}
   }
   try {
-    var active = SpreadsheetApp.getActiveSpreadsheet();
-    if (active) return active;
+    var ssDefault = SpreadsheetApp.openById(targetId || SPREADSHEET_ID);
+    if (ssDefault) return ssDefault;
   } catch (e2) {}
   try {
-    return SpreadsheetApp.openById(targetId || SPREADSHEET_ID);
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) return active;
   } catch (e3) {}
   return null;
+}
+
+function sheetHasPivotTables(sheet) {
+  try {
+    return Boolean(sheet && typeof sheet.getPivotTables === 'function' && sheet.getPivotTables().length > 0);
+  } catch (e) {
+    return false;
+  }
 }
 
 function isUsersSheetObj(sheet) {
@@ -50,28 +82,51 @@ function isUsersSheetObj(sheet) {
   return false;
 }
 
+function findInvoiceDataSheet(ss, preferredName) {
+  if (!ss) return null;
+  var pref = String(preferredName || '').trim();
+  if (pref && pref !== 'الفواتير') {
+    var named = ss.getSheetByName(pref);
+    if (named && !isUsersSheetObj(named) && !sheetHasPivotTables(named)) return named;
+  }
+  var candidates = ['الفواتير', 'Sheet1', 'الورقة1', 'المبيعات'];
+  for (var c = 0; c < candidates.length; c++) {
+    var cs = ss.getSheetByName(candidates[c]);
+    if (cs && !isUsersSheetObj(cs) && !sheetHasPivotTables(cs)) return cs;
+  }
+  var all = ss.getSheets();
+  for (var i = 0; i < all.length; i++) {
+    var s = all[i];
+    if (isUsersSheetObj(s) || sheetHasPivotTables(s)) continue;
+    try {
+      if (s.getLastRow() > 0) {
+        var r1 = s.getRange(1, 1, 1, Math.min(6, Math.max(1, s.getLastColumn()))).getValues()[0];
+        for (var k = 0; k < r1.length; k++) {
+          var hk = normAr(r1[k]);
+          if (hk.indexOf('رقم الفاتور') !== -1 || hk.indexOf('اسم الصيدلي') !== -1) return s;
+        }
+      }
+    } catch (e) {}
+  }
+  for (var j = 0; j < all.length; j++) {
+    if (!isUsersSheetObj(all[j]) && !sheetHasPivotTables(all[j])) return all[j];
+  }
+  return null;
+}
+
 function getTargetSheet(customSpreadsheetId, preferredSheetName) {
   var ss = getTargetSpreadsheet(customSpreadsheetId);
   if (!ss) return null;
-  var name = preferredSheetName || 'الفواتير';
-  var chosen = ss.getSheetByName(name) || (name === 'الفواتير' ? ss.getActiveSheet() : null);
-  if (chosen && isUsersSheetObj(chosen) && name === 'الفواتير') {
-    var invSheet = ss.getSheetByName('الفواتير');
-    if (invSheet && !isUsersSheetObj(invSheet)) return invSheet;
-    return null;
-  }
-  return chosen;
+  return findInvoiceDataSheet(ss, preferredSheetName);
 }
 
 function getOrCreateUsersSheet(adminSpreadsheetId) {
-  var targetId = String(adminSpreadsheetId || ADMIN_USERS_SHEET_ID).trim();
+  var targetId = extractSheetIdFromUrl(adminSpreadsheetId) || String(adminSpreadsheetId || ADMIN_USERS_SHEET_ID).trim();
   var ss = null;
   if (targetId) {
     try { ss = SpreadsheetApp.openById(targetId); } catch (e) {}
   }
-  if (!ss) {
-    ss = getTargetSpreadsheet('');
-  }
+  if (!ss) ss = getTargetSpreadsheet('');
   if (!ss) return null;
 
   var allSheets = ss.getSheets();
@@ -125,17 +180,41 @@ function resolveUserColMap(headers) {
     };
   }
   return {
-    isLegacy: true,
-    idCol: 0,
-    nameCol: 1,
-    emailCol: 2,
-    passCol: 3,
-    roleCol: 4,
-    activeCol: 5,
-    geminiCol: 6,
-    sheetCol: 7,
-    webhookCol: 8
+    isLegacy: true, idCol: 0, nameCol: 1, emailCol: 2, passCol: 3,
+    roleCol: 4, activeCol: 5, geminiCol: 6, sheetCol: 7, webhookCol: 8
   };
+}
+
+function ensureMasterGeminiColumn(usersSheet, forcedColZeroIdx) {
+  if (!usersSheet) return 4;
+  var lastCol = Math.max(4, usersSheet.getLastColumn());
+  var headers = usersSheet.getLastRow() > 0 ? usersSheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  var uMap = resolveUserColMap(headers);
+  if (uMap.geminiCol >= 0) return uMap.geminiCol;
+  var targetCol = (forcedColZeroIdx !== undefined && forcedColZeroIdx >= 4) ? forcedColZeroIdx : 4;
+  for (var gc = 4; gc < headers.length; gc++) {
+    if (!String(headers[gc] || '').trim()) { targetCol = gc; break; }
+    if (gc === headers.length - 1 && String(headers[gc] || '').trim()) { targetCol = headers.length; }
+  }
+  if (targetCol < 4) targetCol = 4;
+  try {
+    usersSheet.getRange(1, targetCol + 1).setValue('اي بي اي جمناي').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+  } catch (e) {}
+  return targetCol;
+}
+
+function propagateGeminiKeyToAllUserRows(usersSheet, targetGemCol, gemKeyVal) {
+  if (!usersSheet) return;
+  var lastRow = usersSheet.getLastRow();
+  var lastCol = Math.max(4, usersSheet.getLastColumn());
+  var headers = lastRow > 0 ? usersSheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  var uMap = resolveUserColMap(headers);
+  for (var gr = 2; gr <= lastRow; gr++) {
+    var rowNameG = String(usersSheet.getRange(gr, uMap.nameCol + 1).getValue() || '').trim();
+    if (rowNameG) {
+      usersSheet.getRange(gr, targetGemCol + 1).setValue(gemKeyVal);
+    }
+  }
 }
 
 function isBaqerName(name, email) {
@@ -161,6 +240,13 @@ function readAllSheetUsers(sheet) {
     var role = isBaqerName(fullName, emailVal) ? 'admin' : 'medical_rep';
     var activeRaw = uMap.activeCol >= 0 ? String(row[uMap.activeCol] === undefined ? 'TRUE' : row[uMap.activeCol]).trim().toUpperCase() : 'TRUE';
     if (activeRaw === 'FALSE' || activeRaw === '0' || activeRaw === 'معطل') continue;
+    var rawGem = uMap.geminiCol >= 0 ? String(row[uMap.geminiCol] || '').trim() : '';
+    if (!rawGem) {
+      for (var c = 4; c < row.length; c++) {
+        var cv = String(row[c] || '').trim();
+        if (/^(AIza|AQ\\.)/.test(cv)) { rawGem = cv; break; }
+      }
+    }
     users.push({
       rowNumber: i + 1,
       id: idVal || ('sheet-usr-' + (i + 1)),
@@ -169,7 +255,7 @@ function readAllSheetUsers(sheet) {
       password_hash: String(row[uMap.passCol] || '').trim(),
       role: role,
       is_active: true,
-      gemini_api_key: uMap.geminiCol >= 0 ? String(row[uMap.geminiCol] || '').trim() : '',
+      gemini_api_key: rawGem,
       sheet_id: String(row[uMap.sheetCol] || '').trim(),
       webhook_url: String(row[uMap.webhookCol] || '').trim()
     });
@@ -183,8 +269,8 @@ function getExpectedCols(sheet) {
     'تاريخ الفاتورة',
     'اسم المذخر',
     'اسم الصيدلية',
-    'المدينة / المحافظة',
     'المنطقة / المكان',
+    'المدينة / المحافظة',
     'اسم المادة الدوائية',
     'نوع المادة / الشكل الدوائي',
     'الكمية',
@@ -254,52 +340,25 @@ function detectDosage(name) {
 function detectAreaFromPh(phName) {
   var s = normAr(phName);
   var areas = [
-    ['فلسطين', 'شارع فلسطين'],
-    ['كراده', 'الكرادة'],
-    ['منصور', 'المنصور'],
-    ['زعفرانيه', 'الزعفرانية'],
-    ['مدينة الصدر', 'مدينة الصدر'],
-    ['مدينه الصدر', 'مدينة الصدر'],
-    ['صدر', 'مدينة الصدر'],
-    ['اعظميه', 'الأعظمية'],
-    ['كاظميه', 'الكاظمية'],
-    ['دوره', 'الدورة'],
-    ['بياع', 'البياع'],
-    ['عامريه', 'العامرية'],
-    ['غزاليه', 'الغزالية'],
-    ['شعب', 'الشعب'],
-    ['زيونه', 'زيونة'],
-    ['بغداد الجديده', 'بغداد الجديدة'],
-    ['جادرية', 'الجادرية'],
-    ['جادريه', 'الجادرية'],
-    ['حارثيه', 'الحارثية'],
-    ['سيديه', 'السيدية'],
-    ['بلديات', 'البلديات'],
-    ['حبيبيه', 'الحبيبية'],
-    ['يرموك', 'اليرموك'],
-    ['جامعه', 'حي الجامعة'],
-    ['حي اور', 'حي أور'],
-    ['مشتل', 'المشتل'],
-    ['غدير', 'الغدير'],
-    ['خضراء', 'حي الخضراء'],
-    ['قاهره', 'القاهرة'],
-    ['صليخ', 'الصليخ'],
-    ['شعله', 'الشعلة'],
-    ['بسمايه', 'بسماية'],
-    ['محموديه', 'المحمودية'],
-    ['مدائن', 'المدائن'],
-    ['ابو غريب', 'أبو غريب'],
-    ['طارميه', 'الطارمية'],
-    ['كرخ', 'الكرخ'],
-    ['رصافه', 'الرصافة']
+    ['فلسطين', 'شارع فلسطين'], ['كراده', 'الكرادة'], ['منصور', 'المنصور'],
+    ['زعفرانيه', 'الزعفرانية'], ['مدينة الصدر', 'مدينة الصدر'], ['مدينه الصدر', 'مدينة الصدر'],
+    ['صدر', 'مدينة الصدر'], ['اعظميه', 'الأعظمية'], ['كاظميه', 'الكاظمية'],
+    ['دوره', 'الدورة'], ['بياع', 'البياع'], ['عامريه', 'العامرية'],
+    ['غزاليه', 'الغزالية'], ['شعب', 'الشعب'], ['زيونه', 'زيونة'],
+    ['بغداد الجديده', 'بغداد الجديدة'], ['جادرية', 'الجادرية'], ['جادريه', 'الجادرية'],
+    ['حارثيه', 'الحارثية'], ['سيديه', 'السيدية'], ['بلديات', 'البلديات'],
+    ['حبيبيه', 'الحبيبية'], ['يرموك', 'اليرموك'], ['جامعه', 'حي الجامعة'],
+    ['حي اور', 'حي أور'], ['مشتل', 'المشتل'], ['غدير', 'الغدير'],
+    ['خضراء', 'حي الخضراء'], ['قاهره', 'القاهرة'], ['صليخ', 'الصليخ'],
+    ['شعله', 'الشعلة'], ['بسمايه', 'بسماية'], ['محموديه', 'المحمودية'],
+    ['مدائن', 'المدائن'], ['ابو غريب', 'أبو غريب'], ['طارميه', 'الطارمية'],
+    ['كرخ', 'الكرخ'], ['رصافه', 'الرصافة']
   ];
   for (var i = 0; i < areas.length; i++) {
     if (s.indexOf(areas[i][0]) !== -1) return areas[i][1];
   }
   var slashMatch = String(phName || '').match(/[\\/-]\\s*([^\\n\\r\\/-]{3,25})$/);
-  if (slashMatch && slashMatch[1] && slashMatch[1].trim().length >= 3) {
-    return slashMatch[1].trim();
-  }
+  if (slashMatch && slashMatch[1] && slashMatch[1].trim().length >= 3) return slashMatch[1].trim();
   return 'مركز المدينة';
 }
 
@@ -334,8 +393,8 @@ function resolveColMap(headers) {
   }
   var map = {
     invoice_number: 0, invoice_date: 1, warehouse_name: 2, pharmacy_name: 3,
-    city: 4,
-    area: hasArea ? 5 : -1,
+    area: hasArea ? 4 : -1,
+    city: hasArea ? 5 : 4,
     product_name: hasArea ? 6 : 5,
     dosage_form: hasDosage ? 7 : -1,
     quantity: (hasArea && hasDosage) ? 8 : 6,
@@ -398,8 +457,8 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
   vals[colMap.invoice_date]   = formatYmd(r.invoice_date);
   vals[colMap.warehouse_name] = r.warehouse_name || (existingRow ? existingRow[colMap.warehouse_name] : '') || 'مذخر الشغف الحديث';
   vals[colMap.pharmacy_name]  = phName;
-  if (colMap.city >= 0) vals[colMap.city] = resolvedCity || 'بغداد';
   if (colMap.area >= 0) vals[colMap.area] = resolvedArea;
+  if (colMap.city >= 0) vals[colMap.city] = resolvedCity || 'بغداد';
   vals[colMap.product_name]   = prodName;
   if (colMap.dosage_form >= 0) vals[colMap.dosage_form] = r.dosage_form || detectDosage(prodName);
   vals[colMap.quantity]       = Number(r.quantity || 0);
@@ -418,7 +477,7 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
 
 function setupSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
-  if (!sheet || isUsersSheetObj(sheet)) return;
+  if (!sheet || isUsersSheetObj(sheet) || sheetHasPivotTables(sheet)) return;
   var headers = getExpectedCols(sheet);
   var totalCols = headers.length;
   var lastRow = sheet.getLastRow();
@@ -432,8 +491,8 @@ function setupSheet(sheet) {
     var oldMap = resolveColMap(currentHeaders);
     if (
       currentHeaders.length < 16 ||
-      String(currentHeaders[4] || '').trim() !== 'المدينة / المحافظة' ||
-      String(currentHeaders[5] || '').trim() !== 'المنطقة / المكان' ||
+      String(currentHeaders[4] || '').trim() !== 'المنطقة / المكان' ||
+      String(currentHeaders[5] || '').trim() !== 'المدينة / المحافظة' ||
       String(currentHeaders[7] || '').trim() !== 'نوع المادة / الشكل الدوائي'
     ) {
       needsRewrite = true;
@@ -458,7 +517,7 @@ function setupSheet(sheet) {
         var maybeTs = String(row[13] || '').trim();
         if (!maybeRep && maybeTs) maybeRep = 'مندوب علمي';
         if (!maybeStatus) maybeStatus = 'قيد التدقيق';
-        var rebuilt14 = [invNum, formatYmd(row[1]), String(row[2] || '').trim(), phName, cityName || 'بغداد', detectAreaFromPh(phName), prName, detectDosage(prName), qtyVal, priceVal, bonusVal, lineTotalVal, totalInvVal, maybeRep, maybeStatus, maybeTs];
+        var rebuilt14 = [invNum, formatYmd(row[1]), String(row[2] || '').trim(), phName, detectAreaFromPh(phName), cityName || 'بغداد', prName, detectDosage(prName), qtyVal, priceVal, bonusVal, lineTotalVal, totalInvVal, maybeRep, maybeStatus, maybeTs];
         while (rebuilt14.length < totalCols) rebuilt14.push(row[rebuilt14.length] !== undefined ? row[rebuilt14.length] : '');
         cleanedData.push(rebuilt14);
       } else {
@@ -469,6 +528,10 @@ function setupSheet(sheet) {
           var tmp = cityM;
           cityM = areaM;
           areaM = tmp;
+          needsRewrite = true;
+        } else if (isKnownCityName(areaM) && isKnownCityName(cityM)) {
+          areaM = '';
+          needsRewrite = true;
         }
         if (!cityM) cityM = 'بغداد';
         if (!areaM || areaM === 'مركز المدينة') {
@@ -483,8 +546,8 @@ function setupSheet(sheet) {
           formatYmd(row[oldMap.invoice_date]),
           String(row[oldMap.warehouse_name] || '').trim(),
           phM,
-          cityM,
           areaM,
+          cityM,
           prodM,
           dosM,
           row[oldMap.quantity] !== undefined ? row[oldMap.quantity] : 0,
@@ -518,6 +581,259 @@ function setupSheet(sheet) {
     highlightDuplicatesInSheet(sheet);
     sheet.autoResizeColumns(1, totalCols);
   } catch (fmtErr) {}
+
+  if (!TEMPLATE_SYNC_GUARD && typeof sheet.getParent === 'function') {
+    try {
+      var pSs = sheet.getParent();
+      if (pSs && pSs.getId && pSs.getId() !== SPREADSHEET_ID && pSs.getId() !== ADMIN_USERS_SHEET_ID && pSs.getSheets().length <= 1) {
+        cloneAdminTabsAndPivotsToTarget(pSs.getId());
+      }
+    } catch (syncAutoErr) {}
+  }
+}
+
+function getColKeyByIndex(colMap, zeroBasedIdx) {
+  for (var i = 0; i < DATA_COL_KEYS.length; i++) {
+    var k = DATA_COL_KEYS[i];
+    if (colMap[k] === zeroBasedIdx) return k;
+  }
+  return '';
+}
+
+function mapAdminColToRepCol(adminCol1Based, adminColMap, repColMap, tabName) {
+  var zeroIdx = Number(adminCol1Based) - 1;
+  var key = getColKeyByIndex(adminColMap, zeroIdx);
+  if (!key) return Number(adminCol1Based);
+  if (normAr(tabName).indexOf('منطق') !== -1 && key === 'city' && repColMap.area >= 0) {
+    return repColMap.area + 1;
+  }
+  return repColMap[key] >= 0 ? (repColMap[key] + 1) : Number(adminCol1Based);
+}
+
+function copySinglePivotTable(pt, targetTab, repSourceRange, adminColMap, repColMap, tabName) {
+  var anchorA1 = 'A1';
+  try { anchorA1 = pt.getAnchorCell().getA1Notation(); } catch (e) {}
+  var newPt = targetTab.getRange(anchorA1).createPivotTable(repSourceRange);
+  var rGroups = typeof pt.getRowGroups === 'function' ? pt.getRowGroups() : [];
+  for (var rgIdx = 0; rgIdx < rGroups.length; rgIdx++) {
+    var rg = rGroups[rgIdx];
+    var targetRCol = mapAdminColToRepCol(rg.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var newRg = newPt.addRowGroup(targetRCol);
+    try { if (typeof rg.totalsAreShown === 'function') newRg.showTotals(rg.totalsAreShown()); } catch (e1) {}
+    try { if (typeof rg.areLabelsRepeated === 'function' && rg.areLabelsRepeated()) newRg.showRepeatedLabels(); } catch (e2) {}
+    try { if (typeof rg.isSortAscending === 'function') { if (rg.isSortAscending()) newRg.sortAscending(); else newRg.sortDescending(); } } catch (e3) {}
+  }
+  var cGroups = typeof pt.getColumnGroups === 'function' ? pt.getColumnGroups() : [];
+  for (var cgIdx = 0; cgIdx < cGroups.length; cgIdx++) {
+    var cg = cGroups[cgIdx];
+    var targetCCol = mapAdminColToRepCol(cg.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var newCg = newPt.addColumnGroup(targetCCol);
+    try { if (typeof cg.totalsAreShown === 'function') newCg.showTotals(cg.totalsAreShown()); } catch (e4) {}
+    try { if (typeof cg.areLabelsRepeated === 'function' && cg.areLabelsRepeated()) newCg.showRepeatedLabels(); } catch (e5) {}
+    try { if (typeof cg.isSortAscending === 'function') { if (cg.isSortAscending()) newCg.sortAscending(); else newCg.sortDescending(); } } catch (e6) {}
+  }
+  var pVals = typeof pt.getPivotValues === 'function' ? pt.getPivotValues() : [];
+  for (var pvIdx = 0; pvIdx < pVals.length; pvIdx++) {
+    var pv = pVals[pvIdx];
+    var targetVCol = mapAdminColToRepCol(pv.getSourceDataColumn(), adminColMap, repColMap, tabName);
+    var fn = typeof pv.getSummarizedBy === 'function' ? pv.getSummarizedBy() : (SpreadsheetApp.PivotTableSummarizeFunction ? SpreadsheetApp.PivotTableSummarizeFunction.SUM : 'SUM');
+    var newPv = newPt.addPivotValue(targetVCol, fn);
+    try { var dn = typeof pv.getDisplayName === 'function' ? pv.getDisplayName() : ''; if (dn) newPv.setDisplayName(dn); } catch (e7) {}
+  }
+  var pFilters = typeof pt.getFilters === 'function' ? pt.getFilters() : [];
+  for (var pfIdx = 0; pfIdx < pFilters.length; pfIdx++) {
+    var pf = pFilters[pfIdx];
+    try {
+      var targetFCol = mapAdminColToRepCol(pf.getSourceDataColumn(), adminColMap, repColMap, tabName);
+      var crit = typeof pf.getFilterCriteria === 'function' ? pf.getFilterCriteria() : null;
+      if (crit) newPt.addFilter(targetFCol, crit);
+    } catch (e8) {}
+  }
+  return newPt;
+}
+
+function ensureSheetMinRows(sheet, minRows) {
+  var targetMin = minRows || 1000;
+  var curMax = typeof sheet.getMaxRows === 'function' ? sheet.getMaxRows() : Math.max(sheet.getLastRow() + 50, targetMin);
+  if (typeof sheet.getMaxRows === 'function' && curMax < targetMin && typeof sheet.insertRowsAfter === 'function' && curMax > 0) {
+    try {
+      sheet.insertRowsAfter(curMax, targetMin - curMax);
+      curMax = sheet.getMaxRows();
+    } catch (e) {}
+  }
+  return Math.max(1, curMax);
+}
+
+function fixAdminAreaPivotIfNeeded(adminSs, adminDataSheet) {
+  if (!adminSs || !adminDataSheet) return;
+  var sheets = adminSs.getSheets();
+  var adminHeaders = adminDataSheet.getLastRow() > 0 ? adminDataSheet.getRange(1, 1, 1, Math.max(16, adminDataSheet.getLastColumn())).getValues()[0] : getExpectedCols(adminDataSheet);
+  var colMap = resolveColMap(adminHeaders);
+  var maxRows = ensureSheetMinRows(adminDataSheet, 1000);
+  var srcRange = adminDataSheet.getRange(1, 1, maxRows, adminHeaders.length);
+  for (var i = 0; i < sheets.length; i++) {
+    var tab = sheets[i];
+    if (normAr(tab.getName()).indexOf('منطق') === -1) continue;
+    var pts = typeof tab.getPivotTables === 'function' ? tab.getPivotTables() : [];
+    if (pts.length === 0) continue;
+    var pt0 = pts[0];
+    var rGroups = typeof pt0.getRowGroups === 'function' ? pt0.getRowGroups() : [];
+    if (rGroups.length > 0 && colMap.area >= 0 && rGroups[0].getSourceDataColumn() !== colMap.area + 1) {
+      var anchorA1 = 'A1';
+      try { anchorA1 = pt0.getAnchorCell().getA1Notation(); } catch (e) {}
+      var colGroups = typeof pt0.getColumnGroups === 'function' ? pt0.getColumnGroups() : [];
+      var vals = typeof pt0.getPivotValues === 'function' ? pt0.getPivotValues() : [];
+      var filts = typeof pt0.getFilters === 'function' ? pt0.getFilters() : [];
+      var snapRg = [];
+      for (var ri = 0; ri < rGroups.length; ri++) {
+        snapRg.push({
+          col: mapAdminColToRepCol(rGroups[ri].getSourceDataColumn(), colMap, colMap, tab.getName()),
+          totals: typeof rGroups[ri].totalsAreShown === 'function' ? rGroups[ri].totalsAreShown() : true,
+          repeat: typeof rGroups[ri].areLabelsRepeated === 'function' ? rGroups[ri].areLabelsRepeated() : false,
+          sortAsc: typeof rGroups[ri].isSortAscending === 'function' ? rGroups[ri].isSortAscending() : null
+        });
+      }
+      var snapCg = [];
+      for (var ci = 0; ci < colGroups.length; ci++) {
+        snapCg.push({
+          col: mapAdminColToRepCol(colGroups[ci].getSourceDataColumn(), colMap, colMap, tab.getName()),
+          totals: typeof colGroups[ci].totalsAreShown === 'function' ? colGroups[ci].totalsAreShown() : true
+        });
+      }
+      var snapVal = [];
+      for (var vi = 0; vi < vals.length; vi++) {
+        snapVal.push({ col: mapAdminColToRepCol(vals[vi].getSourceDataColumn(), colMap, colMap, tab.getName()), fn: typeof vals[vi].getSummarizedBy === 'function' ? vals[vi].getSummarizedBy() : 'SUM', dn: typeof vals[vi].getDisplayName === 'function' ? vals[vi].getDisplayName() : '' });
+      }
+      var snapFilt = [];
+      for (var fi = 0; fi < filts.length; fi++) {
+        try {
+          var critF = typeof filts[fi].getFilterCriteria === 'function' ? filts[fi].getFilterCriteria() : null;
+          if (critF) snapFilt.push({ col: mapAdminColToRepCol(filts[fi].getSourceDataColumn(), colMap, colMap, tab.getName()), crit: critF });
+        } catch (fe) {}
+      }
+      tab.clear();
+      var rebuilt = tab.getRange(anchorA1).createPivotTable(srcRange);
+      for (var si = 0; si < snapRg.length; si++) {
+        var ng = rebuilt.addRowGroup(snapRg[si].col);
+        try { ng.showTotals(snapRg[si].totals); } catch (e1) {}
+        try { if (snapRg[si].repeat) ng.showRepeatedLabels(); } catch (e1b) {}
+        try { if (snapRg[si].sortAsc === true) ng.sortAscending(); else if (snapRg[si].sortAsc === false) ng.sortDescending(); } catch (e1c) {}
+      }
+      for (var sc = 0; sc < snapCg.length; sc++) {
+        var nc = rebuilt.addColumnGroup(snapCg[sc].col);
+        try { nc.showTotals(snapCg[sc].totals); } catch (e1d) {}
+      }
+      for (var sv = 0; sv < snapVal.length; sv++) {
+        var nv = rebuilt.addPivotValue(snapVal[sv].col, snapVal[sv].fn);
+        try { if (snapVal[sv].dn) nv.setDisplayName(snapVal[sv].dn); } catch (e2) {}
+      }
+      for (var sf = 0; sf < snapFilt.length; sf++) {
+        try { rebuilt.addFilter(snapFilt[sf].col, snapFilt[sf].crit); } catch (e3) {}
+      }
+      try { if (typeof SpreadsheetApp.flush === 'function') SpreadsheetApp.flush(); } catch (e4) {}
+    }
+  }
+}
+
+function cloneAdminTabsAndPivotsToTarget(targetSpreadsheetId) {
+  if (TEMPLATE_SYNC_GUARD) return { synced: false, tabsCount: 0, pivotsCount: 0 };
+  TEMPLATE_SYNC_GUARD = true;
+  try {
+    var adminSs = getTargetSpreadsheet(SPREADSHEET_ID);
+    var targetId = extractSheetIdFromUrl(targetSpreadsheetId) || String(targetSpreadsheetId || '').trim();
+    if (!adminSs || !targetId || targetId === ADMIN_USERS_SHEET_ID) {
+      return { synced: false, tabsCount: 0, pivotsCount: 0 };
+    }
+    var adminDataSheet = findInvoiceDataSheet(adminSs);
+    if (!adminDataSheet) return { synced: false, tabsCount: 0, pivotsCount: 0 };
+
+    setupSheet(adminDataSheet);
+    fixAdminAreaPivotIfNeeded(adminSs, adminDataSheet);
+
+    if (targetId === SPREADSHEET_ID) {
+      return { synced: true, tabsCount: adminSs.getSheets().length, pivotsCount: 0 };
+    }
+
+    var targetSs = null;
+    try { targetSs = SpreadsheetApp.openById(targetId); } catch (openErr) { targetSs = null; }
+    if (!targetSs || isUsersSheetObj(targetSs.getSheets()[0])) {
+      return { synced: false, tabsCount: 0, pivotsCount: 0 };
+    }
+
+    var targetDataSheet = findInvoiceDataSheet(targetSs);
+    if (!targetDataSheet) targetDataSheet = targetSs.insertSheet('الفواتير');
+    setupSheet(targetDataSheet);
+
+    var adminHeaders = getExpectedCols(adminDataSheet);
+    var repHeaders = getExpectedCols(targetDataSheet);
+    if (adminHeaders.length > repHeaders.length) {
+      for (var eh = repHeaders.length; eh < adminHeaders.length; eh++) {
+        repHeaders.push(adminHeaders[eh]);
+        targetDataSheet.getRange(1, eh + 1).setValue(adminHeaders[eh]).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      }
+    }
+
+    var adminColMap = resolveColMap(adminHeaders);
+    var repColMap = resolveColMap(repHeaders);
+    var repMaxRows = ensureSheetMinRows(targetDataSheet, Math.max(targetDataSheet.getLastRow() + 50, 1000));
+    var repSourceRange = targetDataSheet.getRange(1, 1, repMaxRows, repHeaders.length);
+
+    var adminDataName = adminDataSheet.getName();
+    var repDataName = targetDataSheet.getName();
+    var adminSheets = adminSs.getSheets();
+    var tabsCount = 0;
+    var pivotsCount = 0;
+
+    for (var sIdx = 0; sIdx < adminSheets.length; sIdx++) {
+      var s = adminSheets[sIdx];
+      var sName = String(s.getName() || '').trim();
+      if (sName === adminDataName || isUsersSheetObj(s)) continue;
+
+      var targetTab = targetSs.getSheetByName(sName) || targetSs.insertSheet(sName);
+      try { targetTab.setRightToLeft(true); } catch (rtlErr) {}
+      try { var tc = typeof s.getTabColor === 'function' ? s.getTabColor() : null; if (tc) targetTab.setTabColor(tc); } catch (tcErr) {}
+
+      var adminPts = typeof s.getPivotTables === 'function' ? s.getPivotTables() : [];
+      if (adminPts.length > 0) {
+        targetTab.clear();
+        for (var ptIdx = 0; ptIdx < adminPts.length; ptIdx++) {
+          copySinglePivotTable(adminPts[ptIdx], targetTab, repSourceRange, adminColMap, repColMap, sName);
+          pivotsCount++;
+        }
+      } else {
+        targetTab.clear();
+        var lr = s.getLastRow();
+        var lc = s.getLastColumn();
+        if (lr > 0 && lc > 0) {
+          var srcRng = s.getRange(1, 1, lr, lc);
+          var vals = srcRng.getValues();
+          var forms = typeof srcRng.getFormulas === 'function' ? srcRng.getFormulas() : [];
+          var destRng = targetTab.getRange(1, 1, lr, lc);
+          var mergedOut = [];
+          var escAdmin = adminDataName.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+          var refRegex = new RegExp("('?" + escAdmin + "'?)!", 'g');
+          for (var rr = 0; rr < lr; rr++) {
+            var lineOut = [];
+            for (var cc = 0; cc < lc; cc++) {
+              var f = (forms[rr] && forms[rr][cc]) ? String(forms[rr][cc]) : '';
+              if (f && f.charAt(0) === '=') {
+                lineOut.push(f.replace(refRegex, "'" + repDataName + "'!"));
+              } else {
+                lineOut.push(vals[rr][cc]);
+              }
+            }
+            mergedOut.push(lineOut);
+          }
+          destRng.setValues(mergedOut);
+          try { targetTab.autoResizeColumns(1, lc); } catch (rcErr) {}
+        }
+      }
+      tabsCount++;
+    }
+    return { synced: true, tabsCount: tabsCount, pivotsCount: pivotsCount };
+  } finally {
+    TEMPLATE_SYNC_GUARD = false;
+  }
 }
 
 function groupSheetRowsSafe(data, colMap) {
@@ -629,12 +945,10 @@ function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, ta
       if (isMatch) matchingGroups.push(grp);
     }
 
-    // قاعدة حماية مطلقة: عند حذف المكررة، لا نحذف أبداً إذا بقيت نسخة واحدة فقط!
     if (matchingGroups.length <= 1) {
       return 0;
     }
 
-    // نختار نسخة زائدة واحدة فقط (ونُبقي النسخة رقم 0 الأصلية دائماً)
     var chosenGroup = matchingGroups[matchingGroups.length - 1];
     if (targetTs) {
       for (var k = 1; k < matchingGroups.length; k++) {
@@ -699,14 +1013,15 @@ function doPost(e) {
     var payload = JSON.parse(e.postData.contents);
     var actionName = String(payload.action || '').trim();
 
-    // ── إدارة قاعدة بيانات المستخدمين على الشيت الرئيسي ──
     if (actionName === 'register_user' || actionName === 'add_user' || actionName === 'upsert_user' || actionName === 'seed_users') {
       var usersSheet = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
       if (!usersSheet) {
         return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي للمستخدمين' })).setMimeType(ContentService.MimeType.JSON);
       }
-      var headersU = usersSheet.getRange(1, 1, 1, Math.max(4, usersSheet.getLastColumn())).getValues()[0];
+      var ensureGemColIdx = ensureMasterGeminiColumn(usersSheet);
+      var headersU = usersSheet.getRange(1, 1, 1, Math.max(5, usersSheet.getLastColumn())).getValues()[0];
       var uMap = resolveUserColMap(headersU);
+      if (uMap.geminiCol < 0) uMap.geminiCol = ensureGemColIdx;
       var incomingUsers = payload.users || (payload.user ? [payload.user] : []);
       var currentUsers = readAllSheetUsers(usersSheet);
       var existingSharedGem = '';
@@ -733,7 +1048,7 @@ function doPost(e) {
           }
           continue;
         }
-        var totalUCols = Math.max(4, headersU.length);
+        var totalUCols = Math.max(5, headersU.length);
         var uRow = [];
         for (var k = 0; k < totalUCols; k++) uRow.push('');
         uRow[uMap.nameCol] = uName || uEmail.split('@')[0];
@@ -751,15 +1066,19 @@ function doPost(e) {
         if (!/^[1-9]\\d*$/.test(uPass)) {
           try { usersSheet.getRange(newRowIndex, uMap.passCol + 1).setNumberFormat('@').setValue(uPass); } catch (nfErr) {}
         }
+        var newUserSheetId = extractSheetIdFromUrl(u.sheet_url || u.sheet_id);
+        if (newUserSheetId) {
+          try { cloneAdminTabsAndPivotsToTarget(newUserSheetId); } catch (tErr) {}
+        }
         currentUsers.push({ full_name: uName, email: uEmail });
         inserted++;
       }
-      try { usersSheet.autoResizeColumns(1, Math.max(4, headersU.length)); } catch (ue) {}
+      try { usersSheet.autoResizeColumns(1, Math.max(5, headersU.length)); } catch (ue) {}
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
         script_version: SCRIPT_VERSION,
         inserted: inserted,
-        message: 'تم حفظ المستخدم بنجاح في الشيت الرئيسي.'
+        message: 'تم حفظ المستخدم وتجهيز شيته بنفس أوراق الأدمن في الشيت الرئيسي بنجاح.'
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -769,31 +1088,90 @@ function doPost(e) {
         return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
       }
       var gemKeyVal = String(payload.gemini_api_key || payload.geminiApiKey || '').trim();
-      var lastColG = Math.max(4, usersSheetGem.getLastColumn());
-      var headersGem = usersSheetGem.getRange(1, 1, 1, lastColG).getValues()[0];
-      var uMapGem = resolveUserColMap(headersGem);
-      var targetGemCol = uMapGem.geminiCol;
-      if (targetGemCol < 0) {
-        targetGemCol = 4;
-        for (var gc = 0; gc < headersGem.length; gc++) {
-          if (gc >= 4 && !String(headersGem[gc] || '').trim()) { targetGemCol = gc; break; }
-          if (gc === headersGem.length - 1 && String(headersGem[gc] || '').trim()) { targetGemCol = headersGem.length; }
-        }
-        if (targetGemCol < 4) targetGemCol = 4;
-        usersSheetGem.getRange(1, targetGemCol + 1).setValue('اي بي اي جمناي').setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+      var targetGemCol = ensureMasterGeminiColumn(usersSheetGem);
+      propagateGeminiKeyToAllUserRows(usersSheetGem, targetGemCol, gemKeyVal);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        gemini_api_key: gemKeyVal,
+        message: 'تم تحديث مفتاح Gemini في العمود E وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح!'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'unify_admin_webhook') {
+      var usersSheetUni = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheetUni) {
+        return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
       }
-      var lastRowGem = usersSheetGem.getLastRow();
-      for (var gr = 2; gr <= lastRowGem; gr++) {
-        var rowNameG = String(usersSheetGem.getRange(gr, uMapGem.nameCol + 1).getValue() || '').trim();
-        if (rowNameG) {
-          usersSheetGem.getRange(gr, targetGemCol + 1).setValue(gemKeyVal);
+      ensureMasterGeminiColumn(usersSheetUni);
+      var headersUni = usersSheetUni.getRange(1, 1, 1, Math.max(5, usersSheetUni.getLastColumn())).getValues()[0];
+      var uMapUni = resolveUserColMap(headersUni);
+      var centralUrl = String(payload.centralWebhookUrl || payload.webhookUrl || '').trim();
+      var clearNonAdmin = String(payload.mode || '') === 'clear';
+      var lastRowUni = usersSheetUni.getLastRow();
+      var updatedUni = 0;
+      for (var ur = 2; ur <= lastRowUni; ur++) {
+        var rNameU = String(usersSheetUni.getRange(ur, uMapUni.nameCol + 1).getValue() || '').trim();
+        if (!rNameU) continue;
+        var valToWrite = clearNonAdmin && !isBaqerName(rNameU, '') ? '' : centralUrl;
+        usersSheetUni.getRange(ur, uMapUni.webhookCol + 1).setValue(valToWrite);
+        updatedUni++;
+      }
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        updated: updatedUni,
+        message: 'تم توحيد رابط السكربت المركزي لـ ' + updatedUni + ' حساب في الشيت الرئيسي بنجاح!'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (actionName === 'sync_template_to_all') {
+      var adminDataOnly = findInvoiceDataSheet(getTargetSpreadsheet(SPREADSHEET_ID));
+      if (adminDataOnly) {
+        setupSheet(adminDataOnly);
+        fixAdminAreaPivotIfNeeded(getTargetSpreadsheet(SPREADSHEET_ID), adminDataOnly);
+      }
+      var targetIds = [];
+      if (payload.targetSpreadsheetId) {
+        var singleTId = extractSheetIdFromUrl(payload.targetSpreadsheetId);
+        if (singleTId) targetIds.push(singleTId);
+      } else {
+        var usersSheetTpl = getOrCreateUsersSheet(payload.adminSpreadsheetId || ADMIN_USERS_SHEET_ID);
+        var uListTpl = readAllSheetUsers(usersSheetTpl);
+        for (var ui2 = 0; ui2 < uListTpl.length; ui2++) {
+          var sidRep = extractSheetIdFromUrl(uListTpl[ui2].sheet_id);
+          if (sidRep && sidRep !== SPREADSHEET_ID && targetIds.indexOf(sidRep) === -1) {
+            targetIds.push(sidRep);
+          }
+        }
+        if (Array.isArray(payload.targetIds)) {
+          for (var ti = 0; ti < payload.targetIds.length; ti++) {
+            var extraSid = extractSheetIdFromUrl(payload.targetIds[ti]);
+            if (extraSid && extraSid !== SPREADSHEET_ID && targetIds.indexOf(extraSid) === -1) {
+              targetIds.push(extraSid);
+            }
+          }
+        }
+      }
+      var syncResults = [];
+      var syncedCount = 0;
+      for (var sLoop = 0; sLoop < targetIds.length; sLoop++) {
+        var curSid = targetIds[sLoop];
+        try {
+          var resClone = cloneAdminTabsAndPivotsToTarget(curSid);
+          if (resClone.synced) syncedCount++;
+          syncResults.push({ sheetId: curSid, ok: resClone.synced, tabsCount: resClone.tabsCount, pivotsCount: resClone.pivotsCount });
+        } catch (repErr) {
+          syncResults.push({ sheetId: curSid, ok: false, error: String(repErr) });
         }
       }
       return ContentService.createTextOutput(JSON.stringify({
         success: true,
         script_version: SCRIPT_VERSION,
-        gemini_api_key: gemKeyVal,
-        message: 'تم تحديث مفتاح Gemini وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح!'
+        updatedSheets: syncedCount,
+        totalTargets: targetIds.length,
+        results: syncResults,
+        message: 'تمت مزامنة أوراق و Pivot Tables الأدمن مع (' + syncedCount + ' / ' + targetIds.length + ') شيتات بنجاح!'
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -802,9 +1180,11 @@ function doPost(e) {
       if (!usersSheetUpd) {
         return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح الشيت الرئيسي' })).setMimeType(ContentService.MimeType.JSON);
       }
+      var ensuredUpdGemCol = ensureMasterGeminiColumn(usersSheetUpd);
       var dataUpd = usersSheetUpd.getDataRange().getValues();
       var headersUpd = dataUpd[0] || [];
       var uMapUpd = resolveUserColMap(headersUpd);
+      if (uMapUpd.geminiCol < 0) uMapUpd.geminiCol = ensuredUpdGemCol;
       var targetRow = findUserRowIndex(dataUpd, uMapUpd, payload.rowNumber, payload.currentName || payload.username, payload.email);
       if (targetRow === -1) {
         return ContentService.createTextOutput(JSON.stringify({ success: false, script_version: SCRIPT_VERSION, error: 'المستخدم غير موجود في الشيت الرئيسي.' })).setMimeType(ContentService.MimeType.JSON);
@@ -828,7 +1208,12 @@ function doPost(e) {
         }
       }
       if (payload.newSheetUrl !== undefined) {
-        usersSheetUpd.getRange(targetRow, uMapUpd.sheetCol + 1).setValue(String(payload.newSheetUrl).trim());
+        var cleanUrlStr = String(payload.newSheetUrl).trim();
+        usersSheetUpd.getRange(targetRow, uMapUpd.sheetCol + 1).setValue(cleanUrlStr);
+        var updatedSid = extractSheetIdFromUrl(cleanUrlStr);
+        if (updatedSid && updatedSid !== SPREADSHEET_ID) {
+          try { cloneAdminTabsAndPivotsToTarget(updatedSid); } catch (uSyncErr) {}
+        }
       }
       if (payload.newWebhookUrl !== undefined) {
         usersSheetUpd.getRange(targetRow, uMapUpd.webhookCol + 1).setValue(String(payload.newWebhookUrl).trim());
@@ -871,8 +1256,18 @@ function doPost(e) {
 
     if (actionName === 'repair' || actionName === 'setup') {
       highlightDuplicatesInSheet(sheet);
+      var targetForSync = extractSheetIdFromUrl(payload.spreadsheetId) || SPREADSHEET_ID;
+      var syncTplRes = { synced: false, tabsCount: 0, pivotsCount: 0 };
+      try { syncTplRes = cloneAdminTabsAndPivotsToTarget(targetForSync); } catch (reSyncErr) {}
       try { sheet.autoResizeColumns(1, Math.max(16, sheet.getLastColumn())); } catch (errR) {}
-      return ContentService.createTextOutput(JSON.stringify({ success: true, script_version: SCRIPT_VERSION, message: 'تم إصلاح الأعمدة المزاحة وفحص وتلوين التكرار في كوكل شيت بنجاح!' })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        templateSynced: syncTplRes.synced,
+        tabsCount: syncTplRes.tabsCount,
+        pivotsCount: syncTplRes.pivotsCount,
+        message: 'تم توحيد الأعمدة (المنطقة قبل المدينة) واستنساخ أوراق الأدمن و Pivot Tables بنجاح!'
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     if (actionName === 'delete_invoice') {
@@ -957,7 +1352,7 @@ function doPost(e) {
     try { sheet.autoResizeColumns(1, totalCols); } catch (resizeErr) {}
     return ContentService.createTextOutput(JSON.stringify({
       success: true, script_version: SCRIPT_VERSION, added: addedCount, updated: updatedCount,
-      message: 'تم إدراج ' + addedCount + ' سطراً جديداً بترتيب الأعمدة الكامل بنجاح.'
+      message: 'تم إدراج ' + addedCount + ' سطراً جديداً بترتيب الأعمدة الموحّد بنجاح.'
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
@@ -966,8 +1361,25 @@ function doPost(e) {
 
 function onEdit(e) {
   try {
-    var sheet = getTargetSheet();
-    if (sheet && !isUsersSheetObj(sheet)) highlightDuplicatesInSheet(sheet);
+    var activeSheet = (e && e.range && typeof e.range.getSheet === 'function') ? e.range.getSheet() : null;
+    if (activeSheet && isUsersSheetObj(activeSheet)) {
+      var lastC = Math.max(5, activeSheet.getLastColumn());
+      var headersU = activeSheet.getRange(1, 1, 1, lastC).getValues()[0];
+      var uMap = resolveUserColMap(headersU);
+      var editedCol = (e && e.range && typeof e.range.getColumn === 'function') ? (e.range.getColumn() - 1) : -1;
+      if (editedCol >= 4 && (uMap.geminiCol === editedCol || uMap.geminiCol < 0)) {
+        var gCol = ensureMasterGeminiColumn(activeSheet, editedCol);
+        var editedVal = String(e.range.getValue() || '').trim();
+        if (editedVal && /^(AIza|AQ\\.)/.test(editedVal)) {
+          propagateGeminiKeyToAllUserRows(activeSheet, gCol, editedVal);
+        }
+      }
+      return;
+    }
+    var sheet = activeSheet || getTargetSheet();
+    if (sheet && !isUsersSheetObj(sheet) && !sheetHasPivotTables(sheet)) {
+      highlightDuplicatesInSheet(sheet);
+    }
   } catch (err) {}
 }
 
@@ -1016,8 +1428,8 @@ function doGet(e) {
         invoice_date:   invDate,
         warehouse_name: String(row[colMap.warehouse_name] || ''),
         pharmacy_name:  phName,
-        city:           colMap.city >= 0 ? String(row[colMap.city] || 'بغداد') : 'بغداد',
         area:           colMap.area >= 0 ? String(row[colMap.area] || '') : detectAreaFromPh(phName),
+        city:           colMap.city >= 0 ? String(row[colMap.city] || 'بغداد') : 'بغداد',
         product_name:   prNameGet,
         dosage_form:    colMap.dosage_form >= 0 ? String(row[colMap.dosage_form] || '') : detectDosage(prNameGet),
         quantity:       Number(row[colMap.quantity] || 0),
@@ -1046,9 +1458,11 @@ function doGet(e) {
 
 function testRun() {
   var uSheet = getOrCreateUsersSheet(ADMIN_USERS_SHEET_ID);
-  var sheet = getTargetSheet();
-  if (sheet && !isUsersSheetObj(sheet)) {
-    setupSheet(sheet);
+  if (uSheet) ensureMasterGeminiColumn(uSheet);
+  var adminSheet = getTargetSheet(SPREADSHEET_ID);
+  if (adminSheet && !isUsersSheetObj(adminSheet)) {
+    setupSheet(adminSheet);
+    try { fixAdminAreaPivotIfNeeded(getTargetSpreadsheet(SPREADSHEET_ID), adminSheet); } catch (e) {}
   }
   Logger.log('تم التحقق من الجداول والترقية بنجاح (v' + SCRIPT_VERSION + ').');
 }`;

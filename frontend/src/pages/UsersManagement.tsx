@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api, getAdminWebhookUrl, setAdminWebhookUrl } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
-import { AdminSheetUser, ADMIN_SHEET_URL, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
-import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
+import { AdminSheetUser, ADMIN_SHEET_URL, DEFAULT_APPS_SCRIPT_URL, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
+import { APPS_SCRIPT_V2_CODE, APPS_SCRIPT_THIN_WRAPPER } from '../utils/appsScriptTemplate';
 import {
   Users, Plus, RefreshCw, ExternalLink, ShieldCheck,
   AlertCircle, CheckCircle2, Copy, Check, FileSpreadsheet,
@@ -27,6 +27,9 @@ export const UsersManagement: React.FC = () => {
   const [sharedGeminiKeyInput, setSharedGeminiKeyInput] = useState('');
   const [showSharedGeminiKey, setShowSharedGeminiKey] = useState(false);
   const [savingGeminiKey, setSavingGeminiKey] = useState(false);
+  const [syncingTemplates, setSyncingTemplates] = useState(false);
+  const [unifyingWebhook, setUnifyingWebhook] = useState(false);
+  const [copiedThinWrapper, setCopiedThinWrapper] = useState(false);
 
   // Add Modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -101,6 +104,47 @@ export const UsersManagement: React.FC = () => {
     navigator.clipboard.writeText(APPS_SCRIPT_V2_CODE);
     setCopiedScript(true);
     setTimeout(() => setCopiedScript(false), 2500);
+  };
+
+  const handleCopyThinWrapper = () => {
+    navigator.clipboard.writeText(APPS_SCRIPT_THIN_WRAPPER);
+    setCopiedThinWrapper(true);
+    setTimeout(() => setCopiedThinWrapper(false), 2500);
+  };
+
+  const handleSyncTemplatesToAll = async () => {
+    setSyncingTemplates(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminSyncTemplateToAllSheets();
+      setSuccessMsg(res.message || 'تمت مزامنة أوراق و Pivot Tables شيت الأدمن لجميع الشيتات بنجاح ✅');
+      await loadUsers();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر مزامنة أوراق و Pivot Tables الأدمن لجميع الشيتات');
+    } finally {
+      setSyncingTemplates(false);
+    }
+  };
+
+  const handleUnifyWebhookAll = async () => {
+    const centralUrl = adminWebhookInput.trim() || DEFAULT_APPS_SCRIPT_URL;
+    const confirmed = window.confirm(
+      `⚡ توحيد السكربت المركزي للجميع:\n\nسيتم كتابة رابط سكربت الأدمن المركزي التالي في عمود (D: اي بي اي سكربت) لجميع الحسابات في الشيت الرئيسي لكي ينعكس أي تعديل تقومي به عند الأدمن على الجميع فوراً:\n\n${centralUrl}\n\nهل تريد المتابعة؟`
+    );
+    if (!confirmed) return;
+    setUnifyingWebhook(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminUnifyWebhookUrl(centralUrl, 'set');
+      setSuccessMsg(res.message || 'تم توحيد رابط سكربت الأدمن المركزي لجميع الحسابات بنجاح ⚡');
+      await loadUsers();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر توحيد رابط السكربت المركزي لجميع المستخدمين');
+    } finally {
+      setUnifyingWebhook(false);
+    }
   };
 
   const handleAddUserSubmit = async (e: React.FormEvent) => {
@@ -272,10 +316,10 @@ export const UsersManagement: React.FC = () => {
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ fontWeight: 900, color: '#92400e', fontSize: '0.94rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <AlertTriangle size={18} style={{ color: '#d97706' }} />
-                ترقية سكربت الشيت الرئيسي إلى الإصدار 8 (v8)
+                ترقية سكربت الأدمن المركزي إلى الإصدار 9 (v9)
               </div>
               <div style={{ fontSize: '0.78rem', color: '#78350f', marginTop: 4, lineHeight: 1.55 }}>
-                لكي يتمكن الأدمن من تحديث مفتاح Gemini الموحد (العمود E: <strong>اي بي اي جمناي</strong>) وحل قراءة جميع الرموز السرية (مثل <code>keko3</code>) وإدارة الشيت الرئيسي (5 أعمدة)، انسخ كود <strong>Apps Script v8</strong> أدناه وانشره كإصدار جديد.
+                يدعم الإصدار <strong>v9</strong> عكس وتوحيد العمود E (<strong>المنطقة / المكان</strong>) قبل F (<strong>المدينة / المحافظة</strong>)، واستنساخ أوراق و Pivot Tables الأدمن لجميع الشيتات، والتوجيه المركزي الموحد للجميع، ومفتاح Gemini في العمود E مع التعميم الفوري عند التعديل اليدوي.
               </div>
             </div>
             <button
@@ -285,11 +329,48 @@ export const UsersManagement: React.FC = () => {
               style={{ fontWeight: 800, background: '#d97706', borderColor: '#b45309' }}
             >
               {copiedScript ? <Check size={15} /> : <Copy size={15} />}
-              {copiedScript ? 'تم نسخ كود v8!' : 'نسخ كود Apps Script v8'}
+              {copiedScript ? 'تم نسخ كود v9!' : 'نسخ كود Apps Script v9'}
             </button>
           </div>
         </div>
       )}
+
+      {/* بطاقة مركزية السكربت وتعميم أوراق و Pivot Tables الأدمن */}
+      <div className="card" style={{ padding: '1.1rem 1.2rem', border: '1.5px solid #bae6fd', background: 'linear-gradient(135deg, #f8fafc, #ecfeff)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ flex: '1 1 280px' }}>
+            <h4 style={{ fontWeight: 800, margin: '0 0 0.25rem 0', color: '#0c4a6e', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Sparkles size={18} style={{ color: '#0284c7' }} />
+              توحيد القوالب (Pivot Tables) والسكربت المركزي لجميع الشيتات (v9)
+            </h4>
+            <p style={{ fontSize: '0.78rem', color: '#0369a1', margin: 0, lineHeight: 1.55 }}>
+              أي ورقة أو Pivot Table تعدّه في شيت الأدمن يمكنك تعميمه لجميع المندوبين بضغطة واحدة، كما يتيح توحيد رابط السكربت في العمود D إدارة وتحديث الكود للجميع من مشروع الأدمن فقط.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleSyncTemplatesToAll}
+              disabled={syncingTemplates || saving}
+              className="btn-clay btn-primary btn-sm"
+              style={{ fontWeight: 800, background: '#0284c7', borderColor: '#0369a1' }}
+            >
+              <RefreshCw size={15} className={syncingTemplates ? 'animate-spin' : ''} />
+              {syncingTemplates ? 'جارِ التعميم...' : '🔄 استنساخ أوراق و Pivot Tables الأدمن لجميع الشيتات'}
+            </button>
+            <button
+              type="button"
+              onClick={handleUnifyWebhookAll}
+              disabled={unifyingWebhook || saving}
+              className="btn-clay btn-secondary btn-sm"
+              style={{ fontWeight: 800 }}
+            >
+              <Sparkles size={15} className={unifyingWebhook ? 'animate-spin' : ''} />
+              {unifyingWebhook ? 'جارِ التوحيد...' : '⚡ توحيد عمود D على سكربت الأدمن المركزي للجميع'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* بطاقة مفتاح Google Gemini API الموحد في الشيت الرئيسي */}
       <div className="card" style={{ padding: '1.15rem 1.2rem', border: '1.5px solid #c7d2fe', background: 'linear-gradient(135deg, #f8fafc, #eef2ff)' }}>
@@ -493,7 +574,7 @@ export const UsersManagement: React.FC = () => {
             className="btn-clay btn-secondary btn-sm"
             style={{ fontWeight: 700 }}
           >
-            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v8' : 'عرض كود Apps Script v8'}
+            <Sparkles size={14} /> {showScriptCode ? 'إخفاء كود v9' : 'عرض كود Apps Script v9'}
           </button>
         </form>
 
@@ -501,11 +582,11 @@ export const UsersManagement: React.FC = () => {
           <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 12, padding: '1rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
               <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#1e293b' }}>
-                الصق هذا الكود في Extensions ← Apps Script ثم Deploy ← Manage deployments ← Edit ← New version
+                الصق هذا الكود في شيت الأدمن (Extensions ← Apps Script) ثم Deploy ← Manage deployments ← Edit ← New version
               </span>
               <button type="button" onClick={handleCopyScript} className="btn-clay btn-primary btn-sm" style={{ fontWeight: 700 }}>
                 {copiedScript ? <Check size={14} /> : <Copy size={14} />}
-                {copiedScript ? 'تم النسخ!' : 'نسخ الكود بالكامل'}
+                {copiedScript ? 'تم النسخ!' : 'نسخ الكود المركزي v9 بالكامل'}
               </button>
             </div>
             <pre style={{
@@ -522,6 +603,30 @@ export const UsersManagement: React.FC = () => {
             }}>
               {APPS_SCRIPT_V2_CODE}
             </pre>
+
+            <div style={{ marginTop: '0.85rem', paddingTop: '0.85rem', borderTop: '1px dashed #cbd5e1' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.45rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.77rem', fontWeight: 800, color: '#334155' }}>
+                  غلاف المكتبة الثابت لشيتات المندوبين (AdminLib — وضع HEAD) لتحديث دوال onEdit داخل كل شيت تلقائياً:
+                </span>
+                <button type="button" onClick={handleCopyThinWrapper} className="btn-clay btn-secondary btn-sm" style={{ fontWeight: 700 }}>
+                  {copiedThinWrapper ? <Check size={14} /> : <Copy size={14} />}
+                  {copiedThinWrapper ? 'تم نسخ الغلاف!' : 'نسخ الغلاف المختصر (4 أسطر)'}
+                </button>
+              </div>
+              <pre style={{
+                background: '#1e293b',
+                color: '#a7f3d0',
+                padding: '0.75rem',
+                borderRadius: 8,
+                fontSize: '0.72rem',
+                direction: 'ltr',
+                textAlign: 'left',
+                margin: 0
+              }}>
+                {APPS_SCRIPT_THIN_WRAPPER}
+              </pre>
+            </div>
           </div>
         )}
       </div>

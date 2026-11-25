@@ -85,8 +85,7 @@ export const getSavedWebhookUrl = (): string => {
     const perUser = localStorage.getItem(`pharma_webhook_url::${user.id}`) || '';
     if (perUser.trim()) return perUser.trim();
     if (user.webhook_url && user.webhook_url.trim()) return user.webhook_url.trim();
-    if (user.role === 'admin') return DEFAULT_WEBHOOK_URL;
-    return '';
+    return getAdminWebhookUrl() || DEFAULT_WEBHOOK_URL;
   }
   return '';
 };
@@ -823,11 +822,11 @@ async function fetchAdminSheetUsersInBrowser(): Promise<AdminSheetUser[]> {
 /**
  * إرسال أمر تعديل / إضافة / حذف إلى Apps Script Webhook بدون CORS preflight
  */
-async function sendWebhookCommand(webhookUrl: string, bodyObj: Record<string, any>): Promise<{ sent: boolean; parsed?: any; opaque?: boolean }> {
+async function sendWebhookCommand(webhookUrl: string, bodyObj: Record<string, any>, timeoutMs = 12000): Promise<{ sent: boolean; parsed?: any; opaque?: boolean }> {
   const body = JSON.stringify(bodyObj);
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -838,7 +837,10 @@ async function sendWebhookCommand(webhookUrl: string, bodyObj: Record<string, an
     let parsed: any = null;
     try { parsed = JSON.parse(txt); } catch { /* ignore non-JSON */ }
     return { sent: true, parsed };
-  } catch {
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error('انتهت مهلة الانتظار للاستجابة من Google Apps Script — تحقق من اكتمال العملية في الشيت.');
+    }
     // في حال حظر CORS قراءة الاستجابة فقط، نرسل بـ no-cors ثم نتحقق لاحقاً عبر GViz
     await fetch(webhookUrl, {
       method: 'POST',
@@ -2514,7 +2516,7 @@ export const api = {
             ...sr,
             cells: [
               sr.invoice_number, sr.invoice_date, sr.warehouse_name, sr.pharmacy_name,
-              sr.city, sr.area, sr.product_name, sr.dosage_form,
+              sr.area, sr.city, sr.product_name, sr.dosage_form,
               String(sr.quantity), String(sr.unit_price), String(sr.bonus_quantity), String(sr.line_total),
               String(sr.total_invoice), sr.rep_name, sr.status, sr.timestamp
             ]
@@ -2526,8 +2528,8 @@ export const api = {
         if (live.reachable && live.rows.length > 0) {
           return {
             headers: live.headers && live.headers.length > 0 ? live.headers : [
-              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
-              'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان',
+              'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
               'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
               'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
             ],
@@ -2540,8 +2542,8 @@ export const api = {
         if (live.reachable && live.rows.length === 0) {
           return {
             headers: live.headers && live.headers.length > 0 ? live.headers : [
-              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
-              'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان',
+              'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
               'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
               'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
             ],
@@ -2554,8 +2556,8 @@ export const api = {
 
         return {
           headers: [
-            'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
-            'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+            'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان',
+            'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
             'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
             'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
           ],
@@ -2822,7 +2824,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 8 };
+      return { scriptVersion: ver, isOutdated: ver < 9 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -2871,7 +2873,7 @@ export const api = {
           webhook_url: getSavedWebhookUrl(),
           is_connected: Boolean(getSavedWebhookUrl()),
           apps_script_code: APPS_SCRIPT_V2_CODE,
-          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة', 'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج']
+          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج']
         };
       }
       throw err;
@@ -3039,7 +3041,75 @@ export const api = {
         verifiedInSheet: verified,
         message: verified
           ? 'تم حفظ مفتاح Gemini في العمود E وتعميمه لجميع المستخدمين في الشيت الرئيسي بنجاح ✅'
-          : 'تم إرسال المفتاح للشيت الرئيسي (تأكد من تحديث Apps Script للإصدار v8 على الشيت الرئيسي ليُحفظ في العمود E للجميع).'
+          : 'تم إرسال المفتاح للشيت الرئيسي (تأكد من تحديث Apps Script للإصدار v9 على الشيت الرئيسي ليُحفظ في العمود E للجميع).'
+      };
+    }
+  },
+
+  async adminSyncTemplateToAllSheets(opts?: { targetIds?: string[]; targetSpreadsheetId?: string }): Promise<{ updatedSheets: number; totalTargets: number; message: string; results?: any[] }> {
+    try {
+      const res = await fetchApi('/users/sync-template-all', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          admin_webhook_url: getAdminWebhookUrl(),
+          targetIds: opts?.targetIds || [],
+          targetSpreadsheetId: opts?.targetSpreadsheetId
+        })
+      }, 35000);
+      return await handleResponse(res);
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('لا يوجد رابط Apps Script المركزي للأدمن');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'sync_template_to_all',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: DEFAULT_SHEET_ID,
+        targetSpreadsheetId: opts?.targetSpreadsheetId,
+        targetIds: opts?.targetIds || []
+      }, 35000);
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'تعذر مزامنة أوراق و Pivot Tables الأدمن');
+      }
+      return hookRes.parsed || {
+        updatedSheets: 0,
+        totalTargets: 0,
+        message: 'تم إرسال أمر مزامنة وتعميم أوراق و Pivot Tables الأدمن لجميع الشيتات بنجاح ✅'
+      };
+    }
+  },
+
+  async adminUnifyWebhookUrl(centralUrl?: string, mode: 'set' | 'clear' = 'set'): Promise<{ updated: number; message: string }> {
+    const resolvedCentral = (centralUrl || getAdminWebhookUrl() || DEFAULT_WEBHOOK_URL).trim();
+    try {
+      const res = await fetchApi('/users/unify-webhook', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          centralWebhookUrl: resolvedCentral,
+          mode,
+          admin_webhook_url: getAdminWebhookUrl()
+        })
+      }, 20000);
+      return await handleResponse(res);
+    } catch (err: any) {
+      if (!isNetworkError(err)) throw err;
+      const hookUrl = getAdminWebhookUrl();
+      if (!hookUrl) throw new Error('يرجى تحديد رابط Apps Script Webhook للشيت الرئيسي أولاً');
+      const hookRes = await sendWebhookCommand(hookUrl, {
+        action: 'unify_admin_webhook',
+        adminSpreadsheetId: ADMIN_SHEET_ID,
+        spreadsheetId: ADMIN_SHEET_ID,
+        centralWebhookUrl: resolvedCentral,
+        mode
+      }, 20000);
+      if (hookRes.parsed && hookRes.parsed.success === false) {
+        throw new Error(hookRes.parsed.error || 'تعذر توحيد رابط السكربت المركزي');
+      }
+      return hookRes.parsed || {
+        updated: 0,
+        message: 'تم إرسال أمر توحيد رابط سكربت الأدمن المركزي لجميع الحسابات بنجاح ⚡'
       };
     }
   },
@@ -3053,7 +3123,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 8 };
+      return { scriptVersion: ver, isOutdated: ver < 9 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -3103,7 +3173,7 @@ export const api = {
       const found = refreshed.some(u => normalizePersonName(u.full_name) === normalizePersonName(cleanName));
       return {
         verifiedInSheet: found,
-        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار 8 إذا لم يظهر الصف فوراً).'
+        message: found ? 'تمت إضافة المستخدم وتوثيقه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال الطلب إلى Google Apps Script (تأكد من تحديث السكربت للإصدار v9 إذا لم يظهر الصف فوراً).'
       };
     }
   },
@@ -3157,7 +3227,7 @@ export const api = {
       );
       return {
         verifiedInSheet: verified,
-        message: verified ? 'تم تعديل الصف وحفظه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال التعديل للويب هوك (تأكد من نشر Apps Script v5 مع صلاحية الشيت الرئيسي إن لم يتغير الصف).'
+        message: verified ? 'تم تعديل الصف وحفظه في الشيت الرئيسي بنجاح ✅' : 'تم إرسال التعديل للويب هوك (تأكد من نشر Apps Script v9 مع صلاحية الشيت الرئيسي إن لم يتغير الصف).'
       };
     }
   },
@@ -3194,7 +3264,7 @@ export const api = {
       const stillThere = refreshed.some(u => u.rowNumber === data.rowNumber && normalizePersonName(u.full_name) === normalizePersonName(data.currentName));
       return {
         verifiedInSheet: !stillThere,
-        message: !stillThere ? 'تم حذف المستخدم من الشيت الرئيسي بنجاح ✅' : 'تم إرسال أمر الحذف للويب هوك (تحقق من تحديث Apps Script للإصدار 5 على الشيت الرئيسي).'
+        message: !stillThere ? 'تم حذف المستخدم من الشيت الرئيسي بنجاح ✅' : 'تم إرسال أمر الحذف للويب هوك (تحقق من تحديث Apps Script للإصدار 9 على الشيت الرئيسي).'
       };
     }
   },

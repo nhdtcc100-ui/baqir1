@@ -231,12 +231,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   const totalBonusPieces = filteredInvoices.reduce((s, i) => s + Number(i.total_bonus_count || 0), 0);
 
   const handleExportCSV = () => {
-    const headers = ['رقم الفاتورة', 'الصيدلية', 'المدينة / المحافظة', 'المنطقة / المكان', 'المندوب', 'التاريخ', 'المبلغ (د.ع)', 'القطع', 'البونص', 'الحالة', 'سبب الرفض'];
+    const headers = ['رقم الفاتورة', 'الصيدلية', 'المنطقة / المكان', 'المدينة / المحافظة', 'المندوب', 'التاريخ', 'المبلغ (د.ع)', 'القطع', 'البونص', 'الحالة', 'سبب الرفض'];
     const rows = filteredInvoices.map(i => [
       i.invoice_number || '',
       `"${i.pharmacy_name || ''}"`,
-      `"${i.pharmacy_city || 'بغداد'}"`,
       `"${i.pharmacy_area || (i as any).area || ''}"`,
+      `"${i.pharmacy_city || 'بغداد'}"`,
       `"${i.rep_name || ''}"`,
       i.invoice_date,
       i.total_sales_amount,

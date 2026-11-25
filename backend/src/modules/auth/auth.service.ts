@@ -140,7 +140,7 @@ function buildSheetUserRecordBackend(fields: {
   const role: UserRole = isAdmin ? 'admin' : 'medical_rep';
   const sheetId = extractGoogleSheetId(fields.rawSheet) || undefined;
   let webhookUrl = fields.rawWebhook && fields.rawWebhook.startsWith('http') ? fields.rawWebhook : undefined;
-  if (!webhookUrl && isAdmin) webhookUrl = ENV.GOOGLE_SHEETS_WEBHOOK_URL;
+  if (!webhookUrl && (isAdmin || sheetId)) webhookUrl = ENV.SHARED_CENTRAL_WEBHOOK;
   return {
     rowNumber: fields.rowNum,
     id: fields.rawId || `sheet-usr-${fields.rowNum}`,

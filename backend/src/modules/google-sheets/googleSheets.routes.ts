@@ -28,7 +28,7 @@ function resolveUserSheetOrReject(req: Request, res: Response): { sheetId: strin
   }
   return {
     sheetId: String(user.sheetId).trim(),
-    webhookUrl: user.webhookUrl ? String(user.webhookUrl).trim() : undefined
+    webhookUrl: (user.webhookUrl && String(user.webhookUrl).trim()) || GoogleSheetsService.getWebhookUrl()
   };
 }
 

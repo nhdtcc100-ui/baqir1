@@ -15,5 +15,10 @@ export const ENV = {
   // Admin Google Sheet acting as users database
   ADMIN_SHEET_ID: process.env.ADMIN_SHEET_ID || '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI',
   ADMIN_SHEET_URL: process.env.ADMIN_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI/edit?usp=sharing',
-  ADMIN_WEBHOOK_URL: process.env.ADMIN_WEBHOOK_URL || ''
+  ADMIN_WEBHOOK_URL: process.env.ADMIN_WEBHOOK_URL || '',
+  SHARED_CENTRAL_WEBHOOK:
+    process.env.SHARED_CENTRAL_WEBHOOK ||
+    process.env.ADMIN_WEBHOOK_URL ||
+    process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
+    'https://script.google.com/macros/s/AKfycbyxEXPVY7glHZlXL6c6af3ryZib9AtCVsM5oaljxyxIMKnyY7VlCH-UhCGBBrnVmz1o/exec'
 };

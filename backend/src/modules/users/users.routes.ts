@@ -186,6 +186,48 @@ router.post('/shared-gemini-key', requireRoles(['admin']), async (req: Request, 
 });
 
 /**
+ * @route   POST /api/v1/users/sync-template-all
+ * @access  admin only
+ * @desc    استنساخ أوراق و Pivot Tables شيت الأدمن لجميع شيتات المندوبين
+ */
+router.post('/sync-template-all', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { admin_webhook_url, targetIds, targetSpreadsheetId } = req.body || {};
+    const result = await GoogleSheetsService.manageAdminSheetUser('sync_template_to_all', {
+      adminSpreadsheetId: ENV.ADMIN_SHEET_ID,
+      spreadsheetId: ENV.GOOGLE_SHEET_ID,
+      targetSpreadsheetId: targetSpreadsheetId || undefined,
+      targetIds: Array.isArray(targetIds) ? targetIds : []
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
+    sendSuccess(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
+ * @route   POST /api/v1/users/unify-webhook
+ * @access  admin only
+ * @desc    توحيد رابط سكربت الأدمن المركزي لجميع المستخدمين في الشيت الرئيسي
+ */
+router.post('/unify-webhook', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { centralWebhookUrl, mode, admin_webhook_url } = req.body || {};
+    const result = await GoogleSheetsService.manageAdminSheetUser('unify_admin_webhook', {
+      centralWebhookUrl: String(centralWebhookUrl || ENV.SHARED_CENTRAL_WEBHOOK || ENV.GOOGLE_SHEETS_WEBHOOK_URL || '').trim(),
+      mode: mode === 'clear' ? 'clear' : 'set'
+    }, admin_webhook_url);
+    if (!result.success) {
+      sendError(res, result.message, 502);
+      return;
+    }
+    sendSuccess(res, result, result.message);
+  } catch (e) { next(e); }
+});
+
+/**
  * @route   PUT /api/v1/users/update-in-sheet
  * @access  admin (باقر فقط)
  * @desc    تعديل أي صف مستخدم مباشرة في الشيت الرئيسي

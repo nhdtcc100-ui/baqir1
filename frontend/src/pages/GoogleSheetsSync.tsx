@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { api, getPendingSheetsOutbox } from '../services/api';
+import { api, getPendingSheetsOutbox, getCurrentUser } from '../services/api';
 import {
   FileSpreadsheet, ExternalLink, RefreshCw, UploadCloud,
   CheckCircle2, AlertCircle, Copy, Check, Settings,
@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { getDosageFormBadgeColor } from './BatchReviewTable';
 import { analyzeSheetDuplicates, SheetDuplicateGroup } from '../utils/duplicateDetector';
-import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
+import { APPS_SCRIPT_V2_CODE, APPS_SCRIPT_THIN_WRAPPER } from '../utils/appsScriptTemplate';
 
 interface GoogleSheetsSyncProps {
   onDataChanged?: () => void;
@@ -47,6 +47,8 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
   const [skippedNotices, setSkippedNotices] = useState<Array<{ id?: string; invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }>>([]);
   const [scriptOutdated, setScriptOutdated] = useState(false);
   const [repairingSheet, setRepairingSheet] = useState(false);
+  const [syncingTemplate, setSyncingTemplate] = useState(false);
+  const isAdmin = getCurrentUser()?.role === 'admin';
 
   const [gapStatus, setGapStatus] = useState<{
     system_invoices_count: number;
@@ -189,6 +191,21 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
     }
   };
 
+  const handleSyncTemplateAll = async () => {
+    setSyncingTemplate(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.adminSyncTemplateToAllSheets();
+      setSuccessMsg(res.message || 'تمت مزامنة أوراق و Pivot Tables الأدمن مع جميع الشيتات بنجاح ✅');
+      await loadData();
+    } catch (e: any) {
+      setError(e?.message || 'تعذر مزامنة أوراق و Pivot Tables الأدمن لجميع الشيتات');
+    } finally {
+      setSyncingTemplate(false);
+    }
+  };
+
   const rows = useMemo(() => {
     return (sheetData?.rows || []).filter(r => {
       const num = String(r.invoice_number || '').trim();
@@ -203,7 +220,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
       ? sheetData.headers
       : [
           'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية',
-          'المدينة / المحافظة', 'المنطقة / المكان', 'اسم المادة الدوائية',
+          'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية',
           'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)',
           'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)',
           'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
@@ -211,12 +228,13 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
     return baseHeaders;
   }, [sheetData]);
 
-  // رصد الصفوف المزاحة أو نقص/اختلاف ترتيب عمود "المنطقة / المكان" بعد المدينة
+  // رصد الصفوف المزاحة أو نقص/اختلاف ترتيب عمود "المنطقة / المكان" (E) قبل "المدينة / المحافظة" (F)
   const hasShiftedRows = useMemo(() => {
     const normHeaders = dynamicHeaders.map(h => String(h || '').trim());
     const areaIdx = normHeaders.findIndex(h => h.includes('المنطق') || h.includes('المكان'));
     const cityIdx = normHeaders.findIndex(h => h.includes('المدين') || h.includes('المحافظ'));
-    const missingOrBeforeCityArea = areaIdx === -1 || (cityIdx >= 0 && areaIdx !== cityIdx + 1);
+    const missingOrWrongOrderArea = areaIdx === -1 || (cityIdx >= 0 && cityIdx !== areaIdx + 1);
+    const knownCities = new Set(['بغداد', 'البصرة', 'البصره', 'أربيل', 'اربيل', 'النجف', 'كربلاء', 'الموصل', 'نينوى', 'بابل', 'الحلة', 'الحله', 'كركوك', 'ديالى', 'الأنبار', 'الانبار', 'واسط', 'ذي قار', 'ميسان', 'المثنى', 'القادسية', 'القادسيه', 'الديوانية', 'الديوانيه', 'صلاح الدين', 'دهوك', 'السليمانية', 'السليمانيه']);
     const badRow = rows.some(r => {
       const prod = String(r.product_name || '').trim();
       const rep = String(r.rep_name || '').trim();
@@ -225,11 +243,12 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
       const city = String(r.city || '').trim();
       const numericProd = /^\d+$/.test(prod);
       const areaLooksCity = area === 'بغداد' && city.length > 2 && numericProd;
+      const swappedCityArea = knownCities.has(area) && (!city || !knownCities.has(city));
       const repLooksTs = !ts && rep.includes(':') && /\d/.test(rep);
       const cityContainsProduct = ['drop', 'cream', 'oint', 'قطرة', 'كريم', 'مرهم', 'elica', 'hyfresh'].some(k => city.toLowerCase().includes(k));
-      return areaLooksCity || repLooksTs || cityContainsProduct;
+      return areaLooksCity || swappedCityArea || repLooksTs || cityContainsProduct;
     });
-    return missingOrBeforeCityArea || badRow;
+    return missingOrWrongOrderArea || badRow;
   }, [rows, dynamicHeaders]);
 
   // كشف الفواتير المكررة في الشيت بالشرط المركب الكامل (الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها معاً)
@@ -344,6 +363,19 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
             </button>
           ) : null}
 
+          {isAdmin && (
+            <button
+              onClick={handleSyncTemplateAll}
+              disabled={syncingTemplate || syncing}
+              className="btn-clay btn-secondary"
+              style={{ fontWeight: 800, background: '#ecfeff', color: '#0e7490', borderColor: '#a5f3fc' }}
+              title="استنساخ تبويبات و Pivot Tables شيت الأدمن لجميع شيتات المندوبين"
+            >
+              <RefreshCw size={16} className={syncingTemplate ? 'animate-spin' : ''} />
+              {syncingTemplate ? 'جارِ تعميم Pivot Tables...' : '🔄 مزامنة أوراق و Pivot Tables الأدمن للجميع'}
+            </button>
+          )}
+
           <button
             onClick={handleSyncAll}
             disabled={syncing || loading}
@@ -376,10 +408,10 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
                 <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 8 أو إصلاح أعمدة الشيت (إضافة عمود المنطقة بعد المدينة)</span>
+                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 9 (v9) لتوحيد الأعمدة و Pivot Tables</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.65 }}>
-                لضمان وجود عمود <strong>المنطقة / المكان</strong> مباشرة بعد <strong>المدينة / المحافظة</strong> ودعم المفتاح المشترك وتعدد قواعد البيانات: انسخ الكود الجديد (v8) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
+                لضمان توحيد العمود <strong>E = المنطقة / المكان</strong> قبل العمود <strong>F = المدينة / المحافظة</strong> وتعميم أوراق و Pivot Tables الأدمن تلقائياً: انسخ الكود الجديد (v9) ← الصقه في <strong>Extensions ← Apps Script</strong> (شيت الأدمن المركزي) ← <strong>Deploy ← Manage deployments ← Edit ← New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -390,7 +422,7 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
                 style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
               >
                 {copiedCode ? <Check size={15} /> : <Copy size={15} />}
-                {copiedCode ? 'تم نسخ كود v8!' : 'نسخ كود Apps Script v8 📋'}
+                {copiedCode ? 'تم نسخ كود v9!' : 'نسخ كود Apps Script v9 📋'}
               </button>
               <button
                 type="button"
@@ -673,6 +705,23 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
           }}>
             {config?.apps_script_code && config.apps_script_code.includes('SCRIPT_VERSION') ? config.apps_script_code : APPS_SCRIPT_V2_CODE}
           </pre>
+          <div style={{ marginTop: '0.85rem', paddingTop: '0.85rem', borderTop: '1px dashed #cbd5e1' }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#334155', marginBottom: 6 }}>
+              كود الغلاف المختصر لشيتات المندوبين (4 أسطر فقط عند ربط مشروع الأدمن كـ Library باسم AdminLib في وضع HEAD):
+            </div>
+            <pre style={{
+              background: '#1e293b',
+              color: '#a7f3d0',
+              padding: '0.75rem',
+              borderRadius: 8,
+              fontSize: '0.73rem',
+              direction: 'ltr',
+              textAlign: 'left',
+              margin: 0
+            }}>
+              {APPS_SCRIPT_THIN_WRAPPER}
+            </pre>
+          </div>
         </div>
       )}
 
