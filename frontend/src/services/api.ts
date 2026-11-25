@@ -5,7 +5,11 @@ import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
 import {
   normalizePharmacyName,
   normalizeDateYmd,
-  buildItemsSignature
+  buildItemsSignature,
+  parseSheetNumber,
+  groupSheetRowsLogical,
+  checkInvoiceAgainstSheet,
+  buildFullInvoiceCompositeKey
 } from '../utils/duplicateDetector';
 import {
   ADMIN_SHEET_ID,
@@ -855,7 +859,7 @@ function savePendingSheetsOutbox(jobs: PendingSheetsSyncJob[]) {
 export function formatInvoiceToSheetRows(inv: any): SheetRowPayload[] {
   const items = inv?.items || [];
   const nowStr = new Date().toLocaleString('ar-IQ', {
-    timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    timeZone: 'Asia/Baghdad', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
   const statusText = inv?.status === 'approved' ? 'معتمدة ✓' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
   const phName = String(inv?.pharmacy_name || 'صيدلية معتمدة').trim();
@@ -890,7 +894,87 @@ export function formatInvoiceToSheetRows(inv: any): SheetRowPayload[] {
   });
 }
 
-async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: any[] }> {
+function mapGvizTableRows(parsed: any): { headers: string[]; rows: any[] } {
+  const cols: any[] = parsed?.table?.cols || [];
+  const rawRows: any[] = parsed?.table?.rows || [];
+  let headers = cols.map((c: any) => String(c?.label || '').trim());
+  let startIdx = 0;
+
+  const hasColLabels = headers.some(Boolean);
+  if (!hasColLabels && rawRows.length > 0) {
+    const row0 = (rawRows[0]?.c || []).map((cell: any) => String(cell?.f ?? cell?.v ?? '').trim());
+    if (row0.some((h: string) => h.includes('رقم الفاتورة') || h.includes('اسم الصيدلية') || h.includes('الكمية'))) {
+      headers = row0;
+      startIdx = 1;
+    }
+  }
+  if (!headers.some(Boolean)) {
+    headers = cols.map((c: any) => String(c?.label || c?.id || '').trim());
+  }
+
+  const normH = headers.map(h => h.toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي'));
+  const findCol = (pats: string[], fb: number) => {
+    const idx = normH.findIndex(h => h && pats.some(p => h.includes(p)));
+    return idx >= 0 ? idx : fb;
+  };
+  const areaColFound = normH.findIndex(h => h && (h.includes('المنطق') || h.includes('المكان')));
+  const cityColFound = normH.findIndex(h => h && (h.includes('المدين') || h.includes('المحافظ')));
+  const dosageColFound = normH.findIndex(h => h && (h.includes('نوع الماد') || h.includes('الشكل الدوائي')));
+  const has16Schema = areaColFound >= 0 && dosageColFound >= 0;
+  const colIdx = {
+    invoice_number: findCol(['رقم الفاتور'], 0),
+    invoice_date:   findCol(['تاريخ الفاتور'], 1),
+    warehouse_name: findCol(['المذخر'], 2),
+    pharmacy_name:  findCol(['اسم الصيدلي'], 3),
+    city:           cityColFound >= 0 ? cityColFound : 4,
+    area:           areaColFound >= 0 ? areaColFound : -1,
+    product_name:   findCol(['اسم الماد', 'الماده الدوائي'], has16Schema ? 6 : 5),
+    dosage_form:    dosageColFound >= 0 ? dosageColFound : -1,
+    quantity:       findCol(['الكمي'], has16Schema ? 8 : 6),
+    unit_price:     findCol(['سعر المفرد'], has16Schema ? 9 : 7),
+    bonus_quantity: findCol(['البونص'], has16Schema ? 10 : 8),
+    line_total:     findCol(['المجموع'], has16Schema ? 11 : 9),
+    total_invoice:  findCol(['صافي الفاتور'], has16Schema ? 12 : 10),
+    rep_name:       findCol(['المندوب'], has16Schema ? 13 : 11),
+    status:         findCol(['حاله الاعتماد', 'الحال'], has16Schema ? 14 : 12),
+    timestamp:      findCol(['وقت وتاريخ', 'الادراج'], has16Schema ? 15 : 13)
+  };
+
+  const rows: any[] = [];
+  for (let rIdx = startIdx; rIdx < rawRows.length; rIdx++) {
+    const c = rawRows[rIdx]?.c || [];
+    const val = (i: number) => (i >= 0 ? String(c[i]?.f ?? c[i]?.v ?? '').trim() : '');
+    const num = (i: number) => (i >= 0 ? parseSheetNumber(c[i]?.v ?? c[i]?.f ?? 0) : 0);
+    const invNum = val(colIdx.invoice_number);
+    const phName = val(colIdx.pharmacy_name);
+    const prodName = val(colIdx.product_name);
+    if (invNum === '123' || invNum === 'رقم الفاتورة' || (!invNum && !phName && !prodName)) continue;
+
+    const cells = headers.map((_, ci) => val(ci));
+    rows.push({
+      invoice_number: invNum,
+      invoice_date:   val(colIdx.invoice_date),
+      warehouse_name: val(colIdx.warehouse_name),
+      pharmacy_name:  phName,
+      area:           val(colIdx.area),
+      city:           val(colIdx.city),
+      product_name:   prodName,
+      dosage_form:    val(colIdx.dosage_form),
+      quantity:       num(colIdx.quantity),
+      unit_price:     num(colIdx.unit_price),
+      bonus_quantity: num(colIdx.bonus_quantity),
+      line_total:     num(colIdx.line_total),
+      total_invoice:  num(colIdx.total_invoice),
+      rep_name:       val(colIdx.rep_name),
+      status:         val(colIdx.status),
+      timestamp:      val(colIdx.timestamp),
+      cells
+    });
+  }
+  return { headers, rows };
+}
+
+async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: any[]; headers?: string[] }> {
   try {
     const sheetId = getSavedSheetId();
     const controller = new AbortController();
@@ -902,29 +986,8 @@ async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: a
     const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
     if (!m?.[1]) return { reachable: false, rows: [] };
     const parsed = JSON.parse(m[1]);
-    const rows = (parsed.table?.rows || []).map((r: any) => {
-      const c = r.c || [];
-      const val = (i: number) => String(c[i]?.f ?? c[i]?.v ?? '').trim();
-      return {
-        invoice_number: val(0),
-        invoice_date: val(1),
-        warehouse_name: val(2),
-        pharmacy_name: val(3),
-        area: val(4),
-        city: val(5),
-        product_name: val(6),
-        dosage_form: val(7),
-        quantity: Number(c[8]?.v || 0),
-        unit_price: Number(c[9]?.v || 0),
-        bonus_quantity: Number(c[10]?.v || 0),
-        line_total: Number(c[11]?.v || 0),
-        total_invoice: Number(c[12]?.v || 0),
-        rep_name: val(13),
-        status: val(14),
-        timestamp: val(15)
-      };
-    }).filter((r: any) => r.invoice_number !== '123' && (r.invoice_number || r.pharmacy_name || r.product_name));
-    return { reachable: true, rows };
+    const { headers, rows } = mapGvizTableRows(parsed);
+    return { reachable: true, rows, headers };
   } catch {
     return { reachable: false, rows: [] };
   }
@@ -989,47 +1052,14 @@ function hydrateLocalInvoicesFromSheetRows(sheetRows: any[]): Invoice[] {
   return built;
 }
 
-function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
-  if (!sheetRows || sheetRows.length === 0) return { isDuplicate: false, isExactMatch: false, reason: '' };
-  const invNum = String(inv?.invoice_number || '').trim();
-  const phName = normalizePharmacyName(inv?.pharmacy_name || '');
-  const invDate = normalizeDateYmd(inv?.invoice_date || '');
-  const statusText = inv?.status === 'approved' ? 'معتمدة' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
-  const itemsSig = buildItemsSignature(inv?.items || []);
-
-  if (!phName || !invDate || itemsSig.count === 0) {
-    return { isDuplicate: false, isExactMatch: false, reason: '' };
-  }
-
-  const groups = new Map<string, any[]>();
-  for (const r of sheetRows) {
-    const k = `${String(r.invoice_number || r.pharmacy_name).trim()}::${normalizeDateYmd(r.invoice_date)}::${String(r.timestamp || '').trim()}`;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k)!.push(r);
-  }
-
-  for (const exRows of groups.values()) {
-    const exPh = normalizePharmacyName(exRows[0]?.pharmacy_name || '');
-    const exDate = normalizeDateYmd(exRows[0]?.invoice_date || '');
-    if (exPh !== phName || exDate !== invDate) continue;
-
-    const exSig = buildItemsSignature(
-      exRows.map(x => ({ product_name: x.product_name, quantity: x.quantity }))
-    );
-    if (exSig.signature === itemsSig.signature) {
-      const exNum = String(exRows[0]?.invoice_number || '').trim();
-      const exStatus = String(exRows[0]?.status || '').replace(' ✓', '').trim();
-      const statusChanged = Boolean(invNum && exNum === invNum && exStatus !== statusText);
-      if (!statusChanged) {
-        return {
-          isDuplicate: true,
-          isExactMatch: invNum === exNum,
-          reason: `نفس الفاتورة (${exRows[0]?.pharmacy_name || phName} / ${invDate} — ${itemsSig.count} أصناف) موجودة مسبقاً${exNum ? ` برقم (${exNum})` : ''}`
-        };
-      }
-    }
-  }
-  return { isDuplicate: false, isExactMatch: false, reason: '' };
+function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; statusChangedOnly?: boolean; reason: string } {
+  const res = checkInvoiceAgainstSheet(inv, sheetRows);
+  return {
+    isDuplicate: res.isDuplicate,
+    isExactMatch: res.isExactMatch,
+    statusChangedOnly: res.statusChangedOnly,
+    reason: res.reason
+  };
 }
 
 function enqueueSheetsSyncJob(job: Omit<PendingSheetsSyncJob, 'id' | 'createdAt'>) {
@@ -1041,8 +1071,8 @@ function enqueueSheetsSyncJob(job: Omit<PendingSheetsSyncJob, 'id' | 'createdAt'
     id: `sync-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     createdAt: new Date().toISOString()
   };
-  const filtered = job.invoice_number
-    ? existing.filter(j => !(j.invoice_number === job.invoice_number && (j.targetSheetId || getSavedSheetId()) === entry.targetSheetId))
+  const filtered = job.action === 'edit_invoice' && job.invoice_number
+    ? existing.filter(j => !(j.action === 'edit_invoice' && j.invoice_number === job.invoice_number && (j.targetSheetId || getSavedSheetId()) === entry.targetSheetId))
     : existing;
   savePendingSheetsOutbox([...filtered, entry]);
 }
@@ -1191,7 +1221,8 @@ function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }):
     image_url: payload.image_url,
     notes: payload.notes,
     created_at: new Date().toISOString(),
-    items: builtItems
+    items: builtItems,
+    pending_sheet_upload: true
   };
 
   invoices.unshift(newInv);
@@ -1607,25 +1638,32 @@ export const api = {
     }
   },
 
-  // حذف فواتير محذوفة من الشيت أو تعبئة الشيت عند الدخول الأول (مزامنة اتجاهين)
-  async syncSheetDeletion(): Promise<void> {
+  // حذف فواتير أو نسخ محذوفة من الشيت أو تعبئة الشيت عند الدخول الأول (مزامنة اتجاهين فورية)
+  async syncSheetDeletion(): Promise<boolean> {
     try {
       const { reachable, rows: sheetRows } = await fetchLiveSheetRowsStatus();
-      if (!reachable) return;
+      if (!reachable) return false;
 
       const scopedKey = getScopedStorageKey(LS_INVOICES_KEY);
       const hasInitializedLocal = localStorage.getItem(scopedKey) !== null;
 
       if (!hasInitializedLocal) {
-        // أول فتح لصفحة هذا المستخدم على هذا المتصفح: استيراد الفواتير الموجودة في شيته الخاص (أو قائمة فارغة إذا شيته فارغ)
         const hydrated = sheetRows.length > 0
           ? hydrateLocalInvoicesFromSheetRows(sheetRows)
           : (getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : []);
         saveStoredInvoices(hydrated);
-        return;
+        return true;
       }
 
+      const logicalGroups = groupSheetRowsLogical(sheetRows);
       const sheetNums = new Set(sheetRows.map((r: any) => String(r.invoice_number || '').trim()).filter(Boolean));
+      const remainingCompositeCounts = new Map<string, number>();
+      for (const grp of logicalGroups) {
+        if (grp.compositeKey) {
+          remainingCompositeCounts.set(grp.compositeKey, (remainingCompositeCounts.get(grp.compositeKey) || 0) + 1);
+        }
+      }
+
       const activeSheetId = getSavedSheetId();
       const pendingUploadNums = new Set(
         getPendingSheetsOutbox()
@@ -1635,16 +1673,61 @@ export const api = {
       );
 
       const local = getStoredInvoices();
-      const filtered = local.filter(inv => {
+      let updatedFlags = false;
+      const filtered = local.reduce<Invoice[]>((acc, inv) => {
         const num = String(inv.invoice_number || '').trim();
-        if (!num) return true;
-        if (pendingUploadNums.has(num)) return true; // لا تحذف فاتورة لا تزال بانتظار الرفع
-        return sheetNums.has(num);
-      });
-      if (filtered.length !== local.length) {
+        if (num && pendingUploadNums.has(num)) {
+          acc.push(inv);
+          return acc;
+        }
+
+        const invComp = buildFullInvoiceCompositeKey({
+          pharmacy_name: inv.pharmacy_name,
+          invoice_date: inv.invoice_date,
+          items: inv.items
+        });
+
+        let existsInSheet = false;
+        if (invComp) {
+          const cnt = remainingCompositeCounts.get(invComp) || 0;
+          if (cnt > 0) {
+            remainingCompositeCounts.set(invComp, cnt - 1);
+            existsInSheet = true;
+          } else if (num && sheetNums.has(num) && local.filter(x => String(x.invoice_number || '').trim() === num).length === 1) {
+            existsInSheet = true;
+          }
+        } else {
+          existsInSheet = !num || sheetNums.has(num);
+        }
+
+        if (existsInSheet) {
+          if (inv.pending_sheet_upload) {
+            updatedFlags = true;
+            acc.push({ ...inv, pending_sheet_upload: false });
+          } else {
+            acc.push(inv);
+          }
+          return acc;
+        }
+
+        // الفواتير التي لم يُرصد وصولها بعد إلى كوكل شيت تبقى محمية للرفع عبر زر «رفع غير المرفوعة»
+        if (inv.pending_sheet_upload) {
+          acc.push(inv);
+          return acc;
+        }
+
+        // حُذفت من كوكل شيت بعد مزامنتها سابقاً -> تُحذف مباشرة من المنصة
+        return acc;
+      }, []);
+
+      if (filtered.length !== local.length || updatedFlags) {
         saveStoredInvoices(filtered);
+        return filtered.length !== local.length;
       }
-    } catch { /* تجاهل أخطاء الشبكة */ }
+      return false;
+    } catch {
+      return false;
+    }
   },
 
   async createInvoice(payload: {
@@ -1844,7 +1927,7 @@ export const api = {
     }
   },
 
-  async deleteInvoice(id: string): Promise<void> {
+  async deleteInvoice(id: string, opts?: { preserveOriginalInSheet?: boolean }): Promise<void> {
     try {
       const res = await fetchApi(`/invoices/${id}`, {
         method: 'DELETE',
@@ -1857,11 +1940,18 @@ export const api = {
         const target = all.find(i => i.id === id);
         const list = all.filter(i => i.id !== id);
         saveStoredInvoices(list);
-        if (target?.invoice_number) {
+        if (target?.invoice_number || target?.pharmacy_name) {
+          const cleanTargetNum = String(target.invoice_number || '').trim();
+          const hasSurvivingSameNum = Boolean(
+            cleanTargetNum && list.some(i => String(i.invoice_number || '').trim() === cleanTargetNum)
+          );
+          const preserveOriginal = Boolean(opts?.preserveOriginalInSheet || hasSurvivingSameNum);
           enqueueSheetsSyncJob({
             action: 'delete_invoice',
-            invoice_number: target.invoice_number,
-            delete_mode: 'all'
+            invoice_number: cleanTargetNum,
+            pharmacy_name: target.pharmacy_name,
+            invoice_date: (target.invoice_date || '').split('T')[0],
+            delete_mode: preserveOriginal ? 'duplicate_copy' : 'all'
           });
           await Promise.race([
             flushSheetsSyncOutboxInternal({ keepalive: true }),
@@ -2321,58 +2411,48 @@ export const api = {
             ...sr,
             cells: [
               sr.invoice_number, sr.invoice_date, sr.warehouse_name, sr.pharmacy_name,
-              sr.area, sr.city, sr.product_name, sr.dosage_form,
+              sr.city, sr.area, sr.product_name, sr.dosage_form,
               String(sr.quantity), String(sr.unit_price), String(sr.bonus_quantity), String(sr.line_total),
               String(sr.total_invoice), sr.rep_name, sr.status, sr.timestamp
             ]
           }))
         );
 
-        // Try direct public gviz read from browser — reads all 17+ real columns cleanly
-        try {
-          const gRes = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`);
-          if (gRes.ok) {
-            const text = await gRes.text();
-            const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
-            if (m && m[1]) {
-              const parsed = JSON.parse(m[1]);
-              const cols: string[] = (parsed.table?.cols || []).map((c: any) => String(c.label || c.id || '').trim());
-              const rows = (parsed.table?.rows || []).map((r: any) => {
-                const c = r.c || [];
-                const val = (i: number) => String(c[i]?.f ?? c[i]?.v ?? '').trim();
-                const num = (i: number) => Number(c[i]?.v || 0);
-                const cells = cols.map((_, ci) => val(ci));
-                return {
-                  invoice_number: val(0),
-                  invoice_date: val(1),
-                  warehouse_name: val(2),
-                  pharmacy_name: val(3),
-                  area: val(4),
-                  city: val(5),
-                  product_name: val(6),
-                  dosage_form: val(7),
-                  quantity: num(8),
-                  unit_price: num(9),
-                  bonus_quantity: num(10),
-                  line_total: num(11),
-                  total_invoice: num(12),
-                  rep_name: val(13),
-                  status: val(14),
-                  timestamp: val(15),
-                  cells
-                };
-              }).filter((r: any) => r.invoice_number !== '123' && (r.invoice_number || r.pharmacy_name || r.product_name));
-              if (rows.length > 0) {
-                return { headers: cols, rows, rawCount: rows.length, sheet_id: sheetId, sheet_url: sheetUrl };
-              }
-            }
-          }
-        } catch { /* fall back to local rows */ }
+        // قراءة مباشرة من الشيت باستخدام محلل الأعمدة الديناميكي مع كسر الكاش
+        const live = await fetchLiveSheetRowsStatus();
+        if (live.reachable && live.rows.length > 0) {
+          return {
+            headers: live.headers && live.headers.length > 0 ? live.headers : [
+              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
+              'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+              'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
+              'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
+            ],
+            rows: live.rows,
+            rawCount: live.rows.length,
+            sheet_id: sheetId,
+            sheet_url: sheetUrl
+          };
+        }
+        if (live.reachable && live.rows.length === 0) {
+          return {
+            headers: live.headers && live.headers.length > 0 ? live.headers : [
+              'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
+              'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+              'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
+              'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
+            ],
+            rows: [],
+            rawCount: 0,
+            sheet_id: sheetId,
+            sheet_url: sheetUrl
+          };
+        }
 
         return {
           headers: [
-            'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان',
-            'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
+            'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة',
+            'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي',
             'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)',
             'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
           ],
@@ -2404,30 +2484,36 @@ export const api = {
       if (isNetworkError(err)) {
         const invs = getStoredInvoices();
         const sheetRows = await fetchLiveSheetRowsCompact();
+        const logicalGroups = groupSheetRowsLogical(sheetRows);
         const skipped: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> = [];
         const seenLocalSig = new Set<string>();
         const rowsToSend: SheetRowPayload[] = [];
         let syncedCount = 0;
 
         for (const inv of invs) {
-          const ph = normalizePharmacyName(inv.pharmacy_name || '');
           const dt = normalizeDateYmd(inv.invoice_date || '');
-          const itemsSig = buildItemsSignature(inv.items || []);
-          const sig = ph && dt && itemsSig.count > 0 ? `${ph}||${dt}||${itemsSig.signature}` : '';
+          const sig = buildFullInvoiceCompositeKey({ pharmacy_name: inv.pharmacy_name, invoice_date: inv.invoice_date, items: inv.items });
           if (sig && seenLocalSig.has(sig)) {
             skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: 'نسخة مكررة داخل النظام' });
             continue;
           }
           if (sig) seenLocalSig.add(sig);
 
-          const dup = checkClientInvoiceDuplicateInSheet(inv, sheetRows);
-          if (dup.isDuplicate) {
-            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: dup.reason });
+          const check = checkInvoiceAgainstSheet(inv, sheetRows, logicalGroups);
+          if (check.isDuplicate) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: dt, reason: check.reason });
             continue;
           }
           const formatted = formatInvoiceToSheetRows(inv);
           rowsToSend.push(...formatted);
-          enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(inv.invoice_number || ''), rows: formatted });
+          enqueueSheetsSyncJob({
+            action: check.statusChangedOnly ? 'edit_invoice' : 'add_invoice',
+            invoice_number: String(inv.invoice_number || ''),
+            previous_invoice_number: check.statusChangedOnly ? String(inv.invoice_number || '') : undefined,
+            pharmacy_name: inv.pharmacy_name,
+            invoice_date: inv.invoice_date,
+            rows: formatted
+          });
           syncedCount++;
         }
 
@@ -2476,13 +2562,14 @@ export const api = {
     } catch (err: any) {
       if (isNetworkError(err)) {
         const invs = getStoredInvoices();
-        const sheetRows = await fetchLiveSheetRowsCompact();
-        const sheetNums = new Set(sheetRows.map(r => String(r.invoice_number || '').trim()).filter(Boolean));
-        const unuploaded = invs.filter(inv => !checkClientInvoiceDuplicateInSheet(inv, sheetRows).isDuplicate && !sheetNums.has(String(inv.invoice_number || '').trim()));
+        const live = await fetchLiveSheetRowsStatus();
+        const sheetRows = live.rows;
+        const logicalGroups = groupSheetRowsLogical(sheetRows);
+        const unuploaded = invs.filter(inv => !checkInvoiceAgainstSheet(inv, sheetRows, logicalGroups).isDuplicate);
         return {
           system_invoices_count: invs.length,
-          sheet_rows_count: sheetRows.length || invs.length,
-          sheet_unique_invoices_count: sheetNums.size || invs.length,
+          sheet_rows_count: live.reachable ? sheetRows.length : invs.length,
+          sheet_unique_invoices_count: live.reachable ? logicalGroups.length : invs.length,
           unuploaded_count: unuploaded.length,
           unuploaded_invoices: unuploaded.map(inv => ({
             id: inv.id,
@@ -2517,18 +2604,34 @@ export const api = {
       if (isNetworkError(err)) {
         const invs = getStoredInvoices();
         const sheetRows = await fetchLiveSheetRowsCompact();
+        const logicalGroups = groupSheetRowsLogical(sheetRows);
         const skipped: Array<{ invoice_number: string; pharmacy_name: string; invoice_date: string; reason: string }> = [];
+        const seenToUpload = new Set<string>();
         let synced = 0;
         let rowsCount = 0;
 
         for (const inv of invs) {
-          const dup = checkClientInvoiceDuplicateInSheet(inv, sheetRows);
-          if (dup.isDuplicate) {
-            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: (inv.invoice_date || '').split('T')[0], reason: dup.reason });
+          const compKey = buildFullInvoiceCompositeKey({ pharmacy_name: inv.pharmacy_name, invoice_date: inv.invoice_date, items: inv.items });
+          if (compKey && seenToUpload.has(compKey)) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: (inv.invoice_date || '').split('T')[0], reason: 'نسخة مكررة داخل النظام' });
+            continue;
+          }
+          if (compKey) seenToUpload.add(compKey);
+
+          const check = checkInvoiceAgainstSheet(inv, sheetRows, logicalGroups);
+          if (check.isDuplicate) {
+            skipped.push({ invoice_number: String(inv.invoice_number || ''), pharmacy_name: inv.pharmacy_name || '', invoice_date: (inv.invoice_date || '').split('T')[0], reason: check.reason });
             continue;
           }
           const rows = formatInvoiceToSheetRows(inv);
-          enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(inv.invoice_number || ''), rows });
+          enqueueSheetsSyncJob({
+            action: check.statusChangedOnly ? 'edit_invoice' : 'add_invoice',
+            invoice_number: String(inv.invoice_number || ''),
+            previous_invoice_number: check.statusChangedOnly ? String(inv.invoice_number || '') : undefined,
+            pharmacy_name: inv.pharmacy_name,
+            invoice_date: inv.invoice_date,
+            rows
+          });
           synced++;
           rowsCount += rows.length;
         }
@@ -2544,7 +2647,7 @@ export const api = {
           rows_count: rowsCount,
           skipped_duplicates: skipped,
           message: skipped.length > 0
-            ? `تم رفع ${synced} فواتير جديدة وتخطي ${skipped.length} فواتير مكررة موجودة بالشيت`
+            ? `تم رفع ${synced} فواتير جديدة (بما فيها المختلفة في الكميات) وتخطي ${skipped.length} فواتير مطابقة تماماً`
             : `تمت مزامنة ${synced} فواتير غير مرفوعة (${rowsCount} سطراً) بنجاح`
         };
       }
@@ -2612,7 +2715,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 3 };
+      return { scriptVersion: ver, isOutdated: ver < 7 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }
@@ -2659,7 +2762,7 @@ export const api = {
           webhook_url: getSavedWebhookUrl(),
           is_connected: Boolean(getSavedWebhookUrl()),
           apps_script_code: APPS_SCRIPT_V2_CODE,
-          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج']
+          headers: ['رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية', 'المدينة / المحافظة', 'المنطقة / المكان', 'اسم المادة الدوائية', 'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)', 'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)', 'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج']
         };
       }
       throw err;

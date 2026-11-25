@@ -97,19 +97,43 @@ export function App() {
     }
   }, [currentUser]);
 
-  // مزامنة تلقائية عند العودة للتطبيق حتى يُحذف من التطبيق أي صف حُذف من كوكل شيت
+  // مزامنة تلقائية فورية عند العودة للتطبيق، التنقل، وكل 8 ثوانٍ أثناء عرض الفواتير/الشيت
   useEffect(() => {
     if (!currentUser) return;
     let lastSyncAt = 0;
-    const syncOnFocus = () => {
+    const syncDeletionAndRefresh = async (force = false) => {
       const now = Date.now();
-      if (now - lastSyncAt < 15000) return;
+      if (!force && now - lastSyncAt < 3000) return;
       lastSyncAt = now;
-      loadData();
+      try {
+        const changed = await api.syncSheetDeletion();
+        if (changed) {
+          await loadData();
+        }
+      } catch { /* ignore */ }
     };
-    window.addEventListener('focus', syncOnFocus);
-    return () => window.removeEventListener('focus', syncOnFocus);
-  }, [currentUser]);
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        syncDeletionAndRefresh(false);
+      }
+    };
+
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible' && (activeTab === 'billing' || activeTab === 'dashboard' || activeTab === 'sheets')) {
+        syncDeletionAndRefresh(true);
+      }
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+      clearInterval(interval);
+    };
+  }, [currentUser, activeTab]);
 
   // Ensure pending Google Sheets syncs flush on reconnect, page return, or exit
   useEffect(() => {
@@ -201,6 +225,8 @@ export function App() {
     if (tab === 'add-invoice') {
       setPreselectedPharmacyId(undefined); // Clear old pharmacy so user starts with a clean slate
       setInvoicePageKey(k => k + 1);
+    } else if (tab === 'billing' || tab === 'dashboard') {
+      loadData();
     }
     setActiveTab(tab);
     setMobileOpen(false);
@@ -504,11 +530,12 @@ export function App() {
               onDeleteInvoice={handleDeleteInvoice}
               onUpdateInvoice={handleUpdateInvoice}
               onAddInvoice={() => navigate('add-invoice')}
+              onRefresh={loadData}
             />
           )}
 
           {activeTab === 'sheets' && (
-            <GoogleSheetsSync />
+            <GoogleSheetsSync onDataChanged={loadData} />
           )}
 
           {activeTab === 'users' && currentUser?.role === 'admin' && (

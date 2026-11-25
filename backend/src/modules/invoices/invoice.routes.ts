@@ -758,7 +758,16 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     }
     await InvoiceService.deleteById(req.params.id);
     if (invoice.invoice_number) {
-      GoogleSheetsService.deleteInvoiceRows(invoice.invoice_number, req.user?.webhookUrl, req.user?.sheetId).catch(e => {
+      const remaining = await InvoiceService.findAll({}).catch(() => []);
+      const hasOtherSameNum = remaining.some(
+        other => other.id !== invoice.id && String(other.invoice_number || '').trim() === String(invoice.invoice_number || '').trim()
+      );
+      GoogleSheetsService.deleteInvoiceRows(
+        invoice.invoice_number,
+        req.user?.webhookUrl,
+        req.user?.sheetId,
+        hasOtherSameNum ? { deleteMode: 'duplicate_copy', pharmacyName: invoice.pharmacy_name, invoiceDate: invoice.invoice_date } : undefined
+      ).catch(e => {
         console.warn('[GoogleSheets] Delete sync err:', e?.message || e);
       });
     }

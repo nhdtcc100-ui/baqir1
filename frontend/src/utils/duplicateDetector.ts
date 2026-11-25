@@ -86,6 +86,19 @@ export function normalizeDateYmd(raw: string): string {
   return s.split('T')[0];
 }
 
+export function parseSheetNumber(val: any): number {
+  if (typeof val === 'number' && !isNaN(val)) return val;
+  const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+  const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const clean = String(val ?? '')
+    .replace(/[٠-٩]/g, d => String(arabic.indexOf(d)))
+    .replace(/[۰-۹]/g, d => String(persian.indexOf(d)))
+    .replace(/,/g, '')
+    .replace(/[^\d.-]/g, '');
+  const n = Number(clean);
+  return isNaN(n) ? 0 : n;
+}
+
 export function buildItemsSignature(items?: Array<{ product_name?: string; product_name_snapshot?: string; custom_product_name?: string; name?: string; quantity?: number; sold_quantity?: number }>): {
   count: number;
   signature: string;
@@ -99,7 +112,7 @@ export function buildItemsSignature(items?: Array<{ product_name?: string; produ
       const name = normalizeProductKey(
         it.product_name_snapshot || it.custom_product_name || it.product_name || it.name || ''
       );
-      const qty = Math.round(Number(it.sold_quantity ?? it.quantity ?? 0));
+      const qty = Math.round(parseSheetNumber(it.sold_quantity ?? it.quantity ?? 0));
       return { name, qty };
     })
     .filter(x => x.name.length > 0)
@@ -111,6 +124,129 @@ export function buildItemsSignature(items?: Array<{ product_name?: string; produ
 
   const signature = `${normalized.length}::${normalized.map(x => `${x.name}:${x.qty}`).join('|')}`;
   return { count: normalized.length, signature };
+}
+
+export interface SheetLogicalGroup {
+  gKey: string;
+  invoice_number: string;
+  invoice_date: string;
+  pharmacy_name: string;
+  timestamp: string;
+  status: string;
+  compositeKey: string;
+  items: Array<{ row: SheetRowLike; rowIndex: number }>;
+}
+
+/**
+ * تجميع أسطر الشيت إلى نسخ فواتير منطقية مع فصل الكتل المتتابعة إذا تساوى الطابع الزمني
+ */
+export function groupSheetRowsLogical(rows: SheetRowLike[]): SheetLogicalGroup[] {
+  const bucketMap = new Map<string, Array<{ row: SheetRowLike; rowIndex: number }>>();
+
+  rows.forEach((row, rowIndex) => {
+    const num = String(row.invoice_number || '').trim();
+    const ph = normalizePharmacyName(row.pharmacy_name || '');
+    const dt = normalizeDateYmd(row.invoice_date || '');
+    const ts = String(row.timestamp || '').trim();
+    const gKey = `${num || ph}::${dt}::${ts}`;
+    if (!bucketMap.has(gKey)) bucketMap.set(gKey, []);
+    bucketMap.get(gKey)!.push({ row, rowIndex });
+  });
+
+  const groups: SheetLogicalGroup[] = [];
+  for (const [baseKey, entries] of bucketMap.entries()) {
+    // في حال رُفعت نسختان متطابقتان في نفس الدقيقة وبنفس الطابع الزمني: نفصلهما عند تكرار نفس (المنتج + الكمية) داخل الكتلة
+    const subBlocks: Array<Array<{ row: SheetRowLike; rowIndex: number }>> = [];
+    let currentBlock: Array<{ row: SheetRowLike; rowIndex: number }> = [];
+    let seenInBlock = new Set<string>();
+
+    for (const entry of entries) {
+      const pKey = `${normalizeProductKey(entry.row.product_name || '')}:${Math.round(parseSheetNumber(entry.row.quantity || 0))}`;
+      if (pKey && seenInBlock.has(pKey) && currentBlock.length > 0) {
+        subBlocks.push(currentBlock);
+        currentBlock = [];
+        seenInBlock = new Set<string>();
+      }
+      currentBlock.push(entry);
+      if (pKey) seenInBlock.add(pKey);
+    }
+    if (currentBlock.length > 0) subBlocks.push(currentBlock);
+
+    subBlocks.forEach((blockEntries, bIdx) => {
+      const first = blockEntries[0].row;
+      const compositeKey = buildFullInvoiceCompositeKey({
+        pharmacy_name: first.pharmacy_name,
+        invoice_date: first.invoice_date,
+        items: blockEntries.map(e => ({
+          product_name: e.row.product_name,
+          quantity: e.row.quantity
+        }))
+      });
+      groups.push({
+        gKey: subBlocks.length > 1 ? `${baseKey}::copy-${bIdx}` : baseKey,
+        invoice_number: String(first.invoice_number || '').trim(),
+        invoice_date: normalizeDateYmd(first.invoice_date || ''),
+        pharmacy_name: String(first.pharmacy_name || '').trim(),
+        timestamp: String(first.timestamp || '').trim(),
+        status: String(first.status || '').replace(' ✓', '').trim(),
+        compositeKey,
+        items: blockEntries
+      });
+    });
+  }
+
+  return groups;
+}
+
+/**
+ * مقارنة فاتورة بالنظام مع أسطر كوكل شيت:
+ * تُعتبر مطابقة/مكررة فقط عند تطابق (الصيدلية + التاريخ + عدد الأصناف + كل صنف + كميته).
+ * إذا اختلفت الكمية فهي فاتورة مختلفة وليست مكررة.
+ */
+export function checkInvoiceAgainstSheet(
+  inv: any,
+  sheetRows: SheetRowLike[],
+  logicalGroups?: SheetLogicalGroup[]
+): { isDuplicate: boolean; isExactMatch: boolean; statusChangedOnly: boolean; sheetCopiesCount: number; reason: string } {
+  if (!sheetRows || sheetRows.length === 0) {
+    return { isDuplicate: false, isExactMatch: false, statusChangedOnly: false, sheetCopiesCount: 0, reason: '' };
+  }
+  const invNum = String(inv?.invoice_number || '').trim();
+  const invComposite = buildFullInvoiceCompositeKey({
+    pharmacy_name: inv?.pharmacy_name || '',
+    invoice_date: inv?.invoice_date || '',
+    items: inv?.items || []
+  });
+  if (!invComposite) {
+    return { isDuplicate: false, isExactMatch: false, statusChangedOnly: false, sheetCopiesCount: 0, reason: '' };
+  }
+
+  const statusText = inv?.status === 'approved' ? 'معتمدة' : inv?.status === 'rejected' ? 'مرفوضة' : 'قيد التدقيق';
+  const groups = logicalGroups || groupSheetRowsLogical(sheetRows);
+  const matchingGroups = groups.filter(g => g.compositeKey && g.compositeKey === invComposite);
+
+  if (matchingGroups.length === 0) {
+    return { isDuplicate: false, isExactMatch: false, statusChangedOnly: false, sheetCopiesCount: 0, reason: '' };
+  }
+
+  const sameStatusGroup = matchingGroups.find(g => {
+    const statusChanged = Boolean(invNum && g.invoice_number === invNum && g.status !== statusText);
+    return !statusChanged;
+  });
+
+  if (!sameStatusGroup) {
+    return { isDuplicate: false, isExactMatch: true, statusChangedOnly: true, sheetCopiesCount: matchingGroups.length, reason: '' };
+  }
+
+  const invDate = normalizeDateYmd(inv?.invoice_date || '');
+  const itemsCount = (inv?.items || []).length;
+  return {
+    isDuplicate: true,
+    isExactMatch: Boolean(invNum && sameStatusGroup.invoice_number === invNum),
+    statusChangedOnly: false,
+    sheetCopiesCount: matchingGroups.length,
+    reason: `نفس الفاتورة (${sameStatusGroup.pharmacy_name || inv?.pharmacy_name} / ${invDate} — ${itemsCount} أصناف وبنفس الكميات) موجودة مسبقاً${sameStatusGroup.invoice_number ? ` برقم (${sameStatusGroup.invoice_number})` : ''}`
+  };
 }
 
 /**
@@ -193,44 +329,22 @@ export function analyzeSheetDuplicates(rows: SheetRowLike[]): {
   duplicateGroups: SheetDuplicateGroup[];
   duplicateRowIndices: Set<number>;
 } {
-  const groupsMap = new Map<string, Array<{ row: SheetRowLike; rowIndex: number }>>();
-
-  rows.forEach((row, rowIndex) => {
-    const num = String(row.invoice_number || '').trim();
-    const ph = normalizePharmacyName(row.pharmacy_name || '');
-    const dt = normalizeDateYmd(row.invoice_date || '');
-    const ts = String(row.timestamp || '').trim();
-    const gKey = `${num || ph}::${dt}::${ts}`;
-    if (!groupsMap.has(gKey)) groupsMap.set(gKey, []);
-    groupsMap.get(gKey)!.push({ row, rowIndex });
-  });
-
-  const byFullSignature = new Map<string, Array<{ gKey: string; items: Array<{ row: SheetRowLike; rowIndex: number }> }>>();
+  const logicalGroups = groupSheetRowsLogical(rows);
+  const byFullSignature = new Map<string, SheetLogicalGroup[]>();
   const duplicateRowIndices = new Set<number>();
   const duplicateGroups: SheetDuplicateGroup[] = [];
 
-  for (const [gKey, entries] of groupsMap.entries()) {
-    const first = entries[0].row;
-    const compositeKey = buildFullInvoiceCompositeKey({
-      pharmacy_name: first.pharmacy_name,
-      invoice_date: first.invoice_date,
-      items: entries.map(e => ({
-        product_name: e.row.product_name,
-        quantity: e.row.quantity
-      }))
-    });
-
-    if (compositeKey) {
-      if (!byFullSignature.has(compositeKey)) byFullSignature.set(compositeKey, []);
-      byFullSignature.get(compositeKey)!.push({ gKey, items: entries });
+  for (const grp of logicalGroups) {
+    if (grp.compositeKey) {
+      if (!byFullSignature.has(grp.compositeKey)) byFullSignature.set(grp.compositeKey, []);
+      byFullSignature.get(grp.compositeKey)!.push(grp);
     }
   }
 
   for (const copies of byFullSignature.values()) {
     if (copies.length <= 1) continue;
 
-    // Only mark copies beyond the first (and optionally flag all involved rows in UI)
-    // Mark ALL rows of duplicated copies so deleting duplicate restores the remaining copy to white.
+    // تعليم جميع نسخ المجموعة المكررة حتى يعود الصف المتبقي أبيض بمجرد حذف النسخة الزائدة
     for (const copy of copies) {
       for (const entry of copy.items) {
         duplicateRowIndices.add(entry.rowIndex);
@@ -248,8 +362,8 @@ export function analyzeSheetDuplicates(rows: SheetRowLike[]): {
         pharmacy_name: String(first.pharmacy_name || '').trim(),
         timestamp: String(first.timestamp || '').trim(),
         rowsCount: copy.items.length,
-        totalAmount: copy.items.reduce((s, x) => s + (Number(x.row.line_total) || 0), 0),
-        productsSummary: copy.items.map(x => `${x.row.product_name || ''} (${x.row.quantity || 0})`).join('، '),
+        totalAmount: copy.items.reduce((s, x) => s + parseSheetNumber(x.row.line_total || 0), 0),
+        productsSummary: copy.items.map(x => `${x.row.product_name || ''} (${parseSheetNumber(x.row.quantity || 0)})`).join('، '),
         rowIndices: copy.items.map(x => x.rowIndex)
       });
     }

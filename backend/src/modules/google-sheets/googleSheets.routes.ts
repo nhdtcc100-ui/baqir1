@@ -64,9 +64,9 @@ router.get('/gap-status', async (req: Request, res: Response, next: NextFunction
       systemInvoices.map(i => String(i.invoice_number || '').trim()).filter(Boolean)
     );
 
-    // فواتير النظام غير المرفوعة إلى كوكل شيت (فجوة الصادر)
+    // فواتير النظام غير المرفوعة إلى كوكل شيت (فجوة الصادر — الفواتير ذات الكميات المختلفة تُعدّ جديدة)
     const unuploadedInvoices = systemInvoices.filter(
-      inv => !sheetInvoiceNumbers.has(String(inv.invoice_number || '').trim())
+      inv => !GoogleSheetsService.findSheetDuplicateMatch(inv, sheetRows).isDuplicate
     );
 
     // فواتير كوكل شيت غير الموجودة في النظام (فجوة الوارد)
@@ -110,12 +110,8 @@ router.post('/sync-unuploaded',
       const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
       const sheetRows = sheetData.rows || [];
 
-      const sheetInvoiceNumbers = new Set(
-        sheetRows.map(r => String(r.invoice_number || '').trim()).filter(Boolean)
-      );
-
       const unuploaded = systemInvoices.filter(
-        inv => !sheetInvoiceNumbers.has(String(inv.invoice_number || '').trim())
+        inv => !GoogleSheetsService.findSheetDuplicateMatch(inv, sheetRows).isDuplicate
       );
 
       if (unuploaded.length === 0) {

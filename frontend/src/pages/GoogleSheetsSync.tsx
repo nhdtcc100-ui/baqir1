@@ -10,7 +10,11 @@ import { getDosageFormBadgeColor } from './BatchReviewTable';
 import { analyzeSheetDuplicates, SheetDuplicateGroup } from '../utils/duplicateDetector';
 import { APPS_SCRIPT_V2_CODE } from '../utils/appsScriptTemplate';
 
-export const GoogleSheetsSync: React.FC = () => {
+interface GoogleSheetsSyncProps {
+  onDataChanged?: () => void;
+}
+
+export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChanged }) => {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -103,6 +107,7 @@ export const GoogleSheetsSync: React.FC = () => {
         api.addSkippedSheetDuplicateNotices(res.skipped_duplicates);
       }
       await loadData();
+      onDataChanged?.();
     } catch (e: any) {
       setError(e.message || 'فشلت المزامنة مع كوكل شيت');
     } finally {
@@ -121,6 +126,7 @@ export const GoogleSheetsSync: React.FC = () => {
         api.addSkippedSheetDuplicateNotices(res.skipped_duplicates);
       }
       await loadData();
+      onDataChanged?.();
     } catch (e: any) {
       setError(e.message || 'فشل رفع الفواتير غير المرفوعة');
     } finally {
@@ -192,9 +198,26 @@ export const GoogleSheetsSync: React.FC = () => {
     });
   }, [sheetData]);
 
-  // رصد الصفوف المزاحة من السكربت القديم (مثال: اسم الدواء دخل في المحافظة والكمية في الدواء)
+  const dynamicHeaders = useMemo(() => {
+    const baseHeaders = sheetData?.headers && sheetData.headers.length > 0
+      ? sheetData.headers
+      : [
+          'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية',
+          'المدينة / المحافظة', 'المنطقة / المكان', 'اسم المادة الدوائية',
+          'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)',
+          'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)',
+          'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
+        ];
+    return baseHeaders;
+  }, [sheetData]);
+
+  // رصد الصفوف المزاحة أو نقص/اختلاف ترتيب عمود "المنطقة / المكان" بعد المدينة
   const hasShiftedRows = useMemo(() => {
-    return rows.some(r => {
+    const normHeaders = dynamicHeaders.map(h => String(h || '').trim());
+    const areaIdx = normHeaders.findIndex(h => h.includes('المنطق') || h.includes('المكان'));
+    const cityIdx = normHeaders.findIndex(h => h.includes('المدين') || h.includes('المحافظ'));
+    const missingOrBeforeCityArea = areaIdx === -1 || (cityIdx >= 0 && areaIdx !== cityIdx + 1);
+    const badRow = rows.some(r => {
       const prod = String(r.product_name || '').trim();
       const rep = String(r.rep_name || '').trim();
       const ts = String(r.timestamp || '').trim();
@@ -206,7 +229,8 @@ export const GoogleSheetsSync: React.FC = () => {
       const cityContainsProduct = ['drop', 'cream', 'oint', 'قطرة', 'كريم', 'مرهم', 'elica', 'hyfresh'].some(k => city.toLowerCase().includes(k));
       return areaLooksCity || repLooksTs || cityContainsProduct;
     });
-  }, [rows]);
+    return missingOrBeforeCityArea || badRow;
+  }, [rows, dynamicHeaders]);
 
   // كشف الفواتير المكررة في الشيت بالشرط المركب الكامل (الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها معاً)
   const { duplicateGroups, duplicateRowIndices } = useMemo(() => analyzeSheetDuplicates(rows), [rows]);
@@ -229,25 +253,13 @@ export const GoogleSheetsSync: React.FC = () => {
       });
       setSuccessMsg(`تم إرسال أمر حذف الفاتورة المكررة بالكامل (${grp.invoice_number} — ${grp.rowsCount} بنود) وإعادة الصف السليم للون الأبيض ✅`);
       await loadData();
+      onDataChanged?.();
     } catch (e: any) {
       setError(e?.message || 'تعذر حذف الفاتورة المكررة');
     } finally {
       setDeletingDupKey(null);
     }
   };
-
-  const dynamicHeaders = useMemo(() => {
-    const baseHeaders = sheetData?.headers && sheetData.headers.length > 0
-      ? sheetData.headers
-      : [
-          'رقم الفاتورة', 'تاريخ الفاتورة', 'اسم المذخر', 'اسم الصيدلية',
-          'المنطقة / المكان', 'المدينة / المحافظة', 'اسم المادة الدوائية',
-          'نوع المادة / الشكل الدوائي', 'الكمية', 'سعر المفرد (د.ع)',
-          'البونص المجاني', 'المجموع (د.ع)', 'صافي الفاتورة الكلي (د.ع)',
-          'اسم المندوب العلمي', 'حالة الاعتماد', 'وقت وتاريخ الإدراج'
-        ];
-    return baseHeaders;
-  }, [sheetData]);
 
   const rowsWithIndex = useMemo(() => rows.map((row, rowIndex) => ({ row, rowIndex })), [rows]);
 
@@ -364,10 +376,10 @@ export const GoogleSheetsSync: React.FC = () => {
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
                 <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-                <span>تنبيه هام جداً: كود Google Apps Script المنشور لديك على كوكل ما زال قديماً (الإصدار 1)</span>
+                <span>تنبيه هام: يلزم تحديث كود Google Apps Script إلى الإصدار 7 أو إصلاح أعمدة الشيت (إضافة عمود المنطقة بعد المدينة)</span>
               </div>
               <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.65 }}>
-                لهذا السبب يضع الشيت «اسم الدواء» بدل المنطقة ويضيف صفاً جديداً عند التعديل. لإصلاح ذلك نهائياً: انسخ الكود الجديد (الإصدار 3) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← والأهم: افتح <strong>Deploy ← Manage deployments ← Edit ← اختر Version: New version ← Deploy</strong> (الحفظ وحده لا يحدّث الرابط!) ثم اضغط زر «إصلاح الصفوف وتلوين الشيت الآن».
+                لضمان وجود عمود <strong>المنطقة / المكان</strong> مباشرة بعد <strong>المدينة / المحافظة</strong> ومنع حذف الأصلية عند إزالة التكرارات: انسخ الكود الجديد (v7) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← <strong>Deploy ← Manage deployments ← Edit ← Version: New version ← Deploy</strong> ثم اضغط «إصلاح الأعمدة وتلوين الشيت الآن».
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -378,7 +390,7 @@ export const GoogleSheetsSync: React.FC = () => {
                 style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
               >
                 {copiedCode ? <Check size={15} /> : <Copy size={15} />}
-                {copiedCode ? 'تم نسخ كود v3!' : 'نسخ كود Apps Script v3 📋'}
+                {copiedCode ? 'تم نسخ كود v7!' : 'نسخ كود Apps Script v7 📋'}
               </button>
               <button
                 type="button"
@@ -388,7 +400,7 @@ export const GoogleSheetsSync: React.FC = () => {
                 style={{ fontWeight: 800 }}
               >
                 <RefreshCw size={15} className={repairingSheet ? 'animate-spin' : ''} />
-                {repairingSheet ? 'جارِ الإصلاح...' : 'إصلاح الصفوف وتلوين الشيت الآن 🛠️'}
+                {repairingSheet ? 'جارِ الإصلاح...' : 'إصلاح الأعمدة وتلوين الشيت الآن 🛠️'}
               </button>
             </div>
           </div>
@@ -749,27 +761,38 @@ export const GoogleSheetsSync: React.FC = () => {
                       <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--gray-500)', whiteSpace: 'nowrap', verticalAlign: 'middle', padding: '0.6rem 0.75rem' }}>
                         {idx + 1}
                       </td>
-                      {dynamicHeaders.map((_, cIdx) => {
+                      {dynamicHeaders.map((headerLabel, cIdx) => {
+                        const normLabel = String(headerLabel || '').toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
                         const cellVal = Array.isArray(row.cells) && row.cells[cIdx] !== undefined
                           ? String(row.cells[cIdx])
                           : (() => {
-                              const fallbackMap = [
-                                row.invoice_number, row.invoice_date, row.warehouse_name, row.pharmacy_name,
-                                row.area, row.city, row.product_name, row.dosage_form,
-                                row.quantity, row.unit_price, row.bonus_quantity, row.line_total,
-                                row.total_invoice, row.rep_name, row.status, row.timestamp
-                              ];
-                              return fallbackMap[cIdx] !== undefined ? String(fallbackMap[cIdx]) : '';
+                              if (normLabel.includes('رقم الفاتور')) return String(row.invoice_number ?? '');
+                              if (normLabel.includes('تاريخ الفاتور')) return String(row.invoice_date ?? '');
+                              if (normLabel.includes('المذخر')) return String(row.warehouse_name ?? '');
+                              if (normLabel.includes('اسم الصيدلي')) return String(row.pharmacy_name ?? '');
+                              if (normLabel.includes('المدين') || normLabel.includes('المحافظ')) return String(row.city ?? '');
+                              if (normLabel.includes('المنطق') || normLabel.includes('المكان')) return String(row.area ?? '');
+                              if (normLabel.includes('اسم الماد') || normLabel.includes('الماده الدوائي')) return String(row.product_name ?? '');
+                              if (normLabel.includes('نوع الماد') || normLabel.includes('الشكل الدوائي')) return String(row.dosage_form ?? '');
+                              if (normLabel.includes('الكمي')) return String(row.quantity ?? '');
+                              if (normLabel.includes('سعر المفرد')) return String(row.unit_price ?? '');
+                              if (normLabel.includes('البونص')) return String(row.bonus_quantity ?? '');
+                              if (normLabel.includes('صافي الفاتور')) return String(row.total_invoice ?? '');
+                              if (normLabel.includes('المجموع')) return String(row.line_total ?? '');
+                              if (normLabel.includes('المندوب')) return String(row.rep_name ?? '');
+                              if (normLabel.includes('حاله الاعتماد') || normLabel.includes('الحال')) return String(row.status ?? '');
+                              if (normLabel.includes('وقت وتاريخ') || normLabel.includes('الادراج')) return String(row.timestamp ?? '');
+                              return '';
                             })();
 
-                        if (cIdx === 0) {
+                        if (normLabel.includes('رقم الفاتور') || (!normLabel && cIdx === 0)) {
                           return (
                             <td key={cIdx} style={{ fontWeight: 800, color: isDupRow ? '#b91c1c' : 'var(--primary)', whiteSpace: 'nowrap', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
                               {cellVal || '—'}
                             </td>
                           );
                         }
-                        if (cIdx === 7) {
+                        if (normLabel.includes('نوع الماد') || normLabel.includes('الشكل الدوائي')) {
                           const raw = cellVal.trim();
                           const form = ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(raw)
                             ? raw
@@ -785,15 +808,16 @@ export const GoogleSheetsSync: React.FC = () => {
                             </td>
                           );
                         }
-                        if (cIdx === 9 || cIdx === 11 || cIdx === 12) {
+                        if (normLabel.includes('سعر المفرد') || normLabel.includes('المجموع') || normLabel.includes('صافي الفاتور')) {
+                          const isTotal = normLabel.includes('المجموع') || normLabel.includes('صافي الفاتور');
                           const n = Number(String(cellVal).replace(/[^\d.-]/g, ''));
                           return (
-                            <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', fontWeight: cIdx === 11 || cIdx === 12 ? 800 : 600, color: cIdx === 11 ? 'var(--primary)' : undefined, verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
+                            <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', fontWeight: isTotal ? 800 : 600, color: normLabel.includes('المجموع') ? 'var(--primary)' : undefined, verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
                               {cellVal ? (isNaN(n) ? cellVal : `${n.toLocaleString()} د.ع`) : '—'}
                             </td>
                           );
                         }
-                        if (cIdx === 14) {
+                        if (normLabel.includes('حاله الاعتماد') || normLabel.includes('الحال')) {
                           return (
                             <td key={cIdx} style={{ whiteSpace: 'nowrap', textAlign: 'center', verticalAlign: 'middle', padding: '0.6rem 0.85rem' }}>
                               <span className={`badge ${cellVal.includes('معتمدة') ? 'badge-success' : cellVal.includes('مرفوضة') ? 'badge-danger' : 'badge-warning'}`}>
@@ -802,7 +826,10 @@ export const GoogleSheetsSync: React.FC = () => {
                             </td>
                           );
                         }
-                        const isWrapCol = [2, 3, 6, 13].includes(cIdx) || cIdx >= 16;
+                        const isTs = normLabel.includes('وقت وتاريخ') || normLabel.includes('الادراج');
+                        const isQtyOrBonus = normLabel.includes('الكمي') || normLabel.includes('البونص');
+                        const isBold = normLabel.includes('اسم الصيدلي') || normLabel.includes('اسم الماد') || normLabel.includes('المنطق');
+                        const isWrapCol = normLabel.includes('المذخر') || normLabel.includes('اسم الصيدلي') || normLabel.includes('اسم الماد') || normLabel.includes('المندوب') || cIdx >= 16;
                         return (
                           <td
                             key={cIdx}
@@ -813,12 +840,12 @@ export const GoogleSheetsSync: React.FC = () => {
                               maxWidth: isWrapCol ? 280 : undefined,
                               lineHeight: 1.45,
                               verticalAlign: 'middle',
-                              textAlign: [8, 10].includes(cIdx) ? 'center' : undefined,
-                              fontWeight: cIdx === 3 || cIdx === 6 ? 700 : undefined,
+                              textAlign: isQtyOrBonus ? 'center' : undefined,
+                              fontWeight: isBold ? 700 : undefined,
                               padding: '0.6rem 0.85rem'
                             }}
                           >
-                            {cIdx === 15 ? (
+                            {isTs ? (
                               <span style={{ fontSize: '0.76rem', color: 'var(--gray-500)', whiteSpace: 'nowrap' }}>
                                 <Clock size={11} style={{ display: 'inline', marginLeft: 3 }} />
                                 {cellVal || '—'}

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Invoice, Pharmacy } from '../types';
 import {
-  FileText, Download, CheckCircle2, AlertCircle,
+  FileText, Download, CheckCircle2, AlertCircle, RefreshCw,
   Eye, Filter, Calendar, Building2, Gift, Search, X, Check, Clock, Trash2, Edit3, Plus, Copy
 } from 'lucide-react';
 import { api } from '../services/api';
@@ -19,6 +19,7 @@ interface BillingLedgerProps {
   onDeleteInvoice?: (id: string) => void;
   onUpdateInvoice?: (invoice: Invoice) => void;
   onAddInvoice?: () => void;
+  onRefresh?: () => void;
 }
 
 export const BillingLedger: React.FC<BillingLedgerProps> = ({
@@ -29,7 +30,8 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   onRejectInvoice,
   onDeleteInvoice,
   onUpdateInvoice,
-  onAddInvoice
+  onAddInvoice,
+  onRefresh
 }) => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending_review' | 'approved' | 'rejected'>('all');
   const [pharmacyFilter, setPharmacyFilter] = useState<string>('all');
@@ -197,9 +199,10 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setBulkDeleting(true);
     try {
       for (const dup of duplicateCopies) {
-        await api.deleteInvoice(dup.id);
+        await api.deleteInvoice(dup.id, { preserveOriginalInSheet: true });
         onDeleteInvoice?.(dup.id);
       }
+      onRefresh?.();
     } catch (e: any) {
       alert('حدث خطأ أثناء إزالة بعض الفواتير: ' + (e.message || e));
     } finally {
@@ -228,10 +231,11 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
   const totalBonusPieces = filteredInvoices.reduce((s, i) => s + Number(i.total_bonus_count || 0), 0);
 
   const handleExportCSV = () => {
-    const headers = ['رقم الفاتورة', 'الصيدلية', 'المنطقة / المكان', 'المندوب', 'التاريخ', 'المبلغ (د.ع)', 'القطع', 'البونص', 'الحالة', 'سبب الرفض'];
+    const headers = ['رقم الفاتورة', 'الصيدلية', 'المدينة / المحافظة', 'المنطقة / المكان', 'المندوب', 'التاريخ', 'المبلغ (د.ع)', 'القطع', 'البونص', 'الحالة', 'سبب الرفض'];
     const rows = filteredInvoices.map(i => [
       i.invoice_number || '',
       `"${i.pharmacy_name || ''}"`,
+      `"${i.pharmacy_city || 'بغداد'}"`,
       `"${i.pharmacy_area || (i as any).area || ''}"`,
       `"${i.rep_name || ''}"`,
       i.invoice_date,
@@ -271,7 +275,8 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
     setDeleteLoading(true);
     setDeleteError(null);
     try {
-      await api.deleteInvoice(deletingId);
+      const targetDupInfo = duplicateInfoMap.get(deletingId);
+      await api.deleteInvoice(deletingId, { preserveOriginalInSheet: Boolean(targetDupInfo?.isDuplicate) });
       onDeleteInvoice?.(deletingId);
       setDeletingId(null);
       if (selectedInvoice?.id === deletingId) setSelectedInvoice(null);
@@ -301,6 +306,12 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
         </div>
 
         <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {onRefresh && (
+            <button onClick={onRefresh} className="btn-clay btn-secondary" title="مزامنة وتحديث الفواتير من كوكل شيت">
+              <RefreshCw size={17} />
+              <span>مزامنة من الشيت</span>
+            </button>
+          )}
           {onAddInvoice && (
             <button
               onClick={onAddInvoice}

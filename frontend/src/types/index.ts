@@ -84,6 +84,7 @@ export interface Invoice {
   rejection_reason?: string;
   items?: InvoiceItem[];
   created_at: string;
+  pending_sheet_upload?: boolean;
 }
 
 export interface KPISummary {

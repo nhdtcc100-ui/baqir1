@@ -98,72 +98,93 @@ export class GoogleSheetsService {
         const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
         if (jsonMatch && jsonMatch[1]) {
           const data = JSON.parse(jsonMatch[1]);
-          const cols: string[] = (data.table?.cols || []).map((c: any) => String(c.label || c.id || '').trim());
-          const rows: any[] = [];
+          const rawCols: string[] = (data.table?.cols || []).map((c: any) => String(c.label || '').trim());
+          const rawGvizRows: any[] = Array.isArray(data.table?.rows) ? data.table.rows : [];
+          let cols = rawCols;
+          let startIdx = 0;
 
-          if (Array.isArray(data.table?.rows)) {
-            for (const r of data.table.rows) {
-              const c = r.c || [];
-              if (c.length === 0) continue;
-              const cells = cols.map((_, ci) => String(c[ci]?.f ?? c[ci]?.v ?? '').trim());
-              const isNonEmpty = cells.some(Boolean);
-              if (!isNonEmpty) continue;
-
-              const is16Col = c.length >= 15 || cols.length >= 15;
-              if (is16Col) {
-                const phName = String(c[3]?.f ?? c[3]?.v ?? '').trim();
-                const prName = String(c[6]?.f ?? c[6]?.v ?? '').trim();
-                const rowObj: any = {
-                  invoice_number: String(c[0]?.f ?? c[0]?.v ?? '').trim(),
-                  invoice_date:   String(c[1]?.f ?? c[1]?.v ?? '').trim(),
-                  warehouse_name: String(c[2]?.f ?? c[2]?.v ?? '').trim(),
-                  pharmacy_name:  phName,
-                  area:           String((c[4]?.f ?? c[4]?.v ?? '') || detectAreaFromName(phName) || 'مركز المدينة').trim(),
-                  city:           String(c[5]?.f ?? c[5]?.v ?? 'بغداد').trim(),
-                  product_name:   prName,
-                  dosage_form:    String((c[7]?.f ?? c[7]?.v ?? '') || detectDosageForm(prName)).trim(),
-                  quantity:       Number(c[8]?.v ?? 0),
-                  unit_price:     Number(c[9]?.v ?? 0),
-                  bonus_quantity: Number(c[10]?.v ?? 0),
-                  line_total:     Number(c[11]?.v ?? 0),
-                  total_invoice:  Number(c[12]?.v ?? 0),
-                  rep_name:       String(c[13]?.f ?? c[13]?.v ?? '').trim(),
-                  status:         String(c[14]?.f ?? c[14]?.v ?? '').trim(),
-                  timestamp:      String(c[15]?.f ?? c[15]?.v ?? '').trim(),
-                  cells
-                };
-                if (cols.length > 16) {
-                  const extra: Record<string, string> = {};
-                  for (let xi = 16; xi < cols.length; xi++) {
-                    extra[cols[xi] || `col_${xi + 1}`] = cells[xi] || '';
-                  }
-                  rowObj.extra_columns = extra;
-                }
-                rows.push(rowObj);
-              } else {
-                const phName = String(c[3]?.v ?? '');
-                const prName = String(c[5]?.v ?? '');
-                rows.push({
-                  invoice_number: String(c[0]?.v ?? ''),
-                  invoice_date:   String(c[1]?.f ?? c[1]?.v ?? ''),
-                  warehouse_name: String(c[2]?.v ?? ''),
-                  pharmacy_name:  phName,
-                  area:           detectAreaFromName(phName) || 'مركز المدينة',
-                  city:           String(c[4]?.v ?? 'بغداد'),
-                  product_name:   prName,
-                  dosage_form:    detectDosageForm(prName),
-                  quantity:       Number(c[6]?.v ?? 0),
-                  unit_price:     Number(c[7]?.v ?? 0),
-                  bonus_quantity: Number(c[8]?.v ?? 0),
-                  line_total:     Number(c[9]?.v ?? 0),
-                  total_invoice:  Number(c[10]?.v ?? 0),
-                  rep_name:       String(c[11]?.v ?? ''),
-                  status:         String(c[12]?.v ?? ''),
-                  timestamp:      String(c[13]?.f ?? c[13]?.v ?? ''),
-                  cells
-                });
-              }
+          if (!cols.some(Boolean) && rawGvizRows.length > 0) {
+            const row0 = (rawGvizRows[0]?.c || []).map((cell: any) => String(cell?.f ?? cell?.v ?? '').trim());
+            if (row0.some((h: string) => h.includes('رقم الفاتورة') || h.includes('اسم الصيدلية') || h.includes('الكمية'))) {
+              cols = row0;
+              startIdx = 1;
             }
+          }
+          if (!cols.some(Boolean)) {
+            cols = (data.table?.cols || []).map((c: any) => String(c.label || c.id || '').trim());
+          }
+
+          const normH = cols.map(h => h.toLowerCase().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي'));
+          const findCol = (pats: string[], fb: number) => {
+            const idx = normH.findIndex(h => h && pats.some(p => h.includes(p)));
+            return idx >= 0 ? idx : fb;
+          };
+          const areaColIdx = normH.findIndex(h => h && (h.includes('المنطق') || h.includes('المكان')));
+          const cityColIdx = normH.findIndex(h => h && (h.includes('المدين') || h.includes('المحافظ')));
+          const dosageColIdx = normH.findIndex(h => h && (h.includes('نوع الماد') || h.includes('الشكل الدوائي')));
+          const has16Schema = areaColIdx >= 0 && dosageColIdx >= 0;
+
+          const colIdx = {
+            invoice_number: findCol(['رقم الفاتور'], 0),
+            invoice_date:   findCol(['تاريخ الفاتور'], 1),
+            warehouse_name: findCol(['المذخر'], 2),
+            pharmacy_name:  findCol(['اسم الصيدلي'], 3),
+            city:           cityColIdx >= 0 ? cityColIdx : 4,
+            area:           areaColIdx >= 0 ? areaColIdx : -1,
+            product_name:   findCol(['اسم الماد', 'الماده الدوائي'], has16Schema ? 6 : 5),
+            dosage_form:    dosageColIdx >= 0 ? dosageColIdx : -1,
+            quantity:       findCol(['الكمي'], has16Schema ? 8 : 6),
+            unit_price:     findCol(['سعر المفرد'], has16Schema ? 9 : 7),
+            bonus_quantity: findCol(['البونص'], has16Schema ? 10 : 8),
+            line_total:     findCol(['المجموع'], has16Schema ? 11 : 9),
+            total_invoice:  findCol(['صافي الفاتور'], has16Schema ? 12 : 10),
+            rep_name:       findCol(['المندوب'], has16Schema ? 13 : 11),
+            status:         findCol(['حاله الاعتماد', 'الحال'], has16Schema ? 14 : 12),
+            timestamp:      findCol(['وقت وتاريخ', 'الادراج'], has16Schema ? 15 : 13)
+          };
+
+          const rows: any[] = [];
+          for (let ri = startIdx; ri < rawGvizRows.length; ri++) {
+            const c = rawGvizRows[ri]?.c || [];
+            if (c.length === 0) continue;
+            const cells = cols.map((_, ci) => String(c[ci]?.f ?? c[ci]?.v ?? '').trim());
+            if (!cells.some(Boolean)) continue;
+            const val = (i: number) => (i >= 0 ? String(c[i]?.f ?? c[i]?.v ?? '').trim() : '');
+            const invNum = val(colIdx.invoice_number);
+            const phName = val(colIdx.pharmacy_name);
+            const prName = val(colIdx.product_name);
+            if (invNum === 'رقم الفاتورة' || phName === 'اسم الصيدلية' || invNum === '123') continue;
+            if (!invNum && !phName && !prName) continue;
+
+            const rawArea = colIdx.area >= 0 ? val(colIdx.area) : '';
+            const rawDosage = colIdx.dosage_form >= 0 ? val(colIdx.dosage_form) : '';
+            const rowObj: any = {
+              invoice_number: invNum,
+              invoice_date:   val(colIdx.invoice_date),
+              warehouse_name: val(colIdx.warehouse_name),
+              pharmacy_name:  phName,
+              city:           val(colIdx.city) || 'بغداد',
+              area:           rawArea || detectAreaFromName(phName) || 'مركز المدينة',
+              product_name:   prName,
+              dosage_form:    rawDosage || detectDosageForm(prName),
+              quantity:       Number(c[colIdx.quantity]?.v ?? 0),
+              unit_price:     Number(c[colIdx.unit_price]?.v ?? 0),
+              bonus_quantity: Number(c[colIdx.bonus_quantity]?.v ?? 0),
+              line_total:     Number(c[colIdx.line_total]?.v ?? 0),
+              total_invoice:  Number(c[colIdx.total_invoice]?.v ?? 0),
+              rep_name:       val(colIdx.rep_name),
+              status:         val(colIdx.status),
+              timestamp:      val(colIdx.timestamp),
+              cells
+            };
+            if (cols.length > 16) {
+              const extra: Record<string, string> = {};
+              for (let xi = 16; xi < cols.length; xi++) {
+                extra[cols[xi] || `col_${xi + 1}`] = cells[xi] || '';
+              }
+              rowObj.extra_columns = extra;
+            }
+            rows.push(rowObj);
           }
 
           return {
@@ -336,7 +357,7 @@ export class GoogleSheetsService {
     return s.split('T')[0];
   }
 
-  private static findSheetDuplicateMatch(invoice: any, sheetRows: SheetRow[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
+  public static findSheetDuplicateMatch(invoice: any, sheetRows: SheetRow[]): { isDuplicate: boolean; isExactMatch: boolean; reason: string } {
     const phName = this.normalizePharmacy(invoice.pharmacy_name || '');
     const invDate = this.normalizeDateYmd(invoice.invoice_date || '');
     const items = invoice.items || [];
@@ -356,15 +377,32 @@ export class GoogleSheetsService {
     const itemsSig = `${normItems.length}::${normItems.map((x: any) => `${x.prod}:${x.qty}`).join('|')}`;
     const invNum = String(invoice.invoice_number || '').trim();
 
-    // Group existing sheet rows by logical invoice submission so multi-item invoices compare as complete units
-    const groups = new Map<string, SheetRow[]>();
+    // Group existing sheet rows by logical invoice submission (and split identical copies that share a timestamp)
+    const buckets = new Map<string, SheetRow[]>();
     for (const r of sheetRows) {
       const gKey = `${String(r.invoice_number || r.pharmacy_name).trim()}::${this.normalizeDateYmd(r.invoice_date)}::${String(r.timestamp || '').trim()}`;
-      if (!groups.has(gKey)) groups.set(gKey, []);
-      groups.get(gKey)!.push(r);
+      if (!buckets.has(gKey)) buckets.set(gKey, []);
+      buckets.get(gKey)!.push(r);
     }
 
-    for (const exRows of groups.values()) {
+    const logicalCopies: SheetRow[][] = [];
+    for (const entries of buckets.values()) {
+      let block: SheetRow[] = [];
+      let seen = new Set<string>();
+      for (const r of entries) {
+        const pk = `${this.normalizeProductKey(r.product_name || '')}:${Math.round(Number(r.quantity || 0))}`;
+        if (pk && pk !== ':0' && seen.has(pk) && block.length > 0) {
+          logicalCopies.push(block);
+          block = [];
+          seen = new Set<string>();
+        }
+        block.push(r);
+        if (pk && pk !== ':0') seen.add(pk);
+      }
+      if (block.length > 0) logicalCopies.push(block);
+    }
+
+    for (const exRows of logicalCopies) {
       const exPh = this.normalizePharmacy(exRows[0]?.pharmacy_name || '');
       const exDate = this.normalizeDateYmd(exRows[0]?.invoice_date || '');
       if (exPh !== phName || exDate !== invDate) continue;
@@ -499,9 +537,14 @@ export class GoogleSheetsService {
   }
 
   /**
-   * 2 ج. حذف جميع أسطر فاتورة من كوكل شيت عند حذفها من النظام
+   * 2 ج. حذف جميع أسطر فاتورة أو نسخة مكررة فقط من كوكل شيت عند حذفها من النظام
    */
-  static async deleteInvoiceRows(invoiceNumber: string, customWebhook?: string, customSheetId?: string): Promise<SheetSyncResult> {
+  static async deleteInvoiceRows(
+    invoiceNumber: string,
+    customWebhook?: string,
+    customSheetId?: string,
+    opts?: { deleteMode?: 'all' | 'duplicate_copy'; pharmacyName?: string; invoiceDate?: string }
+  ): Promise<SheetSyncResult> {
     const cleanNum = String(invoiceNumber || '').trim();
     const webhook = (customWebhook || '').trim() || this.getWebhookUrl();
     const sheetId = (customSheetId || '').trim() || this.getSheetId();
@@ -513,7 +556,10 @@ export class GoogleSheetsService {
         action: 'delete_invoice',
         spreadsheetId: sheetId,
         sheetName: 'الفواتير',
-        invoice_number: cleanNum
+        invoice_number: cleanNum,
+        delete_mode: opts?.deleteMode || 'all',
+        pharmacy_name: opts?.pharmacyName,
+        invoice_date: opts?.invoiceDate ? String(opts.invoiceDate).split('T')[0] : undefined
       }, webhook);
       return {
         success: true,
@@ -709,8 +755,8 @@ export class GoogleSheetsService {
       'تاريخ الفاتورة',
       'اسم المذخر',
       'اسم الصيدلية',
-      'المنطقة / المكان',
       'المدينة / المحافظة',
+      'المنطقة / المكان',
       'اسم المادة الدوائية',
       'نوع المادة / الشكل الدوائي',
       'الكمية',
@@ -725,16 +771,16 @@ export class GoogleSheetsService {
   }
 
   /**
-   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 5: الشيت الرئيسي 4 أعمدة + تعديل الاسم والرمز + تعدد قواعد البيانات + الفصل بين الإضافة والتعديل + تلوين الأحمر والأبيض)
+   * نص كود Google Apps Script المطور للربط والمزامنة (الإصدار 7: ترتيب المدينة ثم المنطقة + إصلاح الجداول 14/16 تلقائياً + حماية الأصلية + تعدد قواعد البيانات)
    */
   static getAppsScriptCode(): string {
     return `/**
- * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (الإصدار 5)
+ * كود الربط التلقائي وإصلاح الجداول لنظام مندوبي الأدوية مع كوكل شيت (الإصدار 7)
  */
 
 var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
 var ADMIN_USERS_SHEET_ID = '1_CBGFeFrTaw6L_7U1ztdAZ3gJjjVMEpUhE8oyUn-NjI';
-var SCRIPT_VERSION = 5;
+var SCRIPT_VERSION = 7;
 
 function getTargetSpreadsheet(customSpreadsheetId) {
   var targetId = String(customSpreadsheetId || '').trim();
@@ -894,8 +940,8 @@ function getExpectedCols(sheet) {
     'تاريخ الفاتورة',
     'اسم المذخر',
     'اسم الصيدلية',
-    'المنطقة / المكان',
     'المدينة / المحافظة',
+    'المنطقة / المكان',
     'اسم المادة الدوائية',
     'نوع المادة / الشكل الدوائي',
     'الكمية',
@@ -966,16 +1012,33 @@ function detectAreaFromPh(phName) {
   var s = normAr(phName);
   var areas = [
     ['فلسطين', 'شارع فلسطين'], ['كراده', 'الكرادة'], ['منصور', 'المنصور'],
-    ['زعفرانيه', 'الزعفرانية'], ['مدينة الصدر', 'مدينة الصدر'], ['مدينه الصدر', 'مدينة الصدر'],
+    ['زعفرانيه', 'الزعفرانية'], ['مدينة الصدر', 'مدينة الصدر'], ['مدينه الصدر', 'مدينة الصدر'], ['صدر', 'مدينة الصدر'],
     ['اعظميه', 'الأعظمية'], ['كاظميه', 'الكاظمية'], ['دوره', 'الدورة'],
     ['بياع', 'البياع'], ['عامريه', 'العامرية'], ['غزاليه', 'الغزالية'],
     ['شعب', 'الشعب'], ['زيونه', 'زيونة'], ['بغداد الجديده', 'بغداد الجديدة'],
-    ['جادرية', 'الجادرية'], ['جادريه', 'الجادرية'], ['حارثيه', 'الحارثية']
+    ['جادرية', 'الجادرية'], ['جادريه', 'الجادرية'], ['حارثيه', 'الحارثية'],
+    ['سيديه', 'السيدية'], ['بلديات', 'البلديات'], ['حبيبيه', 'الحبيبية'],
+    ['يرموك', 'اليرموك'], ['جامعه', 'حي الجامعة'], ['حي اور', 'حي أور'],
+    ['مشتل', 'المشتل'], ['غدير', 'الغدير'], ['خضراء', 'حي الخضراء'],
+    ['قاهره', 'القاهرة'], ['صليخ', 'الصليخ'], ['شعله', 'الشعلة'],
+    ['بسمايه', 'بسماية'], ['محموديه', 'المحمودية'], ['مدائن', 'المدائن'],
+    ['ابو غريب', 'أبو غريب'], ['طارميه', 'الطارمية'], ['كرخ', 'الكرخ'], ['رصافه', 'الرصافة']
   ];
   for (var i = 0; i < areas.length; i++) {
     if (s.indexOf(areas[i][0]) !== -1) return areas[i][1];
   }
+  var slashMatch = String(phName || '').match(/[\\/-]\\s*([^\\n\\r\\/-]{3,25})$/);
+  if (slashMatch && slashMatch[1] && slashMatch[1].trim().length >= 3) return slashMatch[1].trim();
   return 'مركز المدينة';
+}
+
+function isKnownCityName(val) {
+  var v = normAr(val);
+  var cities = ['بغداد', 'البصره', 'اربيل', 'النجف', 'كربلاء', 'الموصل', 'نينوى', 'بابل', 'الحله', 'كركوك', 'ديالى', 'الانبار', 'واسط', 'ذي قار', 'ميسان', 'المثنى', 'القادسيه', 'الديوانيه', 'صلاح الدين', 'دهوك', 'السليمانيه'];
+  for (var i = 0; i < cities.length; i++) {
+    if (v === cities[i]) return true;
+  }
+  return false;
 }
 
 function isShiftedOldRow(row) {
@@ -985,17 +1048,34 @@ function isShiftedOldRow(row) {
   var c13 = String(row[13] || '').trim();
   var c14 = String(row[14] || '').trim();
   if (row.length < 16) return true;
-  if ((c4 === 'بغداد' || c4 === 'البصرة' || c4 === 'أربيل' || c4 === 'النجف' || c4 === 'كربلاء') && !isNaN(c6Num) && c6Num > 0 && c5 !== '') return true;
-  if (c13 && c13.indexOf(':') !== -1 && !c14 && !String(row[15] || '').trim()) return true;
+  if (c5 !== '' && !isNaN(c6Num) && c6Num > 0 && c13 && c13.indexOf(':') !== -1 && !c14 && !String(row[15] || '').trim()) return true;
+  if (isKnownCityName(c4) && !isNaN(c6Num) && c6Num > 0 && c5 !== '' && isNaN(Number(c5)) && !c14 && !String(row[15] || '').trim()) return true;
   return false;
 }
 
 function resolveColMap(headers) {
+  var hasArea = false;
+  var hasDosage = false;
+  for (var k = 0; k < headers.length; k++) {
+    var hk = normAr(headers[k]);
+    if (hk.indexOf('المنطق') !== -1 || hk.indexOf('المكان') !== -1) hasArea = true;
+    if (hk.indexOf('نوع الماد') !== -1 || hk.indexOf('الشكل الدوائي') !== -1) hasDosage = true;
+  }
   var map = {
     invoice_number: 0, invoice_date: 1, warehouse_name: 2, pharmacy_name: 3,
-    area: 4, city: 5, product_name: 6, dosage_form: 7,
-    quantity: 8, unit_price: 9, bonus_quantity: 10, line_total: 11,
-    total_invoice: 12, rep_name: 13, status: 14, timestamp: 15, loyalty: 16
+    city: 4,
+    area: hasArea ? 5 : -1,
+    product_name: hasArea ? 6 : 5,
+    dosage_form: hasDosage ? 7 : -1,
+    quantity: (hasArea && hasDosage) ? 8 : 6,
+    unit_price: (hasArea && hasDosage) ? 9 : 7,
+    bonus_quantity: (hasArea && hasDosage) ? 10 : 8,
+    line_total: (hasArea && hasDosage) ? 11 : 9,
+    total_invoice: (hasArea && hasDosage) ? 12 : 10,
+    rep_name: (hasArea && hasDosage) ? 13 : 11,
+    status: (hasArea && hasDosage) ? 14 : 12,
+    timestamp: (hasArea && hasDosage) ? 15 : 13,
+    loyalty: (hasArea && hasDosage) ? 16 : 14
   };
   for (var c = 0; c < headers.length; c++) {
     var h = normAr(headers[c]);
@@ -1030,23 +1110,27 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
   var colMap = resolveColMap(headers);
   var invNum = String(r.invoice_number || '').trim();
   var phName = String(r.pharmacy_name || (existingRow ? existingRow[colMap.pharmacy_name] : '') || '').trim();
+  var resolvedCity = String(r.city || r.pharmacy_city || (existingRow && colMap.city >= 0 ? existingRow[colMap.city] : '') || 'بغداد').trim();
   var resolvedArea = String(r.area || r.pharmacy_area || '').trim();
-  if (!resolvedArea && existingRow) {
+  if (!resolvedArea && existingRow && colMap.area >= 0) {
     var oldArea = String(existingRow[colMap.area] || '').trim();
-    if (oldArea && oldArea !== 'بغداد') resolvedArea = oldArea;
+    if (oldArea && !isKnownCityName(oldArea)) resolvedArea = oldArea;
   }
-  if (!resolvedArea) resolvedArea = detectAreaFromPh(phName);
+  if (!resolvedArea || resolvedArea === 'مركز المدينة') {
+    var guessed = detectAreaFromPh(phName);
+    if (!resolvedArea || (guessed && guessed !== 'مركز المدينة')) resolvedArea = guessed;
+  }
   var prodName = String(r.product_name || (existingRow ? existingRow[colMap.product_name] : '') || '').trim();
-  var repName = String(r.rep_name || (existingRow ? existingRow[colMap.rep_name] : '') || 'علي حسن (مندوب بغداد)').trim();
+  var repName = String(r.rep_name || (existingRow ? existingRow[colMap.rep_name] : '') || 'مندوب علمي').trim();
 
   vals[colMap.invoice_number] = invNum;
   vals[colMap.invoice_date]   = formatYmd(r.invoice_date);
   vals[colMap.warehouse_name] = r.warehouse_name || (existingRow ? existingRow[colMap.warehouse_name] : '') || 'مذخر الشغف الحديث';
   vals[colMap.pharmacy_name]  = phName;
-  vals[colMap.area]           = resolvedArea;
-  vals[colMap.city]           = r.city || r.pharmacy_city || (existingRow ? existingRow[colMap.city] : '') || 'بغداد';
+  if (colMap.city >= 0) vals[colMap.city] = resolvedCity || 'بغداد';
+  if (colMap.area >= 0) vals[colMap.area] = resolvedArea;
   vals[colMap.product_name]   = prodName;
-  vals[colMap.dosage_form]    = r.dosage_form || detectDosage(prodName);
+  if (colMap.dosage_form >= 0) vals[colMap.dosage_form] = r.dosage_form || detectDosage(prodName);
   vals[colMap.quantity]       = Number(r.quantity || 0);
   vals[colMap.unit_price]     = Number(r.unit_price || 0);
   vals[colMap.bonus_quantity] = Number(r.bonus_quantity || 0);
@@ -1055,7 +1139,7 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
   vals[colMap.rep_name]       = repName;
   vals[colMap.status]         = r.status || (existingRow ? existingRow[colMap.status] : '') || 'قيد التدقيق';
   vals[colMap.timestamp]      = r.timestamp || (existingRow ? existingRow[colMap.timestamp] : '') || '';
-  if (colMap.loyalty < totalCols && r.loyalty !== undefined && r.loyalty !== '') {
+  if (colMap.loyalty >= 0 && colMap.loyalty < totalCols && r.loyalty !== undefined && r.loyalty !== '') {
     vals[colMap.loyalty] = r.loyalty;
   }
   return vals;
@@ -1073,16 +1157,22 @@ function setupSheet(sheet) {
     var rawData = sheet.getDataRange().getValues();
     var cleanedData = [];
     var needsRewrite = false;
-    var currentHeaders = rawData[0];
-    if (currentHeaders.length < 16 || String(currentHeaders[4] || '').trim() !== 'المنطقة / المكان' || String(currentHeaders[7] || '').trim() !== 'نوع المادة / الشكل الدوائي') {
+    var currentHeaders = rawData[0] || [];
+    var oldMap = resolveColMap(currentHeaders);
+    if (
+      currentHeaders.length < 16 ||
+      String(currentHeaders[4] || '').trim() !== 'المدينة / المحافظة' ||
+      String(currentHeaders[5] || '').trim() !== 'المنطقة / المكان' ||
+      String(currentHeaders[7] || '').trim() !== 'نوع المادة / الشكل الدوائي'
+    ) {
       needsRewrite = true;
     }
     for (var i = 1; i < rawData.length; i++) {
       var row = rawData[i];
-      var invNum = String(row[0] || '').trim();
-      var phNameCheck = String(row[3] || '').trim();
-      if (invNum === '123' || (!invNum && !phNameCheck && !row[6])) { needsRewrite = true; continue; }
-      if (isShiftedOldRow(row)) {
+      var invNum = String(row[oldMap.invoice_number] !== undefined ? row[oldMap.invoice_number] : (row[0] || '')).trim();
+      var phNameCheck = String(row[oldMap.pharmacy_name] !== undefined ? row[oldMap.pharmacy_name] : (row[3] || '')).trim();
+      if (invNum === '123' || (!invNum && !phNameCheck && !row[oldMap.product_name])) { needsRewrite = true; continue; }
+      if (oldMap.area >= 0 && isShiftedOldRow(row)) {
         needsRewrite = true;
         var phName = String(row[3] || '').trim();
         var cityName = String(row[4] || 'بغداد').trim();
@@ -1095,15 +1185,50 @@ function setupSheet(sheet) {
         var maybeRep = String(row[11] || '').trim();
         var maybeStatus = String(row[12] || '').trim();
         var maybeTs = String(row[13] || '').trim();
-        if (!maybeRep && maybeTs) maybeRep = 'علي حسن (مندوب الرصافة)';
+        if (!maybeRep && maybeTs) maybeRep = 'مندوب علمي';
         if (!maybeStatus) maybeStatus = 'قيد التدقيق';
-        var rebuilt = [invNum, formatYmd(row[1]), String(row[2] || '').trim(), phName, detectAreaFromPh(phName), cityName || 'بغداد', prName, detectDosage(prName), qtyVal, priceVal, bonusVal, lineTotalVal, totalInvVal, maybeRep, maybeStatus, maybeTs];
-        while (rebuilt.length < totalCols) rebuilt.push(row[rebuilt.length] !== undefined ? row[rebuilt.length] : '');
-        cleanedData.push(rebuilt);
+        var rebuilt14 = [invNum, formatYmd(row[1]), String(row[2] || '').trim(), phName, cityName || 'بغداد', detectAreaFromPh(phName), prName, detectDosage(prName), qtyVal, priceVal, bonusVal, lineTotalVal, totalInvVal, maybeRep, maybeStatus, maybeTs];
+        while (rebuilt14.length < totalCols) rebuilt14.push(row[rebuilt14.length] !== undefined ? row[rebuilt14.length] : '');
+        cleanedData.push(rebuilt14);
       } else {
-        var fixedRow = [];
-        for (var c = 0; c < totalCols; c++) fixedRow.push(row[c] !== undefined ? row[c] : '');
-        cleanedData.push(fixedRow);
+        var phM = String(row[oldMap.pharmacy_name] || '').trim();
+        var cityM = oldMap.city >= 0 ? String(row[oldMap.city] || '').trim() : '';
+        var areaM = oldMap.area >= 0 ? String(row[oldMap.area] || '').trim() : '';
+        if (isKnownCityName(areaM) && (!cityM || !isKnownCityName(cityM))) {
+          var tmp = cityM;
+          cityM = areaM;
+          areaM = tmp;
+        }
+        if (!cityM) cityM = 'بغداد';
+        if (!areaM || areaM === 'مركز المدينة') {
+          var gArea = detectAreaFromPh(phM);
+          if (!areaM || (gArea && gArea !== 'مركز المدينة')) areaM = gArea;
+        }
+        var prodM = String(row[oldMap.product_name] || '').trim();
+        var dosM = oldMap.dosage_form >= 0 ? String(row[oldMap.dosage_form] || '').trim() : '';
+        if (!dosM) dosM = detectDosage(prodM);
+        var mappedRow = [
+          invNum,
+          formatYmd(row[oldMap.invoice_date]),
+          String(row[oldMap.warehouse_name] || '').trim(),
+          phM,
+          cityM,
+          areaM,
+          prodM,
+          dosM,
+          row[oldMap.quantity] !== undefined ? row[oldMap.quantity] : 0,
+          row[oldMap.unit_price] !== undefined ? row[oldMap.unit_price] : 0,
+          row[oldMap.bonus_quantity] !== undefined ? row[oldMap.bonus_quantity] : 0,
+          row[oldMap.line_total] !== undefined ? row[oldMap.line_total] : 0,
+          row[oldMap.total_invoice] !== undefined ? row[oldMap.total_invoice] : 0,
+          String(row[oldMap.rep_name] || '').trim(),
+          String(row[oldMap.status] || 'قيد التدقيق').trim(),
+          row[oldMap.timestamp] !== undefined ? row[oldMap.timestamp] : ''
+        ];
+        for (var ec = 16; ec < totalCols; ec++) {
+          mappedRow.push(row[ec] !== undefined ? row[ec] : '');
+        }
+        cleanedData.push(mappedRow);
       }
     }
     if (needsRewrite) {
@@ -1124,6 +1249,56 @@ function setupSheet(sheet) {
   } catch (fmtErr) {}
 }
 
+function groupSheetRowsSafe(data, colMap) {
+  var bucketMap = {};
+  var bucketOrder = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var invNum = String(row[colMap.invoice_number] || '').trim();
+    var dt = formatYmd(row[colMap.invoice_date]);
+    var ph = normPh(row[colMap.pharmacy_name]);
+    var prod = normProd(row[colMap.product_name]);
+    var qty = Math.round(Number(row[colMap.quantity] || 0));
+    var ts = String(row[colMap.timestamp] || '').trim();
+    if (!ph && !prod && !invNum) continue;
+    var bKey = (invNum || ph) + '::' + dt + '::' + ts;
+    if (!bucketMap[bKey]) { bucketMap[bKey] = []; bucketOrder.push(bKey); }
+    bucketMap[bKey].push({ sheetRow: i + 1, row: row, ph: ph, dt: dt, invNum: invNum, ts: ts, pKey: prod + ':' + qty });
+  }
+
+  var groups = [];
+  for (var b = 0; b < bucketOrder.length; b++) {
+    var entries = bucketMap[bucketOrder[b]];
+    var block = [];
+    var seen = {};
+    for (var e = 0; e < entries.length; e++) {
+      var ent = entries[e];
+      if (ent.pKey && ent.pKey !== ':0' && seen[ent.pKey] && block.length > 0) {
+        groups.push(block);
+        block = [];
+        seen = {};
+      }
+      block.push(ent);
+      if (ent.pKey && ent.pKey !== ':0') seen[ent.pKey] = true;
+    }
+    if (block.length > 0) groups.push(block);
+  }
+  return groups;
+}
+
+function buildGroupSignatureSafe(block) {
+  if (!block || block.length === 0) return '';
+  var first = block[0];
+  if (!first.ph || !first.dt) return '';
+  var items = [];
+  for (var i = 0; i < block.length; i++) {
+    if (block[i].pKey && block[i].pKey !== ':0') items.push(block[i].pKey);
+  }
+  if (items.length === 0) return '';
+  items.sort();
+  return first.ph + '||' + first.dt + '||' + items.length + '||' + items.join('|');
+}
+
 function highlightDuplicatesInSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
   if (!sheet || isUsersSheetObj(sheet)) return;
@@ -1132,29 +1307,14 @@ function highlightDuplicatesInSheet(sheet) {
   if (lastRow <= 1) return;
   var headers = sheet.getRange(1, 1, 1, totalCols).getValues()[0];
   var colMap = resolveColMap(headers);
-  var data = sheet.getRange(2, 1, lastRow - 1, totalCols).getValues();
-  var groups = {};
-  var groupOrder = [];
-  for (var i = 0; i < data.length; i++) {
-    var row = data[i];
-    var invNum = String(row[colMap.invoice_number] || '').trim();
-    var dt = formatYmd(row[colMap.invoice_date]);
-    var ph = normPh(row[colMap.pharmacy_name]);
-    var prod = normProd(row[colMap.product_name]);
-    var qty = Math.round(Number(row[colMap.quantity] || 0));
-    var ts = String(row[colMap.timestamp] || '').trim();
-    if (!ph && !prod) continue;
-    var gKey = (invNum || ph) + '::' + dt + '::' + ts;
-    if (!groups[gKey]) { groups[gKey] = { ph: ph, dt: dt, items: [], rows: [] }; groupOrder.push(gKey); }
-    if (prod) groups[gKey].items.push(prod + ':' + qty);
-    groups[gKey].rows.push(i + 2);
-  }
+  var data = sheet.getRange(1, 1, lastRow, totalCols).getValues();
+  var groups = groupSheetRowsSafe(data, colMap);
+
   var bySignature = {};
-  for (var g = 0; g < groupOrder.length; g++) {
-    var grp = groups[groupOrder[g]];
-    if (!grp.ph || !grp.dt || grp.items.length === 0) continue;
-    grp.items.sort();
-    var sig = grp.ph + '||' + grp.dt + '||' + grp.items.length + '||' + grp.items.join('|');
+  for (var g = 0; g < groups.length; g++) {
+    var grp = groups[g];
+    var sig = buildGroupSignatureSafe(grp);
+    if (!sig) continue;
     if (!bySignature[sig]) bySignature[sig] = [];
     bySignature[sig].push(grp);
   }
@@ -1163,7 +1323,9 @@ function highlightDuplicatesInSheet(sheet) {
     if (bySignature[sigKey].length > 1) {
       var copies = bySignature[sigKey];
       for (var c = 0; c < copies.length; c++) {
-        for (var rIdx = 0; rIdx < copies[c].rows.length; rIdx++) dupRowMap[copies[c].rows[rIdx]] = true;
+        for (var rIdx = 0; rIdx < copies[c].length; rIdx++) {
+          dupRowMap[copies[c][rIdx].sheetRow] = true;
+        }
       }
     }
   }
@@ -1183,22 +1345,51 @@ function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, ta
   var cleanDate = formatYmd(targetDate || '');
   var data = sheet.getDataRange().getValues();
   var deleted = 0;
-  var matches = function(row) {
-    var rNum = String(row[colMap.invoice_number] || '').trim();
-    if (cleanTarget && rNum === cleanTarget) return true;
-    if (!cleanTarget && cleanPh && cleanDate) return normPh(row[colMap.pharmacy_name]) === cleanPh && formatYmd(row[colMap.invoice_date]) === cleanDate;
-    return false;
-  };
-  var firstTs = targetTs || null;
-  if (deleteMode === 'duplicate_copy' && !firstTs) {
-    for (var f = 1; f < data.length; f++) { if (matches(data[f])) { firstTs = String(data[f][colMap.timestamp] || ''); break; } }
-  }
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (!matches(data[i])) continue;
-    if (deleteMode === 'duplicate_copy') {
-      if (targetTs) { if (String(data[i][colMap.timestamp] || '').trim() !== String(targetTs).trim()) continue; }
-      else if (String(data[i][colMap.timestamp] || '') === String(firstTs || '')) continue;
+
+  if (deleteMode === 'duplicate_copy') {
+    var allGroups = groupSheetRowsSafe(data, colMap);
+    var matchingGroups = [];
+    for (var g = 0; g < allGroups.length; g++) {
+      var grp = allGroups[g];
+      var gFirst = grp[0];
+      var isMatch = false;
+      if (cleanTarget && gFirst.invNum === cleanTarget) isMatch = true;
+      else if (cleanPh && cleanDate && gFirst.ph === cleanPh && gFirst.dt === cleanDate) isMatch = true;
+      if (isMatch) matchingGroups.push(grp);
     }
+
+    if (matchingGroups.length <= 1) {
+      return 0;
+    }
+
+    var chosenGroup = matchingGroups[matchingGroups.length - 1];
+    if (targetTs) {
+      for (var k = 1; k < matchingGroups.length; k++) {
+        if (matchingGroups[k][0].ts === String(targetTs).trim()) {
+          chosenGroup = matchingGroups[k];
+          break;
+        }
+      }
+    }
+
+    var rowsToDelete = [];
+    for (var ri = 0; ri < chosenGroup.length; ri++) {
+      rowsToDelete.push(chosenGroup[ri].sheetRow);
+    }
+    rowsToDelete.sort(function(a, b) { return b - a; });
+    for (var d = 0; d < rowsToDelete.length; d++) {
+      sheet.deleteRow(rowsToDelete[d]);
+      deleted++;
+    }
+    return deleted;
+  }
+
+  for (var i = data.length - 1; i >= 1; i--) {
+    var rNum = String(data[i][colMap.invoice_number] || '').trim();
+    var matchRow = false;
+    if (cleanTarget && rNum === cleanTarget) matchRow = true;
+    else if (!cleanTarget && cleanPh && cleanDate && normPh(data[i][colMap.pharmacy_name]) === cleanPh && formatYmd(data[i][colMap.invoice_date]) === cleanDate) matchRow = true;
+    if (!matchRow) continue;
     sheet.deleteRow(i + 1);
     deleted++;
   }
@@ -1449,16 +1640,19 @@ function doGet(e) {
         if (c === colMap.invoice_date) cells.push(invDate);
         else cells.push(row[c] !== undefined && row[c] !== null ? String(row[c]) : '');
       }
+      var prNameGetB = String(row[colMap.product_name] || '');
       rows.push({
         invoice_number: invNum, invoice_date: invDate,
         warehouse_name: String(row[colMap.warehouse_name] || ''), pharmacy_name: phName,
-        area: String(row[colMap.area] || ''), city: String(row[colMap.city] || 'بغداد'),
-        product_name: String(row[colMap.product_name] || ''), dosage_form: String(row[colMap.dosage_form] || ''),
+        city: colMap.city >= 0 ? String(row[colMap.city] || 'بغداد') : 'بغداد',
+        area: colMap.area >= 0 ? String(row[colMap.area] || '') : detectAreaFromPh(phName),
+        product_name: prNameGetB,
+        dosage_form: colMap.dosage_form >= 0 ? String(row[colMap.dosage_form] || '') : detectDosage(prNameGetB),
         quantity: Number(row[colMap.quantity] || 0), unit_price: Number(row[colMap.unit_price] || 0),
         bonus_quantity: Number(row[colMap.bonus_quantity] || 0), line_total: Number(row[colMap.line_total] || 0),
         total_invoice: Number(row[colMap.total_invoice] || 0), rep_name: String(row[colMap.rep_name] || ''),
         status: String(row[colMap.status] || 'قيد التدقيق'), timestamp: String(row[colMap.timestamp] || ''),
-        loyalty: colMap.loyalty < headers.length ? String(row[colMap.loyalty] || '') : '',
+        loyalty: colMap.loyalty >= 0 && colMap.loyalty < headers.length ? String(row[colMap.loyalty] || '') : '',
         cells: cells
       });
     }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Product, Pharmacy, Invoice } from '../types';
 import { FloatingModal } from '../components/FloatingModal';
+import { buildFullInvoiceCompositeKey } from '../utils/duplicateDetector';
 import {
   FileText, CheckCircle2, AlertCircle, Edit3, Trash2,
   Save, Eye, Plus, ChevronDown, ChevronUp, RefreshCw,
@@ -92,61 +93,39 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [collapsedInvoices, setCollapsedInvoices] = useState<Record<string, boolean>>({});
 
-  // دالة فحص ما إذا كانت الفاتورة مكررة (سواء مع بطاقة أخرى في نفس الدفعة أو مع قاعدة البيانات)
+  // دالة فحص ما إذا كانت الفاتورة مكررة: فقط عند تطابق الصيدلية + التاريخ + عدد المواد + أسماء المواد + الكميات معاً!
   const checkDuplicate = (card: BatchInvoiceCard, cardIdx: number): { isDuplicate: boolean; reason: string } => {
-    const cardNum = String(card.invoice_number || '').trim();
-    const cardDate = String(card.invoice_date || '').split('T')[0];
-    const cardPh = String(card.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-    const cardItems = card.items || [];
+    const cardKey = buildFullInvoiceCompositeKey({
+      pharmacy_name: card.pharmacy_name,
+      invoice_date: card.invoice_date,
+      items: (card.items || []).map(it => ({ product_name: it.product_name, quantity: it.quantity }))
+    });
+    if (!cardKey) return { isDuplicate: false, reason: '' };
 
     // 1. فحص مع بطاقات أخرى في نفس الدفعة الحالية
     for (let i = 0; i < invoices.length; i++) {
       if (i === cardIdx) continue;
       const other = invoices[i];
-      const otherNum = String(other.invoice_number || '').trim();
-      const otherDate = String(other.invoice_date || '').split('T')[0];
-      const otherPh = String(other.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-
-      // تطابق رقم الفاتورة غير الافتراضي
-      if (cardNum && otherNum && cardNum === otherNum && !cardNum.toUpperCase().startsWith('INV-')) {
-        return { isDuplicate: true, reason: `مطابقة لرقم الفاتورة #${i + 1} في نفس الدفعة (${otherNum})` };
-      }
-
-      // تطابق الصيدلية والتاريخ والبنود
-      if (cardPh && otherPh && (cardPh.includes(otherPh) || otherPh.includes(cardPh)) && cardDate && otherDate && cardDate === otherDate) {
-        if (cardItems.length > 0 && cardItems.length === other.items.length) {
-          const matchAll = cardItems.every((it, idx) => {
-            const ot = other.items[idx];
-            return it && ot && it.quantity === ot.quantity;
-          });
-          if (matchAll) {
-            return { isDuplicate: true, reason: `مطابقة لنفس بيانات الفاتورة #${i + 1} في هذه الدفعة` };
-          }
-        }
+      const otherKey = buildFullInvoiceCompositeKey({
+        pharmacy_name: other.pharmacy_name,
+        invoice_date: other.invoice_date,
+        items: (other.items || []).map(it => ({ product_name: it.product_name, quantity: it.quantity }))
+      });
+      if (otherKey && otherKey === cardKey) {
+        return { isDuplicate: true, reason: `مطابقة تماماً لنفس بيانات وكميات الفاتورة #${i + 1} في هذه الدفعة` };
       }
     }
 
-    // 2. فحص مع الفواتير المحفوظة مسبقاً في قاعدة البيانات
+    // 2. فحص مع الفواتير المحفوظة مسبقاً في قاعدة البيانات (اختلاف الكمية = فاتورة جديدة مسموحة)
     if (existingInvoices && existingInvoices.length > 0) {
       for (const ex of existingInvoices) {
-        const exNum = String(ex.invoice_number || '').trim();
-        if (cardNum && exNum && cardNum === exNum && !cardNum.toUpperCase().startsWith('INV-')) {
-          return { isDuplicate: true, reason: `مسجلة مسبقاً في النظام برقم الفاتورة (${exNum})` };
-        }
-
-        const exDate = String(ex.invoice_date || '').split('T')[0];
-        const exPh = String(ex.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-
-        if (cardPh && exPh && (cardPh.includes(exPh) || exPh.includes(cardPh)) && cardDate && exDate && cardDate === exDate) {
-          if (cardItems.length > 0 && cardItems.length === (ex.items?.length || 0)) {
-            const matchAll = cardItems.every((it, idx) => {
-              const ot = (ex.items || [])[idx];
-              return it && ot && it.quantity === (ot.sold_quantity || (ot as any).quantity);
-            });
-            if (matchAll) {
-              return { isDuplicate: true, reason: `مسجلة مسبقاً لنفس الصيدلية (${ex.pharmacy_name || 'الصيدلية'}) بنفس التاريخ والكميات` };
-            }
-          }
+        const exKey = buildFullInvoiceCompositeKey({
+          pharmacy_name: ex.pharmacy_name,
+          invoice_date: ex.invoice_date,
+          items: ex.items || []
+        });
+        if (exKey && exKey === cardKey) {
+          return { isDuplicate: true, reason: `مسجلة مسبقاً لنفس الصيدلية (${ex.pharmacy_name || 'الصيدلية'}) بنفس التاريخ والأصناف والكميات` };
         }
       }
     }
