@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { User } from '../types';
 import { api } from '../services/api';
 import { ADMIN_SHEET_URL } from '../utils/adminUsersSheet';
+import { DownloadSheetButtons } from '../components/DownloadSheetButtons';
+import { resolveAccountSheetId } from '../utils/sheetDownload';
 import {
   UserCheck, Lock, Save, CheckCircle2, AlertCircle, Eye, EyeOff,
   FileSpreadsheet, ExternalLink, ShieldCheck, KeyRound, RefreshCw
@@ -24,6 +26,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onUserUp
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const isAdmin = user.role === 'admin';
+  const accountSheetId = resolveAccountSheetId(user);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,6 +146,21 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onUserUp
             )}
           </div>
         </div>
+
+        {accountSheetId && (
+          <div style={{ marginTop: '0.85rem', paddingTop: '0.8rem', borderTop: '1px dashed #bfdbfe' }}>
+            <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#1e3a8a', marginBottom: '0.45rem' }}>
+              📲 تنزيل شيت حسابك على الهاتف مباشرة (Excel / PDF / مشاركة):
+            </div>
+            <DownloadSheetButtons
+              sheetId={accountSheetId}
+              sheetUrl={user.sheet_url}
+              accountName={user.full_name}
+              onSuccess={msg => { setError(null); setSuccessMsg(msg); }}
+              onError={msg => { setSuccessMsg(null); setError(msg); }}
+            />
+          </div>
+        )}
       </div>
 
       {/* نموذج تعديل الاسم والرمز السري */}

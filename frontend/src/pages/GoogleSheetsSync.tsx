@@ -9,6 +9,8 @@ import {
 import { getDosageFormBadgeColor } from './BatchReviewTable';
 import { analyzeSheetDuplicates, SheetDuplicateGroup } from '../utils/duplicateDetector';
 import { APPS_SCRIPT_V2_CODE, APPS_SCRIPT_THIN_WRAPPER } from '../utils/appsScriptTemplate';
+import { DownloadSheetButtons } from '../components/DownloadSheetButtons';
+import { resolveAccountSheetId } from '../utils/sheetDownload';
 
 interface GoogleSheetsSyncProps {
   onDataChanged?: () => void;
@@ -410,6 +412,41 @@ export const GoogleSheetsSync: React.FC<GoogleSheetsSyncProps> = ({ onDataChange
         <div className="alert-success" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <CheckCircle2 size={20} style={{ color: '#059669' }} />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {/* تنزيل الشيت الخاص بالحساب على الهاتف (Excel / PDF / مشاركة) */}
+      {(config?.sheet_id || resolveAccountSheetId(getCurrentUser())) && (
+        <div
+          className="card"
+          style={{
+            padding: '0.95rem 1.15rem',
+            background: 'linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%)',
+            border: '1.5px solid #86efac',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '0.75rem'
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 900, color: '#065f46', fontSize: '0.92rem' }}>
+              📲 تنزيل شيت حسابك على الهاتف ({getCurrentUser()?.full_name || 'حسابي'})
+            </div>
+            <div style={{ fontSize: '0.76rem', color: '#047857', marginTop: 2 }}>
+              نزّل ملف كوكل شيت الخاص بك بجميع أوراقه بصيغة Excel أو PDF أو شاركه مباشرة إلى ملفات الهاتف والواتساب.
+            </div>
+          </div>
+          <DownloadSheetButtons
+            sheetId={config?.sheet_id || resolveAccountSheetId(getCurrentUser())}
+            sheetUrl={config?.sheet_url || getCurrentUser()?.sheet_url}
+            accountName={getCurrentUser()?.full_name}
+            fallbackHeaders={dynamicHeaders}
+            fallbackRows={rows}
+            onSuccess={msg => { setError(null); setSuccessMsg(msg); }}
+            onError={msg => { setSuccessMsg(null); setError(msg); }}
+          />
         </div>
       )}
 

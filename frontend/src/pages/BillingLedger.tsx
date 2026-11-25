@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { api } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
+import { DownloadSheetButtons } from '../components/DownloadSheetButtons';
+import { resolveAccountSheetId } from '../utils/sheetDownload';
 import { detectLocalInvoiceDuplicates } from '../utils/duplicateDetector';
 import { detectAreaFromText } from '../utils/invoiceTableParser';
 import { autoDetectDosageForm, getDosageFormBadgeColor } from './BatchReviewTable';
@@ -326,6 +328,15 @@ export const BillingLedger: React.FC<BillingLedgerProps> = ({
             <Download size={18} />
             <span>تصدير تقرير Excel (CSV)</span>
           </button>
+          {resolveAccountSheetId(user) && (
+            <DownloadSheetButtons
+              compact
+              sheetId={resolveAccountSheetId(user)}
+              sheetUrl={user.sheet_url}
+              accountName={user.full_name}
+              onError={msg => alert(msg)}
+            />
+          )}
         </div>
       </div>
 

@@ -3,6 +3,7 @@ import { api, getAdminWebhookUrl, setAdminWebhookUrl } from '../services/api';
 import { FloatingModal } from '../components/FloatingModal';
 import { AdminSheetUser, ADMIN_SHEET_URL, DEFAULT_APPS_SCRIPT_URL, DEFAULT_INVOICE_SHEET_ID, extractGoogleSheetId, isBaqerAdmin, extractSharedGeminiKey } from '../utils/adminUsersSheet';
 import { APPS_SCRIPT_V2_CODE, APPS_SCRIPT_THIN_WRAPPER } from '../utils/appsScriptTemplate';
+import { DownloadSheetButtons } from '../components/DownloadSheetButtons';
 import {
   Users, Plus, RefreshCw, ExternalLink, ShieldCheck,
   AlertCircle, CheckCircle2, Copy, Check, FileSpreadsheet,
@@ -589,14 +590,24 @@ export const UsersManagement: React.FC = () => {
                       </td>
                       <td style={{ fontSize: '0.76rem' }}>
                         {u.sheet_url ? (
-                          <a
-                            href={u.sheet_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{ color: 'var(--primary)', fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                          >
-                            <ExternalLink size={12} /> {u.sheet_id ? `${u.sheet_id.slice(0, 14)}...` : 'فتح الشيت'}
-                          </a>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', alignItems: 'flex-start' }}>
+                            <a
+                              href={u.sheet_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ color: 'var(--primary)', fontWeight: 700, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                            >
+                              <ExternalLink size={12} /> {u.sheet_id ? `${u.sheet_id.slice(0, 14)}...` : 'فتح الشيت'}
+                            </a>
+                            <DownloadSheetButtons
+                              compact
+                              sheetId={u.sheet_id}
+                              sheetUrl={u.sheet_url}
+                              accountName={u.full_name}
+                              onSuccess={msg => { setError(null); setSuccessMsg(msg); }}
+                              onError={msg => { setSuccessMsg(null); setError(msg); }}
+                            />
+                          </div>
                         ) : (
                           <span style={{ color: '#b91c1c', fontWeight: 800 }}>⛔ بدون قاعدة بيانات (محظور)</span>
                         )}

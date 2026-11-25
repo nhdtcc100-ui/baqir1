@@ -1,6 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { User, Invoice, KPISummary, Pharmacy } from '../types';
 import { detectDosageFormClient } from '../utils/invoiceTableParser';
+import { DownloadSheetButtons } from '../components/DownloadSheetButtons';
+import { resolveAccountSheetId } from '../utils/sheetDownload';
 import {
   TrendingUp, FileText, Building2, Gift, FilePlus, Calendar,
   Download, CheckCircle2, Clock, AlertCircle, Sparkles
@@ -22,6 +24,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const pendingInvoices = invoices.filter(i => i.status === 'pending_review');
   const isRep = user.role === 'medical_rep';
   const isAdmin = user.role === 'admin';
+  const accountSheetId = resolveAccountSheetId(user);
+  const [sheetDownloadNotice, setSheetDownloadNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const dateStr = new Date().toLocaleDateString('ar-IQ', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
@@ -245,6 +249,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <div style={{ fontSize: '0.77rem', color: 'var(--gray-400)', marginTop: 2 }}>مراجعة الاعتماد وتصدير Excel</div>
               </div>
             </button>
+
+            {accountSheetId && (
+              <div style={{ background: '#f0fdf4', border: '1.5px solid #bbf7d0', borderRadius: 12, padding: '0.8rem 0.9rem' }}>
+                <div style={{ fontWeight: 800, fontSize: '0.86rem', color: '#065f46', marginBottom: '0.45rem' }}>
+                  📲 تنزيل كوكل شيت الخاص بحسابك على الهاتف
+                </div>
+                <DownloadSheetButtons
+                  sheetId={accountSheetId}
+                  sheetUrl={user.sheet_url}
+                  accountName={user.full_name}
+                  onSuccess={text => setSheetDownloadNotice({ type: 'success', text })}
+                  onError={text => setSheetDownloadNotice({ type: 'error', text })}
+                />
+                {sheetDownloadNotice && (
+                  <div
+                    style={{
+                      marginTop: '0.45rem',
+                      fontSize: '0.76rem',
+                      fontWeight: 700,
+                      color: sheetDownloadNotice.type === 'success' ? '#047857' : '#b91c1c'
+                    }}
+                  >
+                    {sheetDownloadNotice.text}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

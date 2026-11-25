@@ -276,5 +276,54 @@ router.post('/config',
   }
 );
 
+/**
+ * @route   GET /api/v1/sheets/export
+ * @desc    تنزيل شيت المستخدم الخاص (Excel XLSX أو PDF أو CSV) مباشرة للهاتف والحاسوب مع عزل الصلاحيات
+ */
+router.get('/export', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const scope = resolveUserSheetOrReject(req, res);
+    if (!scope) return;
+
+    const requestedSheetId = typeof req.query.sheetId === 'string' ? req.query.sheetId.trim() : '';
+    const targetSheetId =
+      req.user?.role === 'admin' && /^[a-zA-Z0-9-_]{20,}$/.test(requestedSheetId)
+        ? requestedSheetId
+        : scope.sheetId;
+
+    const rawFmt = String(req.query.format || 'xlsx').toLowerCase();
+    const format: 'xlsx' | 'pdf' | 'csv' = rawFmt === 'pdf' ? 'pdf' : rawFmt === 'csv' ? 'csv' : 'xlsx';
+    const exportUrl =
+      format === 'pdf'
+        ? `https://docs.google.com/spreadsheets/d/${targetSheetId}/export?format=pdf&portrait=false&size=A4&fitw=true`
+        : `https://docs.google.com/spreadsheets/d/${targetSheetId}/export?format=${format}`;
+
+    const gRes = await fetch(exportUrl, { method: 'GET' });
+    const ct = gRes.headers.get('content-type') || '';
+    if (!gRes.ok || ct.toLowerCase().includes('text/html')) {
+      sendError(res, 'تعذر تنزيل الشيت من كوكل — تأكد من مشاركة الشيت للعرض (Anyone with link can view).', 502);
+      return;
+    }
+
+    const buf = Buffer.from(await gRes.arrayBuffer());
+    const mime =
+      format === 'pdf'
+        ? 'application/pdf'
+        : format === 'csv'
+          ? 'text/csv; charset=utf-8'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    const safeLabel = String(req.query.name || req.user?.fullName || 'sheet')
+      .replace(/[^a-zA-Z0-9\u0621-\u064a_-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'sheet';
+    const dateStamp = new Date().toISOString().split('T')[0];
+    const utf8Name = encodeURIComponent(`شيت_${safeLabel}_${dateStamp}.${format}`);
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `attachment; filename="sheet_${dateStamp}.${format}"; filename*=UTF-8''${utf8Name}`);
+    res.send(buf);
+  } catch (e) { next(e); }
+});
+
 export default router;
 
