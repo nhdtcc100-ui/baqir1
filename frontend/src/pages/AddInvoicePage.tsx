@@ -10,7 +10,8 @@ import {
   isLocalhostFromRemoteHttps,
   getPendingOcrQueue,
   removePendingOcrQueueItem,
-  PendingOcrQueueItem
+  PendingOcrQueueItem,
+  detectAiKeyProvider
 } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
 import {
@@ -1128,18 +1129,24 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                   );
                 }
                 if (hasGemini) {
+                  const provider = detectAiKeyProvider(geminiKeyInput);
+                  const providerTitle = provider === 'groq'
+                    ? 'Groq Vision AI (مجاني)'
+                    : provider === 'openrouter'
+                      ? 'OpenRouter Free Vision AI'
+                      : 'Google Gemini Vision AI';
                   return (
                     <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 700 }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <Sparkles size={15} style={{ color: '#059669', flexShrink: 0 }} />
-                        القراءة الذكية عبر Gemini Vision AI مفعّلة ومجانية على هاتفك
+                        القراءة الذكية عبر {providerTitle} مفعّلة على هاتفك
                       </span>
                       <button
                         type="button"
                         onClick={() => setShowOcrSettings(v => !v)}
                         style={{ background: 'none', border: 'none', color: '#047857', fontWeight: 800, cursor: 'pointer', fontSize: '0.74rem', textDecoration: 'underline', padding: 0 }}
                       >
-                        تعديل المفتاح
+                        تعديل / تبديل المزوّد
                       </button>
                     </div>
                   );
@@ -1149,7 +1156,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
                       <strong style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <AlertTriangle size={16} style={{ color: '#d97706', flexShrink: 0 }} />
-                        مفتاح Gemini AI غير مُعد بعد (تعمل الآن القراءة المحلية فقط)
+                        مفتاح القراءة الذكية غير مُعد بعد (تعمل الآن القراءة المحلية فقط)
                       </strong>
                       <button
                         type="button"
@@ -1157,11 +1164,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                         className="btn-clay btn-primary btn-sm"
                         style={{ background: '#d97706', borderColor: '#b45309', fontSize: '0.74rem', padding: '0.28rem 0.65rem' }}
                       >
-                        <Key size={13} /> تفعيل القراءة الذكية الآن
+                        <Key size={13} /> تفعيل مجاناً الآن
                       </button>
                     </div>
                     <div style={{ fontSize: '0.75rem', lineHeight: 1.45, color: '#78350f' }}>
-                      لقراءة الفواتير العربية والإنجليزية بدقة 98% مباشرة من الموبايل بدون خادم، أضف مفتاح Google Gemini المجاني في الإعدادات.
+                      لقراءة الفواتير بدقة 98% مباشرة من الموبايل بدون بطاقة ائتمان، أضف مفتاحاً مجانياً من Groq أو OpenRouter أو Gemini داخل الإعدادات.
                     </div>
                   </div>
                 );
@@ -1179,15 +1186,35 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem' }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0f172a' }}>
-                      🔑 مفتاح Google Gemini AI (للقراءة الفورية من الهاتف):
+                      🔑 مفتاح الذكاء الاصطناعي (يعمل بـ Groq أو OpenRouter مجاناً بدون بطاقة، أو Gemini):
                     </span>
+                  </div>
+
+                  {/* روابط مجانية للحصول على مفتاح يعمل فوراً بدون بطاقة ائتمان */}
+                  <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+                    <a
+                      href="https://console.groq.com/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: '0.72rem', fontWeight: 800, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
+                    >
+                      🟢 Groq مجاني (بلا بطاقة gsk_) <ExternalLink size={11} />
+                    </a>
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: '0.72rem', fontWeight: 800, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
+                    >
+                      🔵 OpenRouter مجاني (sk-or-) <ExternalLink size={11} />
+                    </a>
                     <a
                       href="https://aistudio.google.com/apikey"
                       target="_blank"
                       rel="noopener noreferrer"
-                      style={{ fontSize: '0.73rem', fontWeight: 800, color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
+                      style={{ fontSize: '0.72rem', fontWeight: 800, background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', padding: '0.25rem 0.55rem', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 3, textDecoration: 'none' }}
                     >
-                      احصل على مفتاح مجاني <ExternalLink size={12} />
+                      🟡 Google Gemini <ExternalLink size={11} />
                     </a>
                   </div>
 
@@ -1196,7 +1223,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       type={showGeminiKeyText ? 'text' : 'password'}
                       className="clay-input"
                       style={{ flex: '1 1 180px', padding: '0.48rem 0.65rem', fontSize: '0.85rem', direction: 'ltr', textAlign: 'left' }}
-                      placeholder="AQ.Ab8RN6... أو AIzaSy..."
+                      placeholder="gsk_... أو sk-or-... أو AIzaSy... / AQ..."
                       value={geminiKeyInput}
                       onChange={e => {
                         setGeminiKeyInput(e.target.value);

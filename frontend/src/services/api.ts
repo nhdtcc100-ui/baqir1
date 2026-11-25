@@ -451,16 +451,145 @@ function formatGeminiErrorArabic(status: number, apiMessage: string): string {
   return `خطأ من خادم Gemini (${status}): ${apiMessage || 'استجابة غير متوقعة'}`;
 }
 
-async function runBrowserGeminiOcr(
-  fileData: { base64: string; mimeType: string },
-  geminiKey: string,
+export type AiVisionProvider = 'groq' | 'openrouter' | 'gemini';
+
+export function detectAiKeyProvider(key: string): AiVisionProvider {
+  const k = (key || '').trim();
+  if (k.startsWith('gsk_')) return 'groq';
+  if (k.startsWith('sk-or-')) return 'openrouter';
+  return 'gemini';
+}
+
+const GROQ_VISION_MODELS = [
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'qwen/qwen3.8-27b'
+];
+
+const OPENROUTER_FREE_VISION_MODELS = [
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'nvidia/nemotron-3.5-super-vl:free',
+  'openrouter/free'
+];
+
+function normalizeVisionJsonResponse(rawText: string) {
+  const cleaned = (rawText || '').replace(/```json\s*|```/gi, '').trim();
+  const jsonStart = cleaned.indexOf('{');
+  const jsonEnd = cleaned.lastIndexOf('}');
+  if (jsonStart < 0 || jsonEnd < 0) {
+    throw new Error('لم يُرجع الذكاء الاصطناعي بيانات جدول صالحة (JSON).');
+  }
+  const parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
+  if (Array.isArray(parsed.items)) {
+    parsed.items = parsed.items.map((it: any) => ({
+      ...it,
+      dosage_form: ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(it.dosage_form)
+        ? it.dosage_form
+        : detectDosageFormClient(String(it.product_name || ''))
+    }));
+  }
+  if (!parsed.pharmacy_area && parsed.pharmacy_name) {
+    parsed.pharmacy_area = detectAreaFromText(String(parsed.pharmacy_name));
+  }
+  return parsed;
+}
+
+/**
+ * استدعاء مشترك لنقاط Vision المتوافقة مع OpenAI (Groq Free / OpenRouter Free)
+ */
+async function runOpenAiCompatibleVisionOcr(
+  provider: 'groq' | 'openrouter',
+  fileData: { base64: string; mimeType: string; dataUrl: string },
+  apiKey: string,
   onProgress?: (pct: number, msg: string) => void
 ) {
+  if (fileData.mimeType === 'application/pdf') {
+    throw new Error(`قراءة ملفات PDF مباشرة غير مدعومة عبر ${provider === 'groq' ? 'Groq' : 'OpenRouter'} — التقط صورة للفاتورة بدلاً من PDF.`);
+  }
+
+  const endpoint = provider === 'groq'
+    ? 'https://api.groq.com/openai/v1/chat/completions'
+    : 'https://openrouter.ai/api/v1/chat/completions';
+  const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_FREE_VISION_MODELS;
+  const providerLabel = provider === 'groq' ? 'Groq Vision AI' : 'OpenRouter Free AI';
+  let lastError: Error | null = null;
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 32000);
+    try {
+      onProgress?.(55 + i * 9, `جاري القراءة الذكية عبر ${providerLabel} (${model.split('/').pop()})...`);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`
+      };
+      if (provider === 'openrouter') {
+        headers['X-Title'] = 'PharmaSales CRM';
+      }
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: IRAQI_PHARMA_OCR_PROMPT },
+                { type: 'image_url', image_url: { url: fileData.dataUrl || `data:${fileData.mimeType};base64,${fileData.base64}` } }
+              ]
+            }
+          ]
+        })
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        const apiMsg = errJson?.error?.message || res.statusText || '';
+        const msg = `${providerLabel} (${res.status}): ${apiMsg || 'فشل الطلب'}`;
+        if (res.status === 401 || res.status === 403) {
+          throw Object.assign(new Error(`مفتاح ${providerLabel} غير صالح أو مرفوض (${res.status}).`), { fatalAuth: true });
+        }
+        lastError = new Error(msg);
+        continue;
+      }
+
+      const data = await res.json();
+      const rawText = String(data?.choices?.[0]?.message?.content || '');
+      const parsed = normalizeVisionJsonResponse(rawText);
+      return { parsed, modelUsed: `${providerLabel}: ${model.split('/').pop()}` };
+    } catch (err: any) {
+      if (err?.fatalAuth) throw err;
+      lastError = err?.name === 'AbortError'
+        ? new Error(`انتهت مهلة الاتصال بـ ${providerLabel}`)
+        : err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastError || new Error(`تعذّر تحليل الفاتورة عبر ${providerLabel}.`);
+}
+
+async function runBrowserGeminiOcr(
+  fileData: { base64: string; mimeType: string; dataUrl: string },
+  apiKey: string,
+  onProgress?: (pct: number, msg: string) => void
+) {
+  const provider = detectAiKeyProvider(apiKey);
+  if (provider === 'groq' || provider === 'openrouter') {
+    return runOpenAiCompatibleVisionOcr(provider, fileData, apiKey, onProgress);
+  }
+
   let lastError: Error | null = null;
 
   for (let mIdx = 0; mIdx < GEMINI_CANDIDATE_MODELS.length; mIdx++) {
     const modelName = GEMINI_CANDIDATE_MODELS[mIdx];
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
     for (let attempt = 1; attempt <= 2; attempt++) {
       const controller = new AbortController();
@@ -490,16 +619,13 @@ async function runBrowserGeminiOcr(
           const apiMsg = errJson?.error?.message || res.statusText || '';
           const msg = formatGeminiErrorArabic(res.status, apiMsg);
 
-          // لا تعِد المحاولة على نفس النموذج إذا كان المفتاح غير صالح تماماً
           if (res.status === 400 && apiMsg.toLowerCase().includes('api_key_invalid')) {
             throw Object.assign(new Error(msg), { fatalAuth: true });
           }
-          // 403 / 404 على نموذج معين -> انتقل للنموذج التالي فوراً دون إعادة المحاولة
           if (res.status === 404 || res.status === 403) {
             lastError = new Error(msg);
             break;
           }
-          // 429 / 5xx -> retry backoff
           if ((res.status === 429 || res.status >= 500) && attempt < 2) {
             await new Promise(r => setTimeout(r, 1200));
             continue;
@@ -509,24 +635,7 @@ async function runBrowserGeminiOcr(
 
         const data = await res.json();
         const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        const cleaned = rawText.replace(/```json\s*|```/gi, '').trim();
-        const jsonStart = cleaned.indexOf('{');
-        const jsonEnd = cleaned.lastIndexOf('}');
-        if (jsonStart < 0 || jsonEnd < 0) {
-          throw new Error('لم يُرجع الذكاء الاصطناعي بيانات جدول صالحة (JSON).');
-        }
-        const parsed = JSON.parse(cleaned.slice(jsonStart, jsonEnd + 1));
-        if (Array.isArray(parsed.items)) {
-          parsed.items = parsed.items.map((it: any) => ({
-            ...it,
-            dosage_form: ['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(it.dosage_form)
-              ? it.dosage_form
-              : detectDosageFormClient(String(it.product_name || ''))
-          }));
-        }
-        if (!parsed.pharmacy_area && parsed.pharmacy_name) {
-          parsed.pharmacy_area = detectAreaFromText(String(parsed.pharmacy_name));
-        }
+        const parsed = normalizeVisionJsonResponse(rawText);
         return { parsed, modelUsed: modelName };
       } catch (err: any) {
         clearTimeout(timer);
@@ -1056,11 +1165,51 @@ export const api = {
     }
   },
 
-  // ── Test Gemini API Key from Browser ──
-  async testGeminiKey(rawKey: string): Promise<{ valid: boolean; model?: string; message: string }> {
+  // ── Test AI Vision API Key from Browser (Auto-detects Groq / OpenRouter / Gemini) ──
+  async testGeminiKey(rawKey: string): Promise<{ valid: boolean; model?: string; provider?: AiVisionProvider; message: string }> {
     const key = rawKey.trim();
     if (!key) {
-      return { valid: false, message: 'يرجى إدخال مفتاح Google Gemini API أولاً.' };
+      return { valid: false, message: 'يرجى إدخال مفتاح الذكاء الاصطناعي أولاً (Groq gsk_ أو OpenRouter sk-or- أو Gemini).' };
+    }
+
+    const provider = detectAiKeyProvider(key);
+
+    if (provider === 'groq' || provider === 'openrouter') {
+      const endpoint = provider === 'groq'
+        ? 'https://api.groq.com/openai/v1/chat/completions'
+        : 'https://openrouter.ai/api/v1/chat/completions';
+      const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_FREE_VISION_MODELS;
+      const label = provider === 'groq' ? 'Groq Vision' : 'OpenRouter Free';
+      let lastErr = `تعذر التحقق من مفتاح ${label}`;
+      for (const model of models) {
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${key}`,
+              ...(provider === 'openrouter' ? { 'X-Title': 'PharmaSales CRM' } : {})
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: 10,
+              messages: [{ role: 'user', content: 'Say OK' }]
+            })
+          });
+          if (res.ok) {
+            setSavedGeminiKey(key);
+            return { valid: true, model, provider, message: `تم التحقق! ${label} يعمل مجاناً عبر (${model.split('/').pop()}) ✅` };
+          }
+          const errJson = await res.json().catch(() => ({}));
+          lastErr = `${label} (${res.status}): ${errJson?.error?.message || res.statusText}`;
+          if (res.status === 401 || res.status === 403) {
+            return { valid: false, provider, message: `مفتاح ${label} مرفوض (${res.status}) — تأكد من نسخه كاملاً.` };
+          }
+        } catch (e: any) {
+          lastErr = `تعذر الاتصال بـ ${label}: ${e?.message || 'خطأ شبكة'}`;
+        }
+      }
+      return { valid: false, provider, message: lastErr };
     }
 
     let lastMsg = 'تعذر التحقق من المفتاح';
@@ -1077,19 +1226,19 @@ export const api = {
         });
         if (res.ok) {
           setSavedGeminiKey(key);
-          return { valid: true, model, message: `تم التحقق! المفتاح يعمل بنجاح على (${model}) ✅` };
+          return { valid: true, model, provider: 'gemini', message: `تم التحقق! Gemini يعمل بنجاح على (${model}) ✅` };
         }
         const errJson = await res.json().catch(() => ({}));
         const rawErrMsg = errJson?.error?.message || res.statusText || '';
         lastMsg = formatGeminiErrorArabic(res.status, rawErrMsg);
         if (res.status === 400 && rawErrMsg.toLowerCase().includes('api_key_invalid')) {
-          return { valid: false, message: lastMsg };
+          return { valid: false, provider: 'gemini', message: lastMsg };
         }
       } catch (e: any) {
         lastMsg = 'تعذر الاتصال بخوادم Google Gemini: ' + (e?.message || 'خطأ شبكة');
       }
     }
-    return { valid: false, message: lastMsg };
+    return { valid: false, provider: 'gemini', message: lastMsg };
   },
 
   // ── Full Mobile-Safe OCR Pipeline (Inspect → Prep → Upload/Gemini/Tesseract → Queue) ─

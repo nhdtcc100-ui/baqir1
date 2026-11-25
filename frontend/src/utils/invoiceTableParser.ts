@@ -78,6 +78,22 @@ export function normalizeNumbers(str: string): string {
   return clean;
 }
 
+/** هل الرقم يبدو مثل تاريخ صلاحية أو رقم هاتف عراقي وليس سعراً/كمية؟ */
+function isLikelyDateOrPhoneNumber(n: number): boolean {
+  if (!Number.isFinite(n)) return true;
+  // سنوات مستقلة 2023..2035
+  if (n >= 2023 && n <= 2035) return true;
+  // صيغة YYYYMM ملتصقة مثل 202812 أو 202711
+  if (n >= 202301 && n <= 203512 && Number.isInteger(n)) {
+    const tail = n % 100;
+    if (tail >= 1 && tail <= 12) return true;
+  }
+  // أرقام هواتف 800xxxx أو 77xxxxxxx
+  if (n >= 80000000 && n <= 80099999) return true;
+  if (n >= 700000000 && n <= 7999999999) return true;
+  return false;
+}
+
 export function resolveRowQuantitiesAndPrices(
   numbers: number[]
 ): { qty: number; price: number; total: number } | null {
@@ -192,17 +208,23 @@ export function parseInvoiceOcrText(
   const normalizedFull = normalizeNumbers(ocrRawText || '');
   const rawLines = normalizedFull.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  // 1. رقم الفاتورة
+  // 1. رقم الفاتورة (تجاهل أرقام الهواتف 800xxxx / 07xxxxxxxxx)
+  const textWithoutPhones = normalizedFull
+    .replace(/(?:الاتصال\s*المجاني|هاتف|موبايل|تليفون|Tel|Phone)\s*[:\s\-]*[0-9\-\s]{5,15}/gi, ' ')
+    .replace(/\b0?7[5-9]\d{8}\b/g, ' ')
+    .replace(/\b800\d{5}\b/g, ' ');
+
   let invoiceNumber = '';
   const invPatterns = [
-    /(?:رقم\s*الفاتورة|فاتورة\s*رقم|الرقم|Invoice\s*(?:#|no|number))\s*[:#\s\-]*([0-9A-Za-z\-_]{3,})/i,
+    /(?:رقم\s*الفاتورة|فاتورة\s*رقم|Invoice\s*(?:#|no|number))\s*[:#\s\-]*([A-Za-z]*\d+[0-9A-Za-z\-_]{2,})/i,
     /\b(SAL-\d{2}-\d+)\b/i,
-    /\b(\d{5,9})\b/
+    /\b(\d{5,8})\b/
   ];
   for (const pat of invPatterns) {
-    const m = normalizedFull.match(pat);
-    if (m?.[1] && m[1].length >= 3) {
-      invoiceNumber = m[1].trim();
+    const m = textWithoutPhones.match(pat);
+    const val = m?.[1]?.trim() || '';
+    if (val.length >= 3 && !(/^\d+$/.test(val) && isLikelyDateOrPhoneNumber(Number(val)))) {
+      invoiceNumber = val;
       break;
     }
   }
@@ -228,13 +250,16 @@ export function parseInvoiceOcrText(
   let pharmacyName = '';
   let matchedPharmacyId = '';
   const clientPatterns = [
-    /(?:اسم\s*الجهة|اسم\s*الصيدلية|اسم\s*العميل|المطلوب\s*من|المطلوب\s*لـ?|Client\s*Info)\s*[:\-]\s*([^\n\r]{3,60})/i,
-    /(?:صيدلية|صيدليه)\s+([^\n\r]{3,45})/i
+    /(?:اسم\s*الجهة|اسم\s*الصيدلية|اسم\s*العميل|المطلوب\s*من|المطلوب\s*لـ?|Client\s*Info|الاسم)\s*[:\-؛]\s*([^\n\r\|\[{]{3,60})/i,
+    /(?:صيدلية|صيدليه)\s+([^\n\r\|\[{]{3,45})/i
   ];
   for (const pat of clientPatterns) {
     const m = normalizedFull.match(pat);
     if (m?.[1]) {
-      const candidate = m[1].replace(/[\"\'\:\*\#\|]/g, '').trim();
+      const candidate = m[1]
+        .split(/\s+(?:فاتورة|طريقة|نوع|مبيع|الدفع|التاريخ)\b/i)[0]
+        .replace(/[\"\'\:\*\#\|\[\]]/g, '')
+        .trim();
       if (candidate.length >= 2) {
         pharmacyName = candidate.startsWith('ص') ? candidate : `صيدلية ${candidate}`;
         break;
@@ -270,7 +295,7 @@ export function parseInvoiceOcrText(
     const nums = (lineWithoutDates.match(/\b\d+(?:\.\d+)?\b/g) || [])
       .map(n => parseFloat(n))
       .filter(n => !isNaN(n) && n > 0 && n < 100000000)
-      .filter(n => !(n >= 2024 && n <= 2035 && !line.includes(`${n}000`)));
+      .filter(n => !isLikelyDateOrPhoneNumber(n) || line.includes(`${n}000`));
 
     const math = resolveRowQuantitiesAndPrices(nums);
     if (!math) continue;
