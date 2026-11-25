@@ -14,11 +14,12 @@ router.use(authenticateToken);
  */
 router.get('/data', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const data = await GoogleSheetsService.readFromSheet();
+    const activeSheetId = req.user?.sheetId || GoogleSheetsService.getSheetId();
+    const data = await GoogleSheetsService.readFromSheet(activeSheetId, req.user?.webhookUrl);
     sendSuccess(res, {
       ...data,
-      sheet_id: GoogleSheetsService.getSheetId(),
-      sheet_url: GoogleSheetsService.getSheetUrl()
+      sheet_id: activeSheetId,
+      sheet_url: `https://docs.google.com/spreadsheets/d/${activeSheetId}/edit?usp=sharing`
     }, 'تم سحب البيانات الحية من كوكل شيت بنجاح');
   } catch (e) { next(e); }
 });
@@ -50,7 +51,7 @@ router.get('/gap-status', async (req: Request, res: Response, next: NextFunction
     const { role, userId } = req.user!;
     const repId = role === 'medical_rep' ? userId : undefined;
     const systemInvoices = await InvoiceService.findAll({ repId });
-    const sheetData = await GoogleSheetsService.readFromSheet();
+    const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
     const sheetRows = (sheetData.rows || []).filter(r => {
       const num = String(r.invoice_number || '').trim();
       return num && num !== '123' && r.pharmacy_name;
@@ -106,7 +107,7 @@ router.post('/sync-unuploaded',
       const { role, userId } = req.user!;
       const repId = role === 'medical_rep' ? userId : undefined;
       const systemInvoices = await InvoiceService.findAll({ repId });
-      const sheetData = await GoogleSheetsService.readFromSheet();
+      const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
       const sheetRows = sheetData.rows || [];
 
       const sheetInvoiceNumbers = new Set(
@@ -144,10 +145,10 @@ router.post('/sync-unuploaded',
  * @desc    استيراد الفواتير الموجودة في كوكل شيت وغير المسجلة في النظام لسد الفجوة العكسية
  */
 router.post('/import-missing',
-  requireRoles(['admin', 'supervisor']),
+  requireRoles(['admin', 'supervisor', 'medical_rep']),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const sheetData = await GoogleSheetsService.readFromSheet();
+      const sheetData = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
       const sheetRows = sheetData.rows || [];
       const allInvs = await InvoiceService.findAll();
       const sysNumbers = new Set(
@@ -211,11 +212,13 @@ router.post('/import-missing',
  */
 router.get('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const activeSheetId = req.user?.sheetId || GoogleSheetsService.getSheetId();
+    const activeWebhook = req.user?.webhookUrl || GoogleSheetsService.getWebhookUrl();
     sendSuccess(res, {
-      sheet_id: GoogleSheetsService.getSheetId(),
-      sheet_url: GoogleSheetsService.getSheetUrl(),
-      webhook_url: GoogleSheetsService.getWebhookUrl(),
-      is_connected: Boolean(GoogleSheetsService.getWebhookUrl()),
+      sheet_id: activeSheetId,
+      sheet_url: `https://docs.google.com/spreadsheets/d/${activeSheetId}/edit?usp=sharing`,
+      webhook_url: activeWebhook,
+      is_connected: Boolean(activeWebhook),
       apps_script_code: GoogleSheetsService.getAppsScriptCode(),
       headers: GoogleSheetsService.getDefaultHeaders()
     });

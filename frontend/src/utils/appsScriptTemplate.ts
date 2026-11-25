@@ -1,24 +1,108 @@
 /**
- * كود Google Apps Script الموحّد المحدّث (الإصدار 3)
- * يضمن:
- * 1. الفصل التام بين التعديل (edit_invoice / replace_invoice) والإضافة (add_invoice / batchAppend):
- *    - التعديل لا ينشئ صفاً جديداً في أسفل الشيت أبداً؛ يحدّث نفس الصفوف الموجودة في مكانها بالضبط (In-Place)
- *    - الإضافة وحدها هي من تنشئ صفاً جديداً (بعد التحقق من عدم وجود نسخة مطابقة)
- * 2. توزيع جميع الخلايا حسب أسماء الأعمدة في الصف الأول بالضبط (المنطقة / المكان، المحافظة، اسم المادة، النوع... إلخ) حتى لا يرجع اسم المنتج بدل المنطقة أبداً
- * 3. ترميم الصفوف المزاحة السابقة تلقائياً عبر setupSheet
- * 4. فحص التكرار الشامل (اسم الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها) وتلوين المكرر بالأحمر #fee2e2 وإرجاع السليم للأبيض #ffffff
+ * كود Google Apps Script الموحّد المحدّث (الإصدار 4)
+ * يدعم:
+ * 1. الفصل التام بين التعديل (edit_invoice) والإضافة (add_invoice) + التحديث في نفس الصف (In-Place Update)
+ * 2. دعم قواعد البيانات المتعددة لكل مستخدم عبر payload.spreadsheetId
+ * 3. إدارة قاعدة بيانات المستخدمين على كوكل شيت (ورقة "المستخدمون"): تسجيل دخول، إنشاء حساب، وتجهيز المستخدمين مع ربط كل مستخدم بـ sheet_id و webhook_url خاصين به
+ * 4. توزيع الأعمدة بالاسم (المنطقة / المكان، المحافظة، المادة الدوائية...) + تلوين المكررات بالأحمر #fee2e2 وإرجاع السليم للأبيض #ffffff
  */
 export const APPS_SCRIPT_V2_CODE = `var SPREADSHEET_ID = '1zKhTz-jI-Fnw3zCh0zywSClIPSuNyyOJRiF_A8yLBFE';
-var SCRIPT_VERSION = 3;
+var ADMIN_USERS_SHEET_ID = '1RI7QKGakHvDzPkL_ACaF152i44-wc3IGrTIYT_HeLAU';
+var SCRIPT_VERSION = 4;
 
-function getTargetSheet() {
+function getTargetSpreadsheet(customSpreadsheetId) {
+  var targetId = String(customSpreadsheetId || '').trim();
+  if (targetId && targetId !== SPREADSHEET_ID) {
+    try {
+      var opened = SpreadsheetApp.openById(targetId);
+      if (opened) return opened;
+    } catch (e) {}
+  }
+  try {
+    var active = SpreadsheetApp.getActiveSpreadsheet();
+    if (active) return active;
+  } catch (e2) {}
+  try {
+    return SpreadsheetApp.openById(targetId || SPREADSHEET_ID);
+  } catch (e3) {}
+  return null;
+}
+
+function getTargetSheet(customSpreadsheetId, preferredSheetName) {
+  var ss = getTargetSpreadsheet(customSpreadsheetId);
+  if (!ss) return null;
+  var name = preferredSheetName || 'الفواتير';
+  return ss.getSheetByName(name) || (name === 'الفواتير' ? ss.getActiveSheet() : null);
+}
+
+function getOrCreateUsersSheet(adminSpreadsheetId) {
+  var targetId = String(adminSpreadsheetId || ADMIN_USERS_SHEET_ID).trim();
   var ss = null;
-  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) {}
+  if (targetId) {
+    try { ss = SpreadsheetApp.openById(targetId); } catch (e) {}
+  }
   if (!ss) {
-    try { ss = SpreadsheetApp.openById(SPREADSHEET_ID); } catch (e) {}
+    ss = getTargetSpreadsheet('');
   }
   if (!ss) return null;
-  return ss.getSheetByName('الفواتير') || ss.getActiveSheet();
+
+  var sheet = ss.getSheetByName('المستخدمون');
+  if (!sheet) {
+    sheet = ss.insertSheet('المستخدمون');
+  }
+  var userHeaders = ['id', 'full_name', 'email', 'password_hash', 'role', 'is_active', 'gemini_api_key', 'sheet_id', 'webhook_url', 'area', 'created_at'];
+  var lastRow = sheet.getLastRow();
+  if (lastRow === 0) {
+    sheet.appendRow(userHeaders);
+    sheet.getRange(1, 1, 1, userHeaders.length).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+  } else {
+    var row1 = sheet.getRange(1, 1, 1, Math.max(9, sheet.getLastColumn())).getValues()[0];
+    if (String(row1[0] || '').trim() === 'A' && lastRow >= 2) {
+      // keep existing 2-row header if present; ensure cols exist
+    } else if (String(row1[0] || '').trim().toLowerCase() !== 'id') {
+      sheet.insertRowBefore(1);
+      sheet.getRange(1, 1, 1, userHeaders.length).setValues([userHeaders]).setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold');
+    }
+  }
+  return sheet;
+}
+
+function getUsersHeaderRowIndex(data) {
+  for (var r = 0; r < Math.min(3, data.length); r++) {
+    var c0 = String(data[r][0] || '').trim().toLowerCase();
+    var c2 = String(data[r][2] || '').trim().toLowerCase();
+    if (c0 === 'id' || c2 === 'email') return r;
+  }
+  return 0;
+}
+
+function readAllSheetUsers(sheet) {
+  if (!sheet || sheet.getLastRow() === 0) return [];
+  var data = sheet.getDataRange().getValues();
+  var headerIdx = getUsersHeaderRowIndex(data);
+  var users = [];
+  for (var i = headerIdx + 1; i < data.length; i++) {
+    var row = data[i];
+    var idVal = String(row[0] || '').trim();
+    var fullName = String(row[1] || '').trim();
+    var email = String(row[2] || '').trim().toLowerCase();
+    if (!email && !idVal) continue;
+    if (idVal.toLowerCase() === 'a' || idVal.toLowerCase() === 'id' || email === 'email') continue;
+    users.push({
+      id: idVal || ('usr-' + i),
+      full_name: fullName || email.split('@')[0],
+      email: email,
+      password_hash: String(row[3] || '').trim(),
+      role: String(row[4] || 'medical_rep').trim().toLowerCase(),
+      is_active: String(row[5] === undefined ? 'TRUE' : row[5]).trim().toUpperCase() !== 'FALSE',
+      gemini_api_key: String(row[6] || '').trim(),
+      sheet_id: String(row[7] || '').trim(),
+      webhook_url: String(row[8] || '').trim(),
+      area: String(row[9] || '').trim(),
+      created_at: String(row[10] || '').trim()
+    });
+  }
+  return users;
 }
 
 function getExpectedCols(sheet) {
@@ -135,28 +219,12 @@ function isShiftedOldRow(row) {
   return false;
 }
 
-/**
- * تحديد موضع كل عمود بناءً على عنوان العمود في الصف الأول للشيت لضمان دقة الإضافة والتعديل دائماً
- */
 function resolveColMap(headers) {
   var map = {
-    invoice_number: 0,
-    invoice_date: 1,
-    warehouse_name: 2,
-    pharmacy_name: 3,
-    area: 4,
-    city: 5,
-    product_name: 6,
-    dosage_form: 7,
-    quantity: 8,
-    unit_price: 9,
-    bonus_quantity: 10,
-    line_total: 11,
-    total_invoice: 12,
-    rep_name: 13,
-    status: 14,
-    timestamp: 15,
-    loyalty: 16
+    invoice_number: 0, invoice_date: 1, warehouse_name: 2, pharmacy_name: 3,
+    area: 4, city: 5, product_name: 6, dosage_form: 7,
+    quantity: 8, unit_price: 9, bonus_quantity: 10, line_total: 11,
+    total_invoice: 12, rep_name: 13, status: 14, timestamp: 15, loyalty: 16
   };
   for (var c = 0; c < headers.length; c++) {
     var h = normAr(headers[c]);
@@ -188,7 +256,6 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
   for (var c = 0; c < totalCols; c++) {
     vals.push(existingRow && existingRow[c] !== undefined ? existingRow[c] : '');
   }
-
   var colMap = resolveColMap(headers);
   var invNum = String(r.invoice_number || '').trim();
   var phName = String(r.pharmacy_name || (existingRow ? existingRow[colMap.pharmacy_name] : '') || '').trim();
@@ -198,7 +265,6 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
     if (oldArea && oldArea !== 'بغداد') resolvedArea = oldArea;
   }
   if (!resolvedArea) resolvedArea = detectAreaFromPh(phName);
-
   var prodName = String(r.product_name || (existingRow ? existingRow[colMap.product_name] : '') || '').trim();
   var repName = String(r.rep_name || (existingRow ? existingRow[colMap.rep_name] : '') || 'علي حسن (مندوب بغداد)').trim();
 
@@ -227,11 +293,9 @@ function buildRowValuesByHeaders(r, headers, existingRow) {
 function setupSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
   if (!sheet) return;
-
   var headers = getExpectedCols(sheet);
   var totalCols = headers.length;
   var lastRow = sheet.getLastRow();
-
   if (lastRow === 0) {
     sheet.appendRow(headers);
   } else {
@@ -239,20 +303,14 @@ function setupSheet(sheet) {
     var cleanedData = [];
     var needsRewrite = false;
     var currentHeaders = rawData[0];
-
     if (currentHeaders.length < 16 || String(currentHeaders[4] || '').trim() !== 'المنطقة / المكان' || String(currentHeaders[7] || '').trim() !== 'نوع المادة / الشكل الدوائي') {
       needsRewrite = true;
     }
-
     for (var i = 1; i < rawData.length; i++) {
       var row = rawData[i];
       var invNum = String(row[0] || '').trim();
       var phNameCheck = String(row[3] || '').trim();
-      if (invNum === '123' || (!invNum && !phNameCheck && !row[6])) {
-        needsRewrite = true;
-        continue;
-      }
-
+      if (invNum === '123' || (!invNum && !phNameCheck && !row[6])) { needsRewrite = true; continue; }
       if (isShiftedOldRow(row)) {
         needsRewrite = true;
         var phName = String(row[3] || '').trim();
@@ -273,28 +331,21 @@ function setupSheet(sheet) {
         cleanedData.push(rebuilt);
       } else {
         var fixedRow = [];
-        for (var c = 0; c < totalCols; c++) {
-          fixedRow.push(row[c] !== undefined ? row[c] : '');
-        }
+        for (var c = 0; c < totalCols; c++) fixedRow.push(row[c] !== undefined ? row[c] : '');
         cleanedData.push(fixedRow);
       }
     }
-
     if (needsRewrite) {
       sheet.clear();
       sheet.getRange(1, 1, 1, totalCols).setValues([headers]);
-      if (cleanedData.length > 0) {
-        sheet.getRange(2, 1, cleanedData.length, totalCols).setValues(cleanedData);
-      }
+      if (cleanedData.length > 0) sheet.getRange(2, 1, cleanedData.length, totalCols).setValues(cleanedData);
     }
   }
-
   var headerRange = sheet.getRange(1, 1, 1, totalCols);
   headerRange.setBackground('#1e3a8a').setFontColor('#ffffff').setFontWeight('bold').setFontSize(11).setHorizontalAlignment('center').setVerticalAlignment('middle');
   sheet.setRowHeight(1, 38);
   sheet.setFrozenRows(1);
   sheet.setRightToLeft(true);
-
   try {
     sheet.clearConditionalFormatRules();
     highlightDuplicatesInSheet(sheet);
@@ -302,24 +353,17 @@ function setupSheet(sheet) {
   } catch (fmtErr) {}
 }
 
-/**
- * فحص التكرار الشامل وتلوين كامل الصف:
- * - لا تُعد الفاتورة مكررة إلا عند تطابق: الصيدلية + التاريخ + عدد المنتجات + كل المنتجات وكمياتها معاً
- * - المكرر يتلون كامل صفه بالأحمر (#fee2e2)، وعند إزالته يرجع الصف المتبقي للأبيض (#ffffff)
- */
 function highlightDuplicatesInSheet(sheet) {
   if (!sheet) sheet = getTargetSheet();
   if (!sheet) return;
   var lastRow = sheet.getLastRow();
   var totalCols = Math.max(16, sheet.getLastColumn());
   if (lastRow <= 1) return;
-
   var headers = sheet.getRange(1, 1, 1, totalCols).getValues()[0];
   var colMap = resolveColMap(headers);
   var data = sheet.getRange(2, 1, lastRow - 1, totalCols).getValues();
   var groups = {};
   var groupOrder = [];
-
   for (var i = 0; i < data.length; i++) {
     var row = data[i];
     var invNum = String(row[colMap.invoice_number] || '').trim();
@@ -329,47 +373,34 @@ function highlightDuplicatesInSheet(sheet) {
     var qty = Math.round(Number(row[colMap.quantity] || 0));
     var ts = String(row[colMap.timestamp] || '').trim();
     if (!ph && !prod) continue;
-
     var gKey = (invNum || ph) + '::' + dt + '::' + ts;
-    if (!groups[gKey]) {
-      groups[gKey] = { ph: ph, dt: dt, items: [], rows: [] };
-      groupOrder.push(gKey);
-    }
+    if (!groups[gKey]) { groups[gKey] = { ph: ph, dt: dt, items: [], rows: [] }; groupOrder.push(gKey); }
     if (prod) groups[gKey].items.push(prod + ':' + qty);
     groups[gKey].rows.push(i + 2);
   }
-
   var bySignature = {};
   for (var g = 0; g < groupOrder.length; g++) {
-    var gk = groupOrder[g];
-    var grp = groups[gk];
+    var grp = groups[groupOrder[g]];
     if (!grp.ph || !grp.dt || grp.items.length === 0) continue;
     grp.items.sort();
     var sig = grp.ph + '||' + grp.dt + '||' + grp.items.length + '||' + grp.items.join('|');
     if (!bySignature[sig]) bySignature[sig] = [];
     bySignature[sig].push(grp);
   }
-
   var dupRowMap = {};
   for (var sigKey in bySignature) {
     if (bySignature[sigKey].length > 1) {
       var copies = bySignature[sigKey];
       for (var c = 0; c < copies.length; c++) {
-        for (var rIdx = 0; rIdx < copies[c].rows.length; rIdx++) {
-          dupRowMap[copies[c].rows[rIdx]] = true;
-        }
+        for (var rIdx = 0; rIdx < copies[c].rows.length; rIdx++) dupRowMap[copies[c].rows[rIdx]] = true;
       }
     }
   }
-
   for (var sheetRow = 2; sheetRow <= lastRow; sheetRow++) {
     var rng = sheet.getRange(sheetRow, 1, 1, totalCols);
     rng.setHorizontalAlignment('center').setVerticalAlignment('middle').setWrap(true);
-    if (dupRowMap[sheetRow]) {
-      rng.setBackground('#fee2e2').setFontColor('#991b1b');
-    } else {
-      rng.setBackground('#ffffff').setFontColor('#0f172a');
-    }
+    if (dupRowMap[sheetRow]) rng.setBackground('#fee2e2').setFontColor('#991b1b');
+    else rng.setBackground('#ffffff').setFontColor('#0f172a');
   }
 }
 
@@ -381,34 +412,21 @@ function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, ta
   var cleanDate = formatYmd(targetDate || '');
   var data = sheet.getDataRange().getValues();
   var deleted = 0;
-
   var matches = function(row) {
     var rNum = String(row[colMap.invoice_number] || '').trim();
     if (cleanTarget && rNum === cleanTarget) return true;
-    if (!cleanTarget && cleanPh && cleanDate) {
-      return normPh(row[colMap.pharmacy_name]) === cleanPh && formatYmd(row[colMap.invoice_date]) === cleanDate;
-    }
+    if (!cleanTarget && cleanPh && cleanDate) return normPh(row[colMap.pharmacy_name]) === cleanPh && formatYmd(row[colMap.invoice_date]) === cleanDate;
     return false;
   };
-
   var firstTs = targetTs || null;
   if (deleteMode === 'duplicate_copy' && !firstTs) {
-    for (var f = 1; f < data.length; f++) {
-      if (matches(data[f])) {
-        firstTs = String(data[f][colMap.timestamp] || '');
-        break;
-      }
-    }
+    for (var f = 1; f < data.length; f++) { if (matches(data[f])) { firstTs = String(data[f][colMap.timestamp] || ''); break; } }
   }
-
   for (var i = data.length - 1; i >= 1; i--) {
     if (!matches(data[i])) continue;
     if (deleteMode === 'duplicate_copy') {
-      if (targetTs) {
-        if (String(data[i][colMap.timestamp] || '').trim() !== String(targetTs).trim()) continue;
-      } else if (String(data[i][colMap.timestamp] || '') === String(firstTs || '')) {
-        continue;
-      }
+      if (targetTs) { if (String(data[i][colMap.timestamp] || '').trim() !== String(targetTs).trim()) continue; }
+      else if (String(data[i][colMap.timestamp] || '') === String(firstTs || '')) continue;
     }
     sheet.deleteRow(i + 1);
     deleted++;
@@ -418,18 +436,68 @@ function deleteMatchingInvoiceRows(sheet, targetInvNum, deleteMode, targetPh, ta
 
 function doPost(e) {
   try {
-    var sheet = getTargetSheet();
-    if (!sheet) {
-      return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح ورقة الفواتير في كوكل شيت' })).setMimeType(ContentService.MimeType.JSON);
-    }
-    setupSheet(sheet);
-
     if (!e || !e.postData || !e.postData.contents) {
       return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'لا توجد بيانات مرفقة بالطلب' })).setMimeType(ContentService.MimeType.JSON);
     }
 
     var payload = JSON.parse(e.postData.contents);
     var actionName = String(payload.action || '').trim();
+
+    // ── إدارة قاعدة بيانات المستخدمين على كوكل شيت (المستخدمون) ──
+    if (actionName === 'register_user' || actionName === 'upsert_user' || actionName === 'seed_users') {
+      var usersSheet = getOrCreateUsersSheet(payload.adminSpreadsheetId || payload.spreadsheetId);
+      if (!usersSheet) {
+        return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح ورقة المستخدمون' })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var incomingUsers = payload.users || (payload.user ? [payload.user] : []);
+      var currentUsers = readAllSheetUsers(usersSheet);
+      var inserted = 0;
+      for (var ui = 0; ui < incomingUsers.length; ui++) {
+        var u = incomingUsers[ui];
+        var uEmail = String(u.email || '').trim().toLowerCase();
+        var uName = String(u.full_name || '').trim();
+        if (!uEmail) continue;
+        var dupUser = false;
+        for (var exi = 0; exi < currentUsers.length; exi++) {
+          if (currentUsers[exi].email === uEmail) { dupUser = true; break; }
+        }
+        if (dupUser) {
+          if (actionName === 'register_user') {
+            return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'البريد أو اسم المستخدم مسجل بالفعل في جدول المستخدمين' })).setMimeType(ContentService.MimeType.JSON);
+          }
+          continue;
+        }
+        var uRow = [
+          u.id || ('usr-' + new Date().getTime() + '-' + ui),
+          uName || uEmail.split('@')[0],
+          uEmail,
+          String(u.password_hash || '').trim(),
+          u.role || 'medical_rep',
+          u.is_active === false ? 'FALSE' : 'TRUE',
+          String(u.gemini_api_key || '').trim(),
+          String(u.sheet_id || '').trim(),
+          String(u.webhook_url || '').trim(),
+          String(u.area || '').trim(),
+          u.created_at || new Date().toISOString()
+        ];
+        usersSheet.appendRow(uRow);
+        currentUsers.push({ email: uEmail });
+        inserted++;
+      }
+      try { usersSheet.autoResizeColumns(1, 11); } catch (ue) {}
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        script_version: SCRIPT_VERSION,
+        inserted: inserted,
+        message: 'تم تسجيل وحفظ بيانات المستخدم في جدول المستخدمون بنجاح.'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var sheet = getTargetSheet(payload.spreadsheetId, payload.sheetName || 'الفواتير');
+    if (!sheet) {
+      return ContentService.createTextOutput(JSON.stringify({ success: false, error: 'تعذر فتح ورقة الفواتير في كوكل شيت' })).setMimeType(ContentService.MimeType.JSON);
+    }
+    setupSheet(sheet);
 
     if (actionName === 'repair' || actionName === 'setup') {
       highlightDuplicatesInSheet(sheet);
@@ -452,59 +520,39 @@ function doPost(e) {
     var addedCount = 0;
     var updatedCount = 0;
 
-    // 1. وضع التعديل (edit_invoice / replace_invoice):
-    // لا ينشئ صفوفاً جديدة في الأسفل إطلاقاً — يحدث نفس الصفوف الموجودة في مواضعها بالضبط!
     if (actionName === 'edit_invoice' || actionName === 'replace_invoice') {
       var matchNums = {};
       if (payload.previous_invoice_number) matchNums[String(payload.previous_invoice_number).trim()] = true;
       if (payload.invoice_number) matchNums[String(payload.invoice_number).trim()] = true;
-
       var existingIndices = [];
       for (var m = 1; m < data.length; m++) {
         var rNum = String(data[m][colMap.invoice_number] || '').trim();
-        if (rNum && matchNums[rNum]) {
-          existingIndices.push(m + 1);
-        }
+        if (rNum && matchNums[rNum]) existingIndices.push(m + 1);
       }
-
-      // بحث احتياطي بالصيدلية والتاريخ إذا تغير الرقم أو كان خالياً
       if (existingIndices.length === 0 && payload.pharmacy_name && payload.invoice_date) {
         var targetPhN = normPh(payload.pharmacy_name);
         var targetDtY = formatYmd(payload.invoice_date);
         for (var m2 = 1; m2 < data.length; m2++) {
-          if (normPh(data[m2][colMap.pharmacy_name]) === targetPhN && formatYmd(data[m2][colMap.invoice_date]) === targetDtY) {
-            existingIndices.push(m2 + 1);
-          }
+          if (normPh(data[m2][colMap.pharmacy_name]) === targetPhN && formatYmd(data[m2][colMap.invoice_date]) === targetDtY) existingIndices.push(m2 + 1);
         }
       }
-
       var validEditRows = [];
       for (var vr = 0; vr < rows.length; vr++) {
-        if (String(rows[vr].invoice_number || '').trim() !== '123') {
-          validEditRows.push(rows[vr]);
-        }
+        if (String(rows[vr].invoice_number || '').trim() !== '123') validEditRows.push(rows[vr]);
       }
-
       if (existingIndices.length === 0) {
-        // وضع التعديل يحترم قاعدة عدم إنشاء صف جديد تلقائياً إذا لم يكن الصف موجوداً
         return ContentService.createTextOutput(JSON.stringify({
-          success: true,
-          script_version: SCRIPT_VERSION,
-          added: 0,
-          updated: 0,
+          success: true, script_version: SCRIPT_VERSION, added: 0, updated: 0,
           message: 'وضع التعديل: لم يتم إنشاء صف جديد لعدم العثور على الصف الأصلي في الشيت.'
         })).setMimeType(ContentService.MimeType.JSON);
       }
-
       var common = Math.min(existingIndices.length, validEditRows.length);
       for (var u = 0; u < common; u++) {
         var sheetRowNum = existingIndices[u];
-        var oldRowData = data[sheetRowNum - 1];
-        var newVals = buildRowValuesByHeaders(validEditRows[u], headers, oldRowData);
+        var newVals = buildRowValuesByHeaders(validEditRows[u], headers, data[sheetRowNum - 1]);
         sheet.getRange(sheetRowNum, 1, 1, totalCols).setValues([newVals]);
         updatedCount++;
       }
-
       if (validEditRows.length > existingIndices.length) {
         var insertAfter = existingIndices[existingIndices.length - 1];
         for (var a = common; a < validEditRows.length; a++) {
@@ -515,44 +563,30 @@ function doPost(e) {
           addedCount++;
         }
       } else if (existingIndices.length > validEditRows.length) {
-        for (var d = existingIndices.length - 1; d >= validEditRows.length; d--) {
-          sheet.deleteRow(existingIndices[d]);
-        }
+        for (var d = existingIndices.length - 1; d >= validEditRows.length; d--) sheet.deleteRow(existingIndices[d]);
       }
-
       highlightDuplicatesInSheet(sheet);
       try { sheet.autoResizeColumns(1, totalCols); } catch (re1) {}
       return ContentService.createTextOutput(JSON.stringify({
-        success: true,
-        script_version: SCRIPT_VERSION,
-        added: addedCount,
-        updated: updatedCount,
+        success: true, script_version: SCRIPT_VERSION, added: addedCount, updated: updatedCount,
         message: 'تم تعديل الفاتورة في نفس الصف (' + updatedCount + ' تحديث، ' + addedCount + ' بند إضافي).'
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 2. وضع الإضافة (add_invoice / batchAppend):
-    // يضيف صفوفاً جديدة فقط عند القدوم من ميزة إضافة الفواتير مع توزيع الأعمدة بالاسم
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       var invNum = String(r.invoice_number || '').trim();
       var phN = normPh(r.pharmacy_name || '');
       if (invNum === '123' || (!invNum && !phN)) continue;
-
       var addVals = buildRowValuesByHeaders(r, headers, null);
       sheet.appendRow(addVals);
       addedCount++;
       data.push(addVals);
     }
-
     highlightDuplicatesInSheet(sheet);
     try { sheet.autoResizeColumns(1, totalCols); } catch (resizeErr) {}
-
     return ContentService.createTextOutput(JSON.stringify({
-      success: true,
-      script_version: SCRIPT_VERSION,
-      added: addedCount,
-      updated: updatedCount,
+      success: true, script_version: SCRIPT_VERSION, added: addedCount, updated: updatedCount,
       message: 'تم إدراج ' + addedCount + ' سطراً جديداً بترتيب الأعمدة الكامل بنجاح.'
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -563,13 +597,24 @@ function doPost(e) {
 function onEdit(e) {
   try {
     var sheet = getTargetSheet();
-    if (sheet) highlightDuplicatesInSheet(sheet);
+    if (sheet && sheet.getName() !== 'المستخدمون') highlightDuplicatesInSheet(sheet);
   } catch (err) {}
 }
 
 function doGet(e) {
   try {
-    var sheet = getTargetSheet();
+    var action = e && e.parameter ? (e.parameter.action || e.parameter.sheet || '') : '';
+    var customId = e && e.parameter ? (e.parameter.spreadsheetId || '') : '';
+
+    if (action === 'users' || action === 'المستخدمون') {
+      var uSheet = getOrCreateUsersSheet(e && e.parameter ? (e.parameter.adminSpreadsheetId || customId) : '');
+      var uList = readAllSheetUsers(uSheet);
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true, script_version: SCRIPT_VERSION, users: uList
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var sheet = getTargetSheet(customId, 'الفواتير');
     if (!sheet) {
       return ContentService.createTextOutput(JSON.stringify({ script_version: SCRIPT_VERSION, headers: [], rows: [] })).setMimeType(ContentService.MimeType.JSON);
     }
@@ -630,5 +675,6 @@ function doGet(e) {
 function testRun() {
   var sheet = getTargetSheet();
   setupSheet(sheet);
-  Logger.log('تم ترقية وتنسيق وفحص التكرار للشيت بنجاح (v' + SCRIPT_VERSION + '): ' + (sheet ? sheet.getLastRow() : 0));
+  getOrCreateUsersSheet(ADMIN_USERS_SHEET_ID);
+  Logger.log('تم ترقية وتنسيق وفحص التكرار وجدول المستخدمون بنجاح (v' + SCRIPT_VERSION + '): ' + (sheet ? sheet.getLastRow() : 0));
 }`;

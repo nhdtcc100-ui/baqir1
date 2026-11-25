@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { authenticateToken, requireRoles } from '../../middleware/auth.middleware';
-import { AuthService, fetchUsersFromAdminSheet } from '../auth/auth.service';
+import { AuthService, fetchUsersFromAdminSheet, extractGoogleSheetId } from '../auth/auth.service';
+import { GoogleSheetsService } from '../google-sheets/googleSheets.service';
 import { sendSuccess, sendCreated, sendError } from '../../utils/response';
 import { ENV } from '../../config/env';
 
@@ -102,6 +103,40 @@ router.post('/format-row', requireRoles(['admin']), async (req: Request, res: Re
       rowValues,
       tsvLine: rowValues.join('\t')
     }, 'تم تجهيز بيانات المستخدم بنجاح');
+  } catch (e) { next(e); }
+});
+
+/**
+ * @route   POST /api/v1/users/push-to-sheet
+ * @access  admin
+ * @desc    حفظ مستخدم جديد أو ترحيل قائمة مستخدمين مباشرة إلى ورقة "المستخدمون" في كوكل شيت
+ */
+router.post('/push-to-sheet', requireRoles(['admin']), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { users, admin_webhook_url } = req.body;
+    if (!Array.isArray(users) || users.length === 0) {
+      sendError(res, 'يرجى إرسال بيانات مستخدم واحد على الأقل', 400);
+      return;
+    }
+    const prepared = [];
+    for (const u of users) {
+      const hash = u.password_hash || await bcrypt.hash(String(u.password || '123456'), 10);
+      prepared.push({
+        id: u.id || `usr-${crypto.randomUUID().slice(0, 8)}`,
+        full_name: String(u.full_name || '').trim(),
+        email: String(u.email || '').trim().toLowerCase(),
+        password_hash: hash,
+        role: u.role || 'medical_rep',
+        is_active: u.is_active !== false,
+        gemini_api_key: String(u.gemini_api_key || '').trim(),
+        sheet_id: extractGoogleSheetId(u.sheet_id || u.sheet_url),
+        webhook_url: String(u.webhook_url || '').trim(),
+        area: String(u.area || '').trim(),
+        created_at: new Date().toISOString()
+      });
+    }
+    const result = await GoogleSheetsService.pushUsersToAdminSheet(prepared, 'seed_users', admin_webhook_url);
+    sendSuccess(res, result, result.message);
   } catch (e) { next(e); }
 });
 

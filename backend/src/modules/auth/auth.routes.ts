@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { AuthController } from './auth.controller';
 import { validateRequest } from '../../middleware/validate.middleware';
 import { authenticateToken, requireRoles } from '../../middleware/auth.middleware';
-import { loginSchema, registerUserSchema } from './auth.validation';
+import { loginSchema, registerUserSchema, publicRegisterSchema } from './auth.validation';
 
 const router = Router();
 
@@ -12,6 +12,13 @@ const router = Router();
  * @access  Public
  */
 router.post('/login', validateRequest(loginSchema), AuthController.login);
+
+/**
+ * @route   POST /api/v1/auth/register
+ * @desc    تسجيل حساب جديد في جدول المستخدمين على كوكل شيت وقاعدة البيانات الخاصة به
+ * @access  Public
+ */
+router.post('/register', validateRequest(publicRegisterSchema), AuthController.publicRegister);
 
 /**
  * @route   GET /api/v1/auth/me

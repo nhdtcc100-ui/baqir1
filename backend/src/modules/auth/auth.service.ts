@@ -3,8 +3,17 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { pool, isUsingPostgres, inMemoryStore, UserEntity } from '../../database/db';
 import { ENV } from '../../config/env';
-import { LoginInput, RegisterUserInput, UpdateProfileInput } from './auth.validation';
+import { LoginInput, RegisterUserInput, PublicRegisterInput, UpdateProfileInput } from './auth.validation';
 import { AuthTokens, UserResponse, UserRole } from './auth.types';
+import { GoogleSheetsService } from '../google-sheets/googleSheets.service';
+
+export function extractGoogleSheetId(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const m = s.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (m && m[1]) return m[1];
+  return s;
+}
 
 export interface SheetUser {
   id: string;
@@ -22,13 +31,14 @@ export interface SheetUser {
  * جلب قائمة المستخدمين من جدول جوجل شيت الإدارة المخصص كقاعدة بيانات
  */
 export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
-  const sheetId = ENV.ADMIN_SHEET_ID;
-  if (!sheetId) return [];
-
-  const candidateUrls = [
-    `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}`,
-    `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`
-  ];
+  const candidateSheetIds = Array.from(new Set([ENV.ADMIN_SHEET_ID, ENV.GOOGLE_SHEET_ID].filter(Boolean)));
+  const candidateUrls: string[] = [];
+  for (const sid of candidateSheetIds) {
+    candidateUrls.push(`https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('المستخدمون')}`);
+    if (sid === ENV.ADMIN_SHEET_ID) {
+      candidateUrls.push(`https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json`);
+    }
+  }
 
   for (const url of candidateUrls) {
     try {
@@ -46,7 +56,6 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
       const parsedUsers: SheetUser[] = [];
       for (const r of rows) {
         const c = r.c || [];
-        // فحص هل هذا سطر عناوين أو سطر فارغ
         const col0 = String(c[0]?.v ?? '').trim();
         const col2 = String(c[2]?.v ?? '').trim();
         if (!col0 && !col2) continue;
@@ -71,7 +80,7 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
           role,
           is_active: isActive,
           gemini_api_key: String(c[6]?.v ?? '').trim() || undefined,
-          sheet_id: String(c[7]?.v ?? '').trim() || undefined,
+          sheet_id: extractGoogleSheetId(String(c[7]?.v ?? '')) || undefined,
           webhook_url: String(c[8]?.v ?? '').trim() || undefined,
         });
       }
@@ -80,8 +89,8 @@ export async function fetchUsersFromAdminSheet(): Promise<SheetUser[]> {
         console.log(`✅ Loaded ${parsedUsers.length} users successfully from Admin Google Sheet (${url})`);
         return parsedUsers;
       }
-    } catch (e: any) {
-      // تجربة الرابط الثاني
+    } catch {
+      // تجربة الرابط التالي
     }
   }
 
@@ -143,21 +152,12 @@ export class AuthService {
           throw { statusCode: 403, message: 'هذا الحساب معطل حالياً في شيت الإدارة، يرجى مراجعة إدارة النظام' };
         }
 
-        // مقارنة كلمة المرور المشفرة بـ bcrypt
+        // مقارنة كلمة المرور المشفرة بـ bcrypt (أو مطابقة نصية فقط إذا وضع الأدمن نصاً مباشراً في الخلية)
         let isMatch = false;
-        try {
-          isMatch = await bcrypt.compare(input.password, sheetUser.password_hash);
-        } catch {
+        if (sheetUser.password_hash.startsWith('$2')) {
+          isMatch = await bcrypt.compare(input.password, sheetUser.password_hash).catch(() => false);
+        } else {
           isMatch = input.password === sheetUser.password_hash;
-        }
-
-        // فصل كلمات المرور الافتراضية بدقة: الأدمن له admin123456، والمندوب له 123456
-        if (!isMatch) {
-          if (sheetUser.role === 'admin' && input.password === 'admin123456') {
-            isMatch = true;
-          } else if (sheetUser.role !== 'admin' && input.password === '123456') {
-            isMatch = true;
-          }
         }
 
         if (!isMatch) {
@@ -278,9 +278,63 @@ export class AuthService {
     };
   }
 
-  // 2. إنشاء مستخدم أو مندوب جديد (للإدارة فقط)
-  static async registerUser(input: RegisterUserInput): Promise<UserResponse> {
+    // 2 ب. تسجيل حساب عام مع حفظه في جدول المستخدمين على كوكل شيت وقاعدة بياناته الخاصة
+  static async publicRegister(input: PublicRegisterInput): Promise<AuthTokens> {
+    const rawUser = input.email.trim().toLowerCase();
+    const emailLower = rawUser.includes('@') ? rawUser : `${rawUser}@pharma.com`;
+    const sheetId = extractGoogleSheetId(input.sheetUrl || input.sheetId) || undefined;
+    const webhookUrl = (input.webhookUrl || '').trim() || undefined;
+    const geminiApiKey = (input.geminiApiKey || '').trim() || undefined;
+    const roleName: UserRole = (input.roleName === 'admin' || input.roleName === 'supervisor') ? input.roleName : 'medical_rep';
+
+    // تحقق من عدم تكرار المستخدم في شيت المستخدمين
+    const existingSheetUsers = await fetchUsersFromAdminSheet().catch(() => []);
+    if (existingSheetUsers.some(u => u.email.toLowerCase() === emailLower)) {
+      throw { statusCode: 409, message: 'اسم المستخدم أو البريد الإلكتروني مسجل مسبقاً في جدول المستخدمين' };
+    }
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+    const userId = `usr-${crypto.randomUUID().slice(0, 8)}`;
+    const createdUser = await this.registerUser({
+      fullName: input.fullName.trim(),
+      email: emailLower,
+      password: input.password,
+      phone: input.phone,
+      roleName,
+      sheetId,
+      webhookUrl,
+      geminiApiKey,
+      area: input.area
+    }, { precomputedHash: passwordHash, customId: userId });
+
+    const payload = {
+      userId: createdUser.id,
+      email: createdUser.email,
+      role: roleName,
+      fullName: createdUser.full_name,
+      geminiApiKey: geminiApiKey || '',
+      sheetId: sheetId || '',
+      webhookUrl: webhookUrl || ''
+    };
+    const accessToken = jwt.sign(payload, ENV.JWT_SECRET, { expiresIn: ENV.JWT_EXPIRES_IN as any });
+
+    return {
+      accessToken,
+      tokenType: 'Bearer',
+      expiresIn: ENV.JWT_EXPIRES_IN,
+      user: createdUser
+    };
+  }
+
+  // 2. إنشاء مستخدم أو مندوب جديد (مع ترحيله لشيت المستخدمين)
+  static async registerUser(
+    input: RegisterUserInput,
+    internalOpts?: { precomputedHash?: string; customId?: string }
+  ): Promise<UserResponse> {
     const emailLower = input.email.toLowerCase().trim();
+    const sheetId = extractGoogleSheetId(input.sheetUrl || input.sheetId) || undefined;
+    const webhookUrl = (input.webhookUrl || '').trim() || undefined;
+    const geminiApiKey = (input.geminiApiKey || '').trim() || undefined;
 
     if (isUsingPostgres()) {
       const existing = await pool.query('SELECT id FROM users WHERE email = $1', [emailLower]);
@@ -293,10 +347,11 @@ export class AuthService {
       }
     }
 
-    const passwordHash = await bcrypt.hash(input.password, 10);
-    const userId = crypto.randomUUID();
+    const passwordHash = internalOpts?.precomputedHash || await bcrypt.hash(input.password, 10);
+    const userId = internalOpts?.customId || crypto.randomUUID();
     const now = new Date();
 
+    let savedUser: UserResponse;
     if (isUsingPostgres()) {
       const roleRes = await pool.query('SELECT id FROM roles WHERE name = $1', [input.roleName]);
       if (roleRes.rows.length === 0) {
@@ -311,9 +366,12 @@ export class AuthService {
         [userId, roleId, emailLower, passwordHash, input.fullName, input.phone || null, true, now, now]
       );
 
-      return {
+      savedUser = {
         ...insertRes.rows[0],
-        role: input.roleName
+        role: input.roleName,
+        sheet_id: sheetId,
+        webhook_url: webhookUrl,
+        gemini_api_key: geminiApiKey
       };
     } else {
       const roleObj = inMemoryStore.roles.find(r => r.name === input.roleName);
@@ -334,16 +392,38 @@ export class AuthService {
 
       inMemoryStore.users.push(newUser);
 
-      return {
+      savedUser = {
         id: newUser.id,
         email: newUser.email,
         full_name: newUser.full_name,
         phone: newUser.phone,
         role: input.roleName,
         is_active: newUser.is_active,
-        created_at: newUser.created_at
+        created_at: newUser.created_at,
+        sheet_id: sheetId,
+        webhook_url: webhookUrl,
+        gemini_api_key: geminiApiKey
       };
     }
+
+    // مزامنة المستخدم تلقائياً مع جدول "المستخدمون" في كوكل شيت دون تعطيل الاستجابة
+    GoogleSheetsService.pushUsersToAdminSheet([
+      {
+        id: savedUser.id,
+        full_name: savedUser.full_name,
+        email: savedUser.email,
+        password_hash: passwordHash,
+        role: savedUser.role,
+        is_active: true,
+        gemini_api_key: geminiApiKey || '',
+        sheet_id: sheetId || '',
+        webhook_url: webhookUrl || '',
+        area: input.area || '',
+        created_at: now.toISOString()
+      }
+    ], 'register_user').catch(() => {});
+
+    return savedUser;
   }
 
   // 3. جلب الملف الشخصي للمستخدم الحالي

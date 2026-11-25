@@ -12,7 +12,25 @@ export const registerUserSchema = z.object({
   phone: z.string().optional(),
   roleName: z.enum(['admin', 'supervisor', 'medical_rep'], {
     message: 'الدور يجب أن يكون admin أو supervisor أو medical_rep'
-  })
+  }),
+  sheetId: z.string().optional(),
+  sheetUrl: z.string().optional(),
+  webhookUrl: z.string().optional(),
+  geminiApiKey: z.string().optional(),
+  area: z.string().optional()
+});
+
+export const publicRegisterSchema = z.object({
+  email: z.string().min(2, 'يرجى إدخال اسم المستخدم أو البريد الإلكتروني'),
+  password: z.string().min(6, 'كلمة المرور يجب أن لا تقل عن 6 أحرف'),
+  fullName: z.string().min(2, 'الاسم الكامل مطلوب'),
+  phone: z.string().optional(),
+  roleName: z.enum(['admin', 'supervisor', 'medical_rep']).optional().default('medical_rep'),
+  sheetId: z.string().optional(),
+  sheetUrl: z.string().optional(),
+  webhookUrl: z.string().optional(),
+  geminiApiKey: z.string().optional(),
+  area: z.string().optional()
 });
 
 export const updateProfileSchema = z.object({
@@ -22,5 +40,12 @@ export const updateProfileSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
-export type RegisterUserInput = z.infer<typeof registerUserSchema>;
+export type RegisterUserInput = z.infer<typeof registerUserSchema> & {
+  sheetId?: string;
+  sheetUrl?: string;
+  webhookUrl?: string;
+  geminiApiKey?: string;
+  area?: string;
+};
+export type PublicRegisterInput = z.infer<typeof publicRegisterSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

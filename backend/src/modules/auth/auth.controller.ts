@@ -22,6 +22,15 @@ export class AuthController {
     }
   }
 
+  static async publicRegister(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await AuthService.publicRegister(req.body);
+      sendCreated(res, result, 'تم تسجيل الحساب في جدول المستخدمين بنجاح');
+    } catch (error) {
+      next(error);
+    }
+  }
+
   static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = req.user!.userId;

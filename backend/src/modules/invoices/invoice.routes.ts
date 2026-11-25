@@ -515,13 +515,39 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { role, userId } = req.user!;
     const repId = role === 'medical_rep' ? userId : req.query.rep_id as string | undefined;
-    const data = await InvoiceService.findAll({
+    let data = await InvoiceService.findAll({
       repId,
       pharmacyId: req.query.pharmacy_id as string | undefined,
       status:     req.query.status as any,
       from:       req.query.from as string | undefined,
       to:         req.query.to   as string | undefined
     });
+
+    // Two-way Sheet Deletion Sync when explicitly requested by UI (?sync_sheet=1)
+    if (req.query.sync_sheet === '1' && data.length > 0) {
+      try {
+        const sheetRes = await GoogleSheetsService.readFromSheet(req.user?.sheetId, req.user?.webhookUrl);
+        if (sheetRes.reachable) {
+          const sheetNums = new Set(
+            (sheetRes.rows || []).map(r => String(r.invoice_number || '').trim()).filter(Boolean)
+          );
+          const toDeleteIds = data
+            .filter(inv => {
+              const num = String(inv.invoice_number || '').trim();
+              return Boolean(num) && !sheetNums.has(num);
+            })
+            .map(inv => inv.id);
+          for (const delId of toDeleteIds) {
+            await InvoiceService.deleteById(delId).catch(() => {});
+          }
+          if (toDeleteIds.length > 0) {
+            const removed = new Set(toDeleteIds);
+            data = data.filter(i => !removed.has(i.id));
+          }
+        }
+      } catch { /* keep data if sheet unreachable */ }
+    }
+
     sendSuccess(res, data);
   } catch (e) { next(e); }
 });

@@ -1210,9 +1210,12 @@ export const api = {
     }
   },
 
-  async register(data: { fullName: string; username: string; pin: string; area?: string; sheetUrl?: string }): Promise<{ token: string; user: User }> {
+  async register(data: { fullName: string; username: string; pin: string; area?: string; sheetUrl?: string; webhookUrl?: string; geminiApiKey?: string }): Promise<{ token: string; user: User }> {
     if (data.sheetUrl) {
       localStorage.setItem('pharma_google_sheet_url', data.sheetUrl.trim());
+    }
+    if (data.webhookUrl) {
+      localStorage.setItem('pharma_webhook_url', data.webhookUrl.trim());
     }
     try {
       const email = data.username.includes('@') ? data.username.trim().toLowerCase() : `${data.username.trim().toLowerCase()}@pharma.com`;
@@ -1223,7 +1226,11 @@ export const api = {
           fullName: data.fullName.trim(),
           email,
           password: data.pin,
-          roleName: 'medical_rep'
+          roleName: 'medical_rep',
+          sheetUrl: data.sheetUrl?.trim() || undefined,
+          webhookUrl: data.webhookUrl?.trim() || undefined,
+          geminiApiKey: data.geminiApiKey?.trim() || undefined,
+          area: data.area?.trim() || undefined
         })
       });
       const json = await res.json().catch(() => ({}));
@@ -1306,12 +1313,32 @@ export const api = {
   // ── Invoices ──
   async getInvoices(): Promise<Invoice[]> {
     try {
-      const res = await fetchApi('/invoices', { headers: authHeaders() });
+      const res = await fetchApi('/invoices?sync_sheet=1', { headers: authHeaders() });
       return await handleResponse<Invoice[]>(res);
     } catch (err: any) {
       if (isNetworkError(err)) return getStoredInvoices();
       throw err;
     }
+  },
+
+  // حذف فواتير محذوفة من الشيت (مزامنة اتجاهين - offline mode)
+  async syncSheetDeletion(): Promise<void> {
+    try {
+      // في حالة الاتصال — الـ backend يتعامل مع sync_sheet=1 تلقائياً في getInvoices
+      // في وضع عدم الاتصال: نقرأ الشيت مباشرة ونحذف محلياً
+      const sheetRows = await fetchLiveSheetRowsCompact();
+      if (!sheetRows || sheetRows.length === 0) return;
+      const sheetNums = new Set(sheetRows.map((r: any) => String(r.invoice_number || '').trim()).filter(Boolean));
+      const local = getStoredInvoices();
+      const filtered = local.filter(inv => {
+        const num = String(inv.invoice_number || '').trim();
+        if (!num) return true; // بدون رقم — نحتفظ بها
+        return sheetNums.has(num);
+      });
+      if (filtered.length !== local.length) {
+        saveStoredInvoices(filtered);
+      }
+    } catch { /* تجاهل أخطاء الشبكة */ }
   },
 
   async createInvoice(payload: {
