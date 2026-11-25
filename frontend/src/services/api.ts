@@ -742,7 +742,7 @@ export interface SkippedSheetDuplicateNotice {
 
 export interface PendingSheetsSyncJob {
   id: string;
-  action: 'replace_invoice' | 'delete_invoice' | 'batchAppend' | 'repair';
+  action: 'add_invoice' | 'edit_invoice' | 'replace_invoice' | 'delete_invoice' | 'batchAppend' | 'repair';
   invoice_number?: string;
   previous_invoice_number?: string;
   pharmacy_name?: string;
@@ -1030,14 +1030,24 @@ function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }):
     };
   });
 
+  const resolvedPharmacyName = targetPharmacy?.name || payload.pharmacy_name || 'صيدلية معتمدة';
+  const resolvedArea = String(
+    payload.pharmacy_area || (targetPharmacy as any)?.area || detectAreaFromText(resolvedPharmacyName) || ''
+  ).trim();
+
+  if (targetPharmacy && resolvedArea && !(targetPharmacy as any).area) {
+    (targetPharmacy as any).area = resolvedArea;
+    saveStoredPharmacies(pharmacies);
+  }
+
   const newInv: Invoice = {
     id: 'inv-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
     invoice_number: payload.invoice_number || `INV-${Date.now().toString().slice(-6)}`,
     invoice_date: payload.invoice_date || new Date().toISOString().split('T')[0],
     pharmacy_id: targetPharmacy?.id || payload.pharmacy_id || 'ph-custom',
-    pharmacy_name: targetPharmacy?.name || payload.pharmacy_name || 'صيدلية معتمدة',
+    pharmacy_name: resolvedPharmacyName,
     pharmacy_city: targetPharmacy?.city || 'بغداد',
-    pharmacy_area: payload.pharmacy_area || targetPharmacy?.area || '',
+    pharmacy_area: resolvedArea,
     rep_id: curUser?.id || 'rep-rusafa',
     rep_name: curUser?.full_name || 'علي حسن (مندوب الرصافة)',
     status: 'pending_review',
@@ -1055,7 +1065,7 @@ function persistLocalInvoice(payload: any, opts?: { skipSheetCheck?: boolean }):
 
   if (!opts?.skipSheetCheck) {
     const rows = formatInvoiceToSheetRows(newInv);
-    enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: newInv.invoice_number, rows });
+    enqueueSheetsSyncJob({ action: 'add_invoice', invoice_number: newInv.invoice_number, pharmacy_name: newInv.pharmacy_name, invoice_date: newInv.invoice_date, rows });
     flushSheetsSyncOutboxInternal({ keepalive: true }).catch(() => {});
   }
 
@@ -1078,7 +1088,7 @@ async function persistLocalInvoiceAndSync(payload: any): Promise<Invoice> {
   }
 
   const rows = formatInvoiceToSheetRows(newInv);
-  enqueueSheetsSyncJob({ action: 'replace_invoice', invoice_number: String(newInv.invoice_number || ''), rows });
+  enqueueSheetsSyncJob({ action: 'add_invoice', invoice_number: String(newInv.invoice_number || ''), pharmacy_name: newInv.pharmacy_name, invoice_date: newInv.invoice_date, rows });
   await Promise.race([
     flushSheetsSyncOutboxInternal({ keepalive: true }),
     new Promise(r => setTimeout(r, 3000))
@@ -1397,11 +1407,14 @@ export const api = {
           });
         }
 
+        const resolvedPhName = ph?.name || old.pharmacy_name || '';
+        const resolvedPhArea = (payload.pharmacy_area || '').trim() || old.pharmacy_area || (ph as any)?.area || detectAreaFromText(resolvedPhName) || '';
+
         const updated: Invoice = {
           ...old,
           pharmacy_id: payload.pharmacy_id || old.pharmacy_id,
-          pharmacy_name: ph?.name || old.pharmacy_name,
-          pharmacy_area: payload.pharmacy_area ?? old.pharmacy_area,
+          pharmacy_name: resolvedPhName,
+          pharmacy_area: resolvedPhArea,
           invoice_number: payload.invoice_number ?? old.invoice_number,
           invoice_date: payload.invoice_date ?? old.invoice_date,
           notes: payload.notes ?? old.notes,
@@ -1414,9 +1427,11 @@ export const api = {
         saveStoredInvoices(list);
 
         enqueueSheetsSyncJob({
-          action: 'replace_invoice',
+          action: 'edit_invoice',
           invoice_number: updated.invoice_number,
           previous_invoice_number: old.invoice_number,
+          pharmacy_name: updated.pharmacy_name,
+          invoice_date: updated.invoice_date,
           rows: formatInvoiceToSheetRows(updated)
         });
         await Promise.race([
@@ -1451,9 +1466,11 @@ export const api = {
         saveStoredInvoices(list);
 
         enqueueSheetsSyncJob({
-          action: 'replace_invoice',
+          action: 'edit_invoice',
           invoice_number: list[idx].invoice_number,
           previous_invoice_number: list[idx].invoice_number,
+          pharmacy_name: list[idx].pharmacy_name,
+          invoice_date: list[idx].invoice_date,
           rows: formatInvoiceToSheetRows(list[idx])
         });
         await Promise.race([
@@ -1885,8 +1902,10 @@ export const api = {
             });
           } else {
             enqueueSheetsSyncJob({
-              action: 'replace_invoice',
+              action: 'add_invoice',
               invoice_number: String(newInv.invoice_number || ''),
+              pharmacy_name: newInv.pharmacy_name,
+              invoice_date: newInv.invoice_date,
               rows: formatInvoiceToSheetRows(newInv)
             });
           }
@@ -2233,7 +2252,7 @@ export const api = {
       const data = await res.json().catch(() => null);
       if (!data) return { scriptVersion: 0, isOutdated: false };
       const ver = Number(data.script_version || 1);
-      return { scriptVersion: ver, isOutdated: ver < 2 };
+      return { scriptVersion: ver, isOutdated: ver < 3 };
     } catch {
       return { scriptVersion: 0, isOutdated: false };
     }

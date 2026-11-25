@@ -14,6 +14,8 @@ import {
   getClientOcrCircuitBreakerStatus
 } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
+import { buildFullInvoiceCompositeKey } from '../utils/duplicateDetector';
+import { detectAreaFromText } from '../utils/invoiceTableParser';
 import {
   FilePlus, Upload, Edit3, FileText as FilePdfIcon,
   Plus, Trash2, Calculator, CheckCircle2, AlertCircle, Sparkles,
@@ -117,52 +119,25 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     { id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10, ocr_bonus: 1 }
   ]);
 
-  // فحص الفواتير المكررة: رقم الفاتورة أو (نفس الصيدلية + نفس التاريخ + نفس كامل الأصناف والكميات)
+  // فحص الفواتير المكررة بالشرط المركب الكامل: نفس الصيدلية + التاريخ + عدد المنتجات + المنتجات وكمياتها معاً
   const duplicateInvoice = (() => {
-    const curNum = invoiceNumber.trim();
-    const curPhName = pharmacyName.trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-    const curPhId = String(pharmacyId || '').trim();
+    const currentKey = buildFullInvoiceCompositeKey({
+      pharmacy_name: pharmacyName || availablePharmacies.find(p => p.id === pharmacyId)?.name || '',
+      invoice_date: invoiceDate,
+      items: items.map(it => ({
+        product_name: it.custom_name || products.find(p => p.id === it.product_id)?.name || it.product_id,
+        quantity: it.sold_quantity
+      }))
+    });
+    if (!currentKey) return null;
 
     return invoices.find(inv => {
-      // 1. فحص رقم الفاتورة إذا كان غير افتراضي ومطابق
-      const invNum = String(inv.invoice_number || '').trim();
-      if (curNum && invNum && curNum === invNum && !curNum.toUpperCase().startsWith('INV-')) {
-        return true;
-      }
-
-      // 2. فحص الصيدلية والتاريخ
-      if (!invoiceDate) return false;
-      const invDate = String(inv.invoice_date || '').split('T')[0];
-      if (invDate !== invoiceDate) return false;
-
-      const invPhId = String(inv.pharmacy_id || '').trim();
-      const invPhName = String(inv.pharmacy_name || '').trim().toLowerCase().replace(/^(صيدلية|صيدليه|مذخر|ص)\s*/gi, '');
-
-      const samePharmacy = (curPhId && invPhId && curPhId === invPhId) ||
-        (curPhName.length >= 2 && invPhName.length >= 2 && (curPhName.includes(invPhName) || invPhName.includes(curPhName)));
-
-      if (!samePharmacy) return false;
-
-      // 3. تحقق من تطابق كامل الأصناف والكميات
-      const existingItems = inv.items || [];
-      if (existingItems.length !== items.length || items.length === 0) return false;
-      const normalizeItem = (it: any) => {
-        const raw = String(it.custom_product_name || it.product_name_snapshot || it.custom_name || '').trim().toLowerCase();
-        const fallback = products.find(p => p.id === it.product_id)?.name?.toLowerCase() || String(it.product_id || '');
-        const cleanName = (raw || fallback).replace(/[^a-z0-9\u0621-\u064A]/gi, '');
-        return {
-          name: cleanName,
-          qty: Number(it.sold_quantity || it.quantity || 0)
-        };
-      };
-      const sortedExisting = [...existingItems].map(normalizeItem).sort((a, b) => a.name.localeCompare(b.name));
-      const sortedCurrent  = [...items].map(normalizeItem).sort((a, b) => a.name.localeCompare(b.name));
-      return sortedExisting.every((ex, i) => {
-        const cur = sortedCurrent[i];
-        if (!cur) return false;
-        const nameMatch = ex.name === cur.name || ex.name.includes(cur.name) || cur.name.includes(ex.name);
-        return nameMatch && ex.qty === cur.qty;
+      const invKey = buildFullInvoiceCompositeKey({
+        pharmacy_name: inv.pharmacy_name,
+        invoice_date: inv.invoice_date,
+        items: inv.items
       });
+      return Boolean(invKey) && invKey === currentKey;
     }) || null;
   })();
 
@@ -1685,9 +1660,14 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                       const val = e.target.value;
                       setPharmacyName(val);
                       const matched = availablePharmacies.find(p => p.name.trim() === val.trim());
+                      const detected = matched ? (matched as any).area : detectAreaFromText(val);
                       if (matched) {
                         setPharmacyId(matched.id);
-                        if ((matched as any).area && !pharmacyArea) setPharmacyArea((matched as any).area);
+                      } else {
+                        setPharmacyId('');
+                      }
+                      if (detected && !pharmacyArea.trim()) {
+                        setPharmacyArea(detected);
                       }
                     }}
                     required

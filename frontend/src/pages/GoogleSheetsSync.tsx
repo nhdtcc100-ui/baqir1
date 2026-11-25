@@ -203,7 +203,8 @@ export const GoogleSheetsSync: React.FC = () => {
       const numericProd = /^\d+$/.test(prod);
       const areaLooksCity = area === 'بغداد' && city.length > 2 && numericProd;
       const repLooksTs = !ts && rep.includes(':') && /\d/.test(rep);
-      return areaLooksCity || repLooksTs;
+      const cityContainsProduct = ['drop', 'cream', 'oint', 'قطرة', 'كريم', 'مرهم', 'elica', 'hyfresh'].some(k => city.toLowerCase().includes(k));
+      return areaLooksCity || repLooksTs || cityContainsProduct;
     });
   }, [rows]);
 
@@ -363,10 +364,10 @@ export const GoogleSheetsSync: React.FC = () => {
             <div style={{ flex: '1 1 280px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontWeight: 900, fontSize: '0.96rem', marginBottom: 4 }}>
                 <AlertTriangle size={20} style={{ color: '#dc2626', flexShrink: 0 }} />
-                <span>تنبيه هام: كود Google Apps Script المنشور على الشيت قديم (يُسبب إزاحة عمود المنتج للمكان وإنشاء صف جديد)</span>
+                <span>تنبيه هام جداً: كود Google Apps Script المنشور لديك على كوكل ما زال قديماً (الإصدار 1)</span>
               </div>
-              <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.6 }}>
-                لإصلاح التعديل في نفس الصف فوراً، ومنع ظهور اسم الدواء في عمود المكان/المحافظة، وتفعيل التلوين التلقائي للأحمر والأبيض داخل الشيت: انسخ الكود الجديد (الإصدار 2) والصقه في <strong>Extensions ← Apps Script</strong> ثم اعمل <strong>Deploy ← New version</strong> ثم اضغط «إصلاح وترتيب الشيت».
+              <div style={{ fontSize: '0.8rem', color: '#7f1d1d', lineHeight: 1.65 }}>
+                لهذا السبب يضع الشيت «اسم الدواء» بدل المنطقة ويضيف صفاً جديداً عند التعديل. لإصلاح ذلك نهائياً: انسخ الكود الجديد (الإصدار 3) ← الصقه في <strong>Extensions ← Apps Script</strong> ← اضغط <strong>حفظ</strong> ← والأهم: افتح <strong>Deploy ← Manage deployments ← Edit ← اختر Version: New version ← Deploy</strong> (الحفظ وحده لا يحدّث الرابط!) ثم اضغط زر «إصلاح الصفوف وتلوين الشيت الآن».
               </div>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -377,7 +378,7 @@ export const GoogleSheetsSync: React.FC = () => {
                 style={{ fontWeight: 800, background: '#dc2626', borderColor: '#b91c1c' }}
               >
                 {copiedCode ? <Check size={15} /> : <Copy size={15} />}
-                {copiedCode ? 'تم نسخ كود v2!' : 'نسخ كود Apps Script v2 📋'}
+                {copiedCode ? 'تم نسخ كود v3!' : 'نسخ كود Apps Script v3 📋'}
               </button>
               <button
                 type="button"
