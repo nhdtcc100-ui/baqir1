@@ -453,6 +453,99 @@ function formatGeminiErrorArabic(status: number, apiMessage: string): string {
 
 export type AiVisionProvider = 'groq' | 'openrouter' | 'gemini';
 
+const CLIENT_OCR_CACHE_TTL_MS = 30 * 60 * 1000;
+const CLIENT_OCR_CACHE_MAX = 50;
+const CLIENT_OCR_CIRCUIT_MS = 10 * 60 * 1000;
+const CLIENT_OCR_MAX_RETRIES = 3;
+const LS_OCR_BREAKER_KEY = 'pharma_client_ocr_breaker_v1';
+
+const clientOcrShaCache = new Map<string, { expiresAt: number; result: any }>();
+const memoryOcrBreakers = new Map<string, { openUntil: number; reason: string; statusCode?: number }>();
+
+function shortKeyFingerprint(key: string): string {
+  const k = (key || '').trim();
+  if (!k) return 'none';
+  let h = 2166136261;
+  for (let i = 0; i < k.length; i++) {
+    h ^= k.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
+export async function computeBlobSha256Hex(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer();
+  if (typeof crypto !== 'undefined' && crypto.subtle?.digest) {
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  const view = new Uint8Array(buf);
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < view.length; i++) {
+    h1 = Math.imul(h1 ^ view[i], 0x01000193);
+    h2 = Math.imul(h2 ^ (view[i] + i), 0x85ebca6b);
+  }
+  return `${view.length}-${(h1 >>> 0).toString(16)}-${(h2 >>> 0).toString(16)}`;
+}
+
+export function getClientOcrCircuitBreakerStatus(apiKey?: string): { open: boolean; remainingMs: number; reason?: string; statusCode?: number } {
+  const fp = shortKeyFingerprint(apiKey ?? getSavedGeminiKey());
+  let st = memoryOcrBreakers.get(fp);
+  if (!st && typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LS_OCR_BREAKER_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.[fp]) st = parsed[fp];
+      }
+    } catch { /* ignore */ }
+  }
+  if (!st) return { open: false, remainingMs: 0 };
+  const remainingMs = st.openUntil - Date.now();
+  if (remainingMs <= 0) {
+    clearClientOcrCircuitBreaker(apiKey ?? getSavedGeminiKey());
+    return { open: false, remainingMs: 0 };
+  }
+  memoryOcrBreakers.set(fp, st);
+  return { open: true, remainingMs, reason: st.reason, statusCode: st.statusCode };
+}
+
+export function tripClientOcrCircuitBreaker(apiKey: string | undefined, reason: string, statusCode?: number) {
+  const fp = shortKeyFingerprint(apiKey ?? getSavedGeminiKey());
+  const entry = { openUntil: Date.now() + CLIENT_OCR_CIRCUIT_MS, reason, statusCode };
+  memoryOcrBreakers.set(fp, entry);
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LS_OCR_BREAKER_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      map[fp] = entry;
+      localStorage.setItem(LS_OCR_BREAKER_KEY, JSON.stringify(map));
+    } catch { /* ignore */ }
+  }
+}
+
+export function clearClientOcrCircuitBreaker(apiKey?: string) {
+  if (apiKey === undefined) {
+    memoryOcrBreakers.clear();
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(LS_OCR_BREAKER_KEY); } catch { /* ignore */ }
+    }
+    return;
+  }
+  const fp = shortKeyFingerprint(apiKey);
+  memoryOcrBreakers.delete(fp);
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(LS_OCR_BREAKER_KEY);
+      if (!raw) return;
+      const map = JSON.parse(raw);
+      delete map[fp];
+      localStorage.setItem(LS_OCR_BREAKER_KEY, JSON.stringify(map));
+    } catch { /* ignore */ }
+  }
+}
+
 export function detectAiKeyProvider(key: string): AiVisionProvider {
   const k = (key || '').trim();
   if (k.startsWith('gsk_')) return 'groq';
@@ -461,8 +554,8 @@ export function detectAiKeyProvider(key: string): AiVisionProvider {
 }
 
 const GROQ_VISION_MODELS = [
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'qwen/qwen3.8-27b'
+  'qwen/qwen3.8-27b',
+  'meta-llama/llama-4-scout-17b-16e-instruct'
 ];
 
 const OPENROUTER_FREE_VISION_MODELS = [
@@ -495,7 +588,7 @@ function normalizeVisionJsonResponse(rawText: string) {
 }
 
 /**
- * استدعاء مشترك لنقاط Vision المتوافقة مع OpenAI (Groq Free / OpenRouter Free)
+ * استدعاء مشترك لنقاط Vision المتوافقة مع OpenAI (Groq Free / OpenRouter Free) مع Retry (3x)
  */
 async function runOpenAiCompatibleVisionOcr(
   provider: 'groq' | 'openrouter',
@@ -512,63 +605,80 @@ async function runOpenAiCompatibleVisionOcr(
     : 'https://openrouter.ai/api/v1/chat/completions';
   const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_FREE_VISION_MODELS;
   const providerLabel = provider === 'groq' ? 'Groq Vision AI' : 'OpenRouter Free AI';
-  let lastError: Error | null = null;
+  let lastError: any = null;
 
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 32000);
-    try {
-      onProgress?.(55 + i * 9, `جاري القراءة الذكية عبر ${providerLabel} (${model.split('/').pop()})...`);
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`
-      };
-      if (provider === 'openrouter') {
-        headers['X-Title'] = 'PharmaSales CRM';
-      }
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          temperature: 0.1,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: IRAQI_PHARMA_OCR_PROMPT },
-                { type: 'image_url', image_url: { url: fileData.dataUrl || `data:${fileData.mimeType};base64,${fileData.base64}` } }
-              ]
-            }
-          ]
-        })
-      });
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        const apiMsg = errJson?.error?.message || res.statusText || '';
-        const msg = `${providerLabel} (${res.status}): ${apiMsg || 'فشل الطلب'}`;
-        if (res.status === 401 || res.status === 403) {
-          throw Object.assign(new Error(`مفتاح ${providerLabel} غير صالح أو مرفوض (${res.status}).`), { fatalAuth: true });
+    for (let attempt = 1; attempt <= CLIENT_OCR_MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 32000);
+      try {
+        onProgress?.(55 + i * 9, `جاري القراءة الذكية عبر ${providerLabel} (${model.split('/').pop()})...`);
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`
+        };
+        if (provider === 'openrouter') {
+          headers['X-Title'] = 'PharmaSales CRM';
         }
-        lastError = new Error(msg);
-        continue;
-      }
 
-      const data = await res.json();
-      const rawText = String(data?.choices?.[0]?.message?.content || '');
-      const parsed = normalizeVisionJsonResponse(rawText);
-      return { parsed, modelUsed: `${providerLabel}: ${model.split('/').pop()}` };
-    } catch (err: any) {
-      if (err?.fatalAuth) throw err;
-      lastError = err?.name === 'AbortError'
-        ? new Error(`انتهت مهلة الاتصال بـ ${providerLabel}`)
-        : err;
-    } finally {
-      clearTimeout(timer);
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            temperature: 0.1,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: IRAQI_PHARMA_OCR_PROMPT },
+                  { type: 'image_url', image_url: { url: fileData.dataUrl || `data:${fileData.mimeType};base64,${fileData.base64}` } }
+                ]
+              }
+            ]
+          })
+        });
+
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          const apiMsg = errJson?.error?.message || res.statusText || '';
+          const msg = `${providerLabel} (${res.status}): ${apiMsg || 'فشل الطلب'}`;
+          if (res.status === 401 || res.status === 403) {
+            throw Object.assign(new Error(`مفتاح ${providerLabel} غير صالح أو مرفوض (${res.status}).`), {
+              fatalAuth: true,
+              statusCode: res.status,
+              shouldTripCircuit: res.status === 403
+            });
+          }
+          lastError = Object.assign(new Error(msg), {
+            statusCode: res.status,
+            shouldTripCircuit: res.status === 429
+          });
+          if ((res.status === 429 || res.status >= 500) && attempt < CLIENT_OCR_MAX_RETRIES) {
+            await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+            continue;
+          }
+          break;
+        }
+
+        const data = await res.json();
+        const rawText = String(data?.choices?.[0]?.message?.content || '');
+        const parsed = normalizeVisionJsonResponse(rawText);
+        return { parsed, modelUsed: `${providerLabel}: ${model.split('/').pop()}` };
+      } catch (err: any) {
+        if (err?.fatalAuth) throw err;
+        lastError = err?.name === 'AbortError'
+          ? Object.assign(new Error(`انتهت مهلة الاتصال بـ ${providerLabel}`), { statusCode: 408 })
+          : err;
+        if (attempt < CLIENT_OCR_MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+          continue;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
     }
   }
 
@@ -585,13 +695,13 @@ async function runBrowserGeminiOcr(
     return runOpenAiCompatibleVisionOcr(provider, fileData, apiKey, onProgress);
   }
 
-  let lastError: Error | null = null;
+  let lastError: any = null;
 
   for (let mIdx = 0; mIdx < GEMINI_CANDIDATE_MODELS.length; mIdx++) {
     const modelName = GEMINI_CANDIDATE_MODELS[mIdx];
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = 1; attempt <= CLIENT_OCR_MAX_RETRIES; attempt++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 30000);
       try {
@@ -618,19 +728,34 @@ async function runBrowserGeminiOcr(
           const errJson = await res.json().catch(() => ({}));
           const apiMsg = errJson?.error?.message || res.statusText || '';
           const msg = formatGeminiErrorArabic(res.status, apiMsg);
+          const lowMsg = apiMsg.toLowerCase();
 
-          if (res.status === 400 && apiMsg.toLowerCase().includes('api_key_invalid')) {
-            throw Object.assign(new Error(msg), { fatalAuth: true });
+          if (res.status === 400 && lowMsg.includes('api_key_invalid')) {
+            throw Object.assign(new Error(msg), { fatalAuth: true, statusCode: 400 });
+          }
+          // إيقاف الباقة المجانية على المشروع (403) -> تفعيل قاطع الدائرة فوراً
+          if (res.status === 403 && (lowMsg.includes('free tier') || lowMsg.includes('set up billing'))) {
+            throw Object.assign(new Error(msg), { statusCode: 403, shouldTripCircuit: true, fatalBilling: true });
           }
           if (res.status === 404 || res.status === 403) {
-            lastError = new Error(msg);
+            lastError = Object.assign(new Error(msg), {
+              statusCode: res.status,
+              shouldTripCircuit: res.status === 403
+            });
             break;
           }
-          if ((res.status === 429 || res.status >= 500) && attempt < 2) {
-            await new Promise(r => setTimeout(r, 1200));
+          if ((res.status === 429 || res.status >= 500) && attempt < CLIENT_OCR_MAX_RETRIES) {
+            lastError = Object.assign(new Error(msg), {
+              statusCode: res.status,
+              shouldTripCircuit: res.status === 429
+            });
+            await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
             continue;
           }
-          throw new Error(msg);
+          throw Object.assign(new Error(msg), {
+            statusCode: res.status,
+            shouldTripCircuit: res.status === 429
+          });
         }
 
         const data = await res.json();
@@ -639,10 +764,14 @@ async function runBrowserGeminiOcr(
         return { parsed, modelUsed: modelName };
       } catch (err: any) {
         clearTimeout(timer);
-        if (err?.fatalAuth) throw err;
+        if (err?.fatalAuth || err?.fatalBilling) throw err;
         lastError = err?.name === 'AbortError'
-          ? new Error('انتهت مهلة الاتصال بـ Gemini API (تأكد من سرعة الإنترنت)')
+          ? Object.assign(new Error('انتهت مهلة الاتصال بـ Gemini API (تأكد من سرعة الإنترنت)'), { statusCode: 408 })
           : err;
+        if (attempt < CLIENT_OCR_MAX_RETRIES && !err?.statusCode) {
+          await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+          continue;
+        }
       } finally {
         clearTimeout(timer);
       }
@@ -1198,6 +1327,7 @@ export const api = {
           });
           if (res.ok) {
             setSavedGeminiKey(key);
+            clearClientOcrCircuitBreaker(key);
             return { valid: true, model, provider, message: `تم التحقق! ${label} يعمل مجاناً عبر (${model.split('/').pop()}) ✅` };
           }
           const errJson = await res.json().catch(() => ({}));
@@ -1226,12 +1356,16 @@ export const api = {
         });
         if (res.ok) {
           setSavedGeminiKey(key);
+          clearClientOcrCircuitBreaker(key);
           return { valid: true, model, provider: 'gemini', message: `تم التحقق! Gemini يعمل بنجاح على (${model}) ✅` };
         }
         const errJson = await res.json().catch(() => ({}));
         const rawErrMsg = errJson?.error?.message || res.statusText || '';
         lastMsg = formatGeminiErrorArabic(res.status, rawErrMsg);
-        if (res.status === 400 && rawErrMsg.toLowerCase().includes('api_key_invalid')) {
+        if (
+          (res.status === 400 && rawErrMsg.toLowerCase().includes('api_key_invalid')) ||
+          (res.status === 403 && rawErrMsg.toLowerCase().includes('free tier'))
+        ) {
           return { valid: false, provider: 'gemini', message: lastMsg };
         }
       } catch (e: any) {
@@ -1241,7 +1375,7 @@ export const api = {
     return { valid: false, provider: 'gemini', message: lastMsg };
   },
 
-  // ── Full Mobile-Safe OCR Pipeline (Inspect → Prep → Upload/Gemini/Tesseract → Queue) ─
+  // ── Full Mobile-Safe OCR Pipeline (Inspect → Cache(SHA-256) → Prep → Retry(3x)+Breaker(10m) → Tesseract/Queue) ─
   async uploadInvoiceFile(
     rawFile: File,
     pharmacyId?: string,
@@ -1264,6 +1398,10 @@ export const api = {
     ocr_warning?: string;
     ocr_error?: string;
     queued_offline?: boolean;
+    needs_review?: boolean;
+    needs_review_reason?: string;
+    cached?: boolean;
+    circuit_breaker_open?: boolean;
     prepared_info?: {
       originalSizeBytes: number;
       finalSizeBytes: number;
@@ -1274,6 +1412,39 @@ export const api = {
   }> {
     const report = (stage: OcrProgressUpdate['stage'], percent: number, message: string) => {
       options?.onProgress?.({ stage, percent, message });
+    };
+
+    const geminiKey = getSavedGeminiKey();
+    const initialBreaker = getClientOcrCircuitBreakerStatus(geminiKey);
+    const useAsyncBackend = !isLocalhostFromRemoteHttps();
+    const rawSha256 = rawFile.size > 0 ? await computeBlobSha256Hex(rawFile) : '';
+    const cacheKey = rawSha256
+      ? `${rawSha256}:${shortKeyFingerprint(geminiKey)}:${initialBreaker.open ? 'open' : 'closed'}:${pharmacyId || ''}:${useAsyncBackend ? getApiBase() : 'browser'}`
+      : '';
+
+    if (cacheKey) {
+      const hit = clientOcrShaCache.get(cacheKey);
+      if (hit && Date.now() <= hit.expiresAt) {
+        report('done', 100, 'تم استرجاع النتيجة فوراً من الذاكرة المؤقتة (SHA-256 Cache)');
+        if (hit.result?.image_url && options?.onPreparedPreview && hit.result?._prepMeta) {
+          options.onPreparedPreview(hit.result.image_url, hit.result._prepMeta);
+        }
+        const { _prepMeta, ...cleanResult } = hit.result;
+        return { ...cleanResult, cached: true };
+      }
+      if (hit) clientOcrShaCache.delete(cacheKey);
+    }
+
+    const storeCache = (payload: any, prepMeta?: PreparedInvoiceFile) => {
+      if (!cacheKey || payload?.queued_offline) return;
+      if (clientOcrShaCache.size >= CLIENT_OCR_CACHE_MAX) {
+        const oldest = clientOcrShaCache.keys().next().value;
+        if (oldest) clientOcrShaCache.delete(oldest);
+      }
+      clientOcrShaCache.set(cacheKey, {
+        expiresAt: Date.now() + CLIENT_OCR_CACHE_TTL_MS,
+        result: { ...payload, _prepMeta: prepMeta }
+      });
     };
 
     // المرحلة 2 و 3: فحص Magic Bytes + تحويل HEIC + تصحيح EXIF + تصغير ≤1600px + مسح GPS EXIF
@@ -1312,7 +1483,6 @@ export const api = {
       if (pharmacyId) formData.append('pharmacy_id', pharmacyId);
 
       report('upload', 35, 'رفع الفاتورة للخادم...');
-      const useAsyncBackend = !isLocalhostFromRemoteHttps();
       if (useAsyncBackend) {
         const uploadResult = await uploadMultipartWithRetry(
           '/invoices/ocr',
@@ -1328,12 +1498,28 @@ export const api = {
           const jobResult = await pollBackendOcrJob(uploadResult.jobId, (pct, msg) =>
             report('analyze', Math.max(65, pct), msg)
           );
+          const needsRev = jobResult?.needs_review ?? (Number(jobResult?.confidence || 0) < 0.75);
+          const out = {
+            ...jobResult,
+            needs_review: needsRev,
+            ocr_engine: 'backend' as const,
+            prepared_info: prepSummary
+          };
+          storeCache(out, prepared);
           report('done', 100, 'اكتملت القراءة بنجاح');
-          return { ...jobResult, ocr_engine: 'backend', prepared_info: prepSummary };
+          return out;
         }
 
+        const needsRev = uploadResult?.needs_review ?? (Number(uploadResult?.confidence || 0) < 0.75);
+        const out = {
+          ...uploadResult,
+          needs_review: needsRev,
+          ocr_engine: 'backend' as const,
+          prepared_info: prepSummary
+        };
+        storeCache(out, prepared);
         report('done', 100, 'اكتملت القراءة بنجاح');
-        return { ...uploadResult, ocr_engine: 'backend', prepared_info: prepSummary };
+        return out;
       }
       throw new TypeError('Localhost backend skipped on HTTPS origin');
     } catch (err: any) {
@@ -1344,34 +1530,56 @@ export const api = {
       // المرحلة 4 ب + 5: التحليل المباشر من المتصفح (عند استضافة GitHub Pages أو غياب الخادم)
       report('analyze', 45, 'تحضير البيانات للقراءة...');
       const fileData = await fileToBase64DataUrl(prepared.file, prepared.inspection.mimeType);
-      const geminiKey = getSavedGeminiKey();
       let geminiErrorMsg: string | undefined;
+      let circuitOpen = initialBreaker.open;
 
-      // المسار الذكي 1: Google Gemini Vision مباشرة من المتصفح
+      // المسار الذكي 1: Groq Vision / OpenRouter / Gemini مع احترام قاطع الدائرة 10 دقائق
       if (geminiKey) {
-        try {
-          const { parsed, modelUsed } = await runBrowserGeminiOcr(
-            fileData,
-            geminiKey,
-            (pct, msg) => report('analyze', pct, msg)
-          );
-          report('done', 100, `اكتملت القراءة بالذكاء الاصطناعي (${modelUsed})`);
-          return {
-            extracted_items: Array.isArray(parsed.items) ? parsed.items : [],
-            invoice_number: parsed.invoice_number || undefined,
-            invoice_date: parsed.invoice_date || new Date().toISOString().split('T')[0],
-            pharmacy_name: parsed.pharmacy_name || undefined,
-            pharmacy_area: parsed.pharmacy_area || undefined,
-            image_url: fileData.dataUrl,
-            confidence: Number(parsed.confidence || 0.92),
-            offline_mode: false,
-            ocr_engine: 'gemini-browser',
-            ocr_warning: prepared.warning,
-            prepared_info: prepSummary
-          };
-        } catch (gemErr: any) {
-          geminiErrorMsg = gemErr?.message || 'فشل تحليل الفاتورة عبر Gemini';
-          console.warn('Browser Gemini OCR failed:', geminiErrorMsg);
+        if (initialBreaker.open) {
+          const minsLeft = Math.max(1, Math.ceil(initialBreaker.remainingMs / 60000));
+          geminiErrorMsg = `قاطع الدائرة مفعّل (${minsLeft} د متبقية بعد خطأ ${initialBreaker.statusCode || '403/429'}) — التحويل الفوري للمحرك المحلي`;
+          console.warn('OCR Circuit Breaker open — skipping AI call:', geminiErrorMsg);
+        } else {
+          try {
+            const { parsed, modelUsed } = await runBrowserGeminiOcr(
+              fileData,
+              geminiKey,
+              (pct, msg) => report('analyze', pct, msg)
+            );
+            const items = Array.isArray(parsed.items) ? parsed.items : [];
+            const conf = Number(parsed.confidence || 0.92);
+            const needsReview = items.length === 0 || conf < 0.75;
+            const out = {
+              extracted_items: items,
+              invoice_number: parsed.invoice_number || undefined,
+              invoice_date: parsed.invoice_date || new Date().toISOString().split('T')[0],
+              pharmacy_name: parsed.pharmacy_name || undefined,
+              pharmacy_area: parsed.pharmacy_area || undefined,
+              image_url: fileData.dataUrl,
+              confidence: conf,
+              offline_mode: false,
+              ocr_engine: 'gemini-browser' as const,
+              ocr_warning: prepared.warning,
+              needs_review: needsReview,
+              needs_review_reason: needsReview
+                ? 'ثقة القراءة الذكية منخفضة أو لم تُكتشف أصناف — يرجى مراجعة الفاتورة قبل الحفظ.'
+                : undefined,
+              cached: false,
+              circuit_breaker_open: false,
+              prepared_info: prepSummary
+            };
+            storeCache(out, prepared);
+            report('done', 100, `اكتملت القراءة بالذكاء الاصطناعي (${modelUsed})`);
+            return out;
+          } catch (gemErr: any) {
+            const errMsg = String(gemErr?.message || 'فشل تحليل الفاتورة عبر محرك الذكاء الاصطناعي');
+            geminiErrorMsg = errMsg;
+            if (gemErr?.shouldTripCircuit || gemErr?.statusCode === 403 || gemErr?.statusCode === 429) {
+              tripClientOcrCircuitBreaker(geminiKey, errMsg, gemErr?.statusCode);
+              circuitOpen = true;
+            }
+            console.warn('Browser AI Vision OCR failed:', geminiErrorMsg);
+          }
         }
       }
 
@@ -1398,15 +1606,19 @@ export const api = {
           offline_mode: true,
           ocr_engine: 'offline-manual',
           queued_offline: true,
+          needs_review: true,
+          needs_review_reason: 'لا يوجد اتصال بالإنترنت — ستُستكمل المراجعة عند عودة الاتصال.',
+          cached: false,
+          circuit_breaker_open: circuitOpen,
           ocr_error: geminiErrorMsg || 'لا يوجد اتصال بالإنترنت — تم حفظ الصورة في الطابور المحلي لإكمال التحليل لاحقاً.',
           prepared_info: prepSummary
         };
       }
 
-      // المسار الاحتياطي 2: القراءة المحلية في المتصفح (Tesseract.js + محلل الجداول العراقي) للصور
+      // المسار الاحتياطي 2: القراءة المحلية في المتصفح (Tesseract.js + محلل الجداول العراقي) -> needs_review: true
       if (!prepared.inspection.isPdf) {
         try {
-          report('analyze', 55, 'جاري القراءة التلقائية محلياً بالمتصفح (بدون مفتاح)...');
+          report('analyze', 55, 'جاري القراءة بالمحرك المحلي الاحتياطي...');
           const localParsed = await runLocalBrowserTesseractOcr(
             prepared.file,
             MOCK_PRODUCTS,
@@ -1414,8 +1626,7 @@ export const api = {
             (pct, msg) => report('analyze', pct, msg)
           );
 
-          report('done', 100, 'اكتملت القراءة المحلية');
-          return {
+          const out = {
             extracted_items: localParsed.items.map(it => ({
               product_id: it.matched_product_id,
               product_name: it.product_name,
@@ -1432,21 +1643,30 @@ export const api = {
             confidence: localParsed.confidence_score,
             raw_text: localParsed.raw_text,
             offline_mode: false,
-            ocr_engine: 'tesseract-browser',
+            ocr_engine: 'tesseract-browser' as const,
+            needs_review: true,
+            needs_review_reason: geminiErrorMsg
+              ? `تمت القراءة بالمحرك المحلي الاحتياطي (${geminiErrorMsg}) — دقته أقل مع الفواتير الطبية العربية، وتحتاج مراجعة يدوية.`
+              : 'تمت القراءة بالمحرك المحلي المجاني (بدون مفتاح ذكاء اصطناعي) — دقته أقل مع العربي، وتحتاج مراجعة يدوية للكميات والأسعار.',
+            cached: false,
+            circuit_breaker_open: circuitOpen,
             ocr_error: geminiErrorMsg,
             ocr_warning: geminiErrorMsg
-              ? `تعذرت القراءة عبر Gemini (${geminiErrorMsg}) — تم استخدام القراءة المحلية بدلاً منه؛ راجع الحقول وعدّلها.`
+              ? `تعذرت القراءة الذكية (${geminiErrorMsg}) — تم التحويل للمحرك المحلي؛ هذه الفاتورة تحتاج مراجعة قبل الحفظ.`
               : !geminiKey
-                ? 'تمت القراءة بالمحرك المحلي المجاني (بدون مفتاح Gemini) — قد تحتاج الفواتير العربية المختومة لمراجعة بعض الحقول، وللحصول على دقة 98% أضف مفتاح Gemini مجاني بالأعلى.'
+                ? 'تمت القراءة بالمحرك المحلي المجاني — هذه الفاتورة تحتاج مراجعة يدوية، وللحصول على دقة 98% أضف مفتاح Groq gsk_ مجاني بالأعلى.'
                 : prepared.warning,
             prepared_info: prepSummary
           };
+          storeCache(out, prepared);
+          report('done', 100, 'اكتملت القراءة المحلية (تحتاج مراجعة)');
+          return out;
         } catch (tessErr: any) {
           console.warn('Local browser Tesseract OCR failed:', tessErr?.message || tessErr);
         }
       }
 
-      // المسار النهائي: إرفاق الصورة آمن مع إبلاغ صريح بالسبب
+      // المسار النهائي: إرفاق الصورة آمن مع إبلاغ صريح بالسبب ووسم تحتاج مراجعة
       report('done', 100, 'تم إرفاق الفاتورة');
       return {
         extracted_items: [],
@@ -1459,12 +1679,16 @@ export const api = {
         raw_text: '',
         offline_mode: true,
         ocr_engine: 'offline-manual',
+        needs_review: true,
+        needs_review_reason: 'تعذر الاستخراج الآلي — هذه الفاتورة تحتاج إدخالاً ومراجعة يدوية قبل الحفظ.',
+        cached: false,
+        circuit_breaker_open: circuitOpen,
         ocr_error: geminiErrorMsg,
         ocr_warning: geminiErrorMsg
-          ? `فشلت قراءة Gemini: ${geminiErrorMsg}`
+          ? `فشلت القراءة الذكية: ${geminiErrorMsg}`
           : prepared.inspection.isPdf
             ? 'قراءة ملفات PDF تلقائياً على الموبايل تتطلب إدخال مفتاح Google Gemini API في إعدادات OCR بالأعلى.'
-            : (prepared.warning || 'لم يتم تفعيل مفتاح Gemini أو الخادم — يمكنك تعبئة البيانات يدوياً أو تفعيل Gemini بالأعلى.'),
+            : (prepared.warning || 'لم يتم تفعيل مفتاح ذكاء اصطناعي أو خادم — يمكنك تعبئة البيانات يدوياً أو إضافة مفتاح Groq بالأعلى.'),
         prepared_info: prepSummary
       };
     }

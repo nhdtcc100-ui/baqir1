@@ -30,6 +30,8 @@ export interface BatchInvoiceCard {
   items: BatchItemRow[];
   confidence: number;
   ocr_engine?: string;
+  needs_review?: boolean;
+  needs_review_reason?: string;
 }
 
 export const BAGHDAD_AREAS = [
@@ -305,6 +307,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
 
   // الإحصائيات العامة للدفعة
   const totalInvoices = invoices.length;
+  const needsReviewCount = invoices.filter(inv => Boolean(inv.needs_review) || inv.confidence < 0.75).length;
   const duplicateCount = invoices.filter((inv, idx) => checkDuplicate(inv, idx).isDuplicate).length;
   const totalItemsCount = invoices.reduce((sum, inv) => sum + inv.items.length, 0);
   const totalPieces = invoices.reduce((sum, inv) => sum + inv.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0), 0);
@@ -325,6 +328,11 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
               <span className="badge" style={{ background: '#10b981', color: 'white' }}>
                 {totalInvoices} فواتير مكتشفة
               </span>
+              {needsReviewCount > 0 && (
+                <span className="badge" style={{ background: '#f59e0b', color: '#0f172a', fontWeight: 800 }}>
+                  ⚠️ {needsReviewCount} تحتاج مراجعة
+                </span>
+              )}
               {duplicateCount > 0 && (
                 <span className="badge" style={{ background: '#ef4444', color: 'white', fontWeight: 800 }}>
                   ⚠️ {duplicateCount} فواتير مكررة
@@ -405,8 +413,11 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
           const invPieces = inv.items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
           const invBonus = inv.items.reduce((s, it) => s + (Number(it.bonus_quantity) || 0), 0);
 
-          const confColor = inv.confidence >= 0.8 ? '#10b981' : inv.confidence >= 0.5 ? '#f59e0b' : '#ef4444';
-          const confLabel = inv.confidence >= 0.8 ? 'دقة عالية ✓' : inv.confidence >= 0.5 ? 'دقة متوسطة ⚠️' : 'تحتاج مراجعة ⚠️';
+          const needsReview = Boolean(inv.needs_review) || inv.confidence < 0.75;
+          const confColor = !needsReview && inv.confidence >= 0.8 ? '#10b981' : inv.confidence >= 0.5 ? '#d97706' : '#ef4444';
+          const confLabel = needsReview
+            ? '⚠️ تحتاج مراجعة'
+            : inv.confidence >= 0.8 ? 'دقة عالية ✓' : 'دقة متوسطة ⚠️';
           const dupInfo = checkDuplicate(inv, invIdx);
 
           return (
@@ -419,7 +430,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                 borderRadius: 14,
                 border: dupInfo.isDuplicate
                   ? '2px solid #ef4444'
-                  : `2px solid ${inv.confidence >= 0.8 ? '#bbf7d0' : inv.confidence >= 0.5 ? '#fde68a' : '#fecaca'}`,
+                  : `2px solid ${!needsReview && inv.confidence >= 0.8 ? '#bbf7d0' : needsReview || inv.confidence >= 0.5 ? '#fde68a' : '#fecaca'}`,
                 boxShadow: dupInfo.isDuplicate ? '0 4px 16px rgba(239, 68, 68, 0.15)' : '0 4px 16px rgba(0,0,0,0.04)'
               }}
             >
@@ -428,7 +439,7 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                 padding: '0.85rem 1.15rem',
                 background: dupInfo.isDuplicate
                   ? '#fef2f2'
-                  : inv.confidence >= 0.8 ? '#f0fdf4' : inv.confidence >= 0.5 ? '#fffbeb' : '#fef2f2',
+                  : !needsReview && inv.confidence >= 0.8 ? '#f0fdf4' : '#fffbeb',
                 borderBottom: '1px solid var(--gray-200)',
                 display: 'flex',
                 alignItems: 'center',
@@ -487,6 +498,11 @@ export const BatchReviewTable: React.FC<BatchReviewTableProps> = ({
                         </span>
                       )}
                     </div>
+                    {needsReview && inv.needs_review_reason && (
+                      <div style={{ fontSize: '0.74rem', color: '#92400e', fontWeight: 700, marginBottom: '0.25rem' }}>
+                        ⚠️ {inv.needs_review_reason}
+                      </div>
+                    )}
 
                     <div className="batch-header-fields" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', fontSize: '0.82rem' }}>
                       {/* تعديل رقم الفاتورة */}

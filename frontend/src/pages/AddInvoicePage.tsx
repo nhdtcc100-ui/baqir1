@@ -11,7 +11,8 @@ import {
   getPendingOcrQueue,
   removePendingOcrQueueItem,
   PendingOcrQueueItem,
-  detectAiKeyProvider
+  detectAiKeyProvider,
+  getClientOcrCircuitBreakerStatus
 } from '../services/api';
 import { BatchReviewTable, BatchInvoiceCard, BAGHDAD_AREAS, autoDetectDosageForm } from './BatchReviewTable';
 import {
@@ -65,6 +66,10 @@ export interface BatchInvoice {
   items: LineItem[];
   notes?: string;
   confidence: number;
+  ocrEngine?: string;
+  needsReview?: boolean;
+  needsReviewReason?: string;
+  cached?: boolean;
 }
 
 const generateInvoiceNumber = () => {
@@ -182,6 +187,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
   const [ocrProgress, setOcrProgress]     = useState<OcrProgressUpdate | null>(null);
   const [ocrDone, setOcrDone]             = useState(false);
   const [ocrEngineUsed, setOcrEngineUsed] = useState<string | null>(null);
+  const [ocrNeedsReview, setOcrNeedsReview] = useState(false);
+  const [ocrNeedsReviewReason, setOcrNeedsReviewReason] = useState<string | null>(null);
+  const [ocrCached, setOcrCached]         = useState(false);
   const [ocrWarning, setOcrWarning]       = useState<string | null>(null);
   const [ocrRawText, setOcrRawText]       = useState<string | null>(null);
   const [showRawText, setShowRawText]     = useState(false);
@@ -265,6 +273,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     setUploadedFile(target.file);
     setOcrDone(target.status === 'done');
     setOcrConfidence(target.confidence);
+    setOcrEngineUsed(target.ocrEngine || null);
+    setOcrNeedsReview(Boolean(target.needsReview));
+    setOcrNeedsReviewReason(target.needsReviewReason || null);
+    setOcrCached(Boolean(target.cached));
   };
 
   const removeBatchItem = (index: number) => {
@@ -274,6 +286,10 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setUploadedFile(null);
       setPreviewUrl(null);
       setOcrDone(false);
+      setOcrNeedsReview(false);
+      setOcrNeedsReviewReason(null);
+      setOcrCached(false);
+      setOcrEngineUsed(null);
       setPharmacyName('');
       setPharmacyArea('');
       setPharmacyId('');
@@ -293,6 +309,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setPreviewUrl(target.previewUrl);
       setUploadedFile(target.file);
       setOcrDone(target.status === 'done');
+      setOcrConfidence(target.confidence);
+      setOcrEngineUsed(target.ocrEngine || null);
+      setOcrNeedsReview(Boolean(target.needsReview));
+      setOcrNeedsReviewReason(target.needsReviewReason || null);
+      setOcrCached(Boolean(target.cached));
     }
   };
 
@@ -388,11 +409,17 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
     });
   }, [products, fixedBonusEnabled]);
 
-  // ── Smart OCR execution (Inspect → Prep → Upload/Gemini/Tesseract) ────────
+  const computeNeedsReview = (res: { needs_review?: boolean; ocr_engine?: string; offline_mode?: boolean; confidence?: number }) =>
+    Boolean(res.needs_review ?? (res.ocr_engine === 'tesseract-browser' || res.offline_mode || Number(res.confidence || 0) < 0.75));
+
+  // ── Smart OCR execution (Inspect → Prep → Cache/Retry/Breaker → Upload/Gemini/Tesseract) ────────
   const processOcr = async (file: File) => {
     setOcrLoading(true);
     setOcrDone(false);
     setOfflineAttached(false);
+    setOcrNeedsReview(false);
+    setOcrNeedsReviewReason(null);
+    setOcrCached(false);
     setOcrWarning(null);
     setOcrRawText(null);
     setOcrEngineUsed(null);
@@ -404,6 +431,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         onProgress: (u) => setOcrProgress(u),
         onPreparedPreview: (url) => setPreviewUrl(url)
       });
+
+      const needsRev = computeNeedsReview(result);
+      setOcrNeedsReview(needsRev);
+      setOcrNeedsReviewReason(result.needs_review_reason || null);
+      setOcrCached(Boolean(result.cached));
 
       if (result.image_url) setImageUrl(result.image_url);
       if (result.ocr_engine) setOcrEngineUsed(result.ocr_engine);
@@ -418,7 +450,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
         if (result.ocr_error && !result.ocr_warning) {
           setOcrWarning(result.ocr_error);
         }
-        setOcrSummary('تم إرفاق صورة الفاتورة بنجاح — أكمل البيانات يدوياً أو فعّل مفتاح Gemini لقراءتها آلياً.');
+        setOcrSummary('تم إرفاق صورة الفاتورة بنجاح — أكمل البيانات يدوياً أو فعّل مفتاح AI للقراءتها آلياً.');
         return;
       }
 
@@ -457,7 +489,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       setOcrConfidence(Math.round((result.confidence || 0.7) * 100));
       setOcrDone(true);
       const engineLabel = result.ocr_engine === 'gemini-browser'
-        ? 'Gemini Vision AI'
+        ? 'AI Vision'
         : result.ocr_engine === 'tesseract-browser'
           ? 'القراءة المحلية التلقائية'
           : 'الخادم الذكي';
@@ -479,6 +511,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
 
     const selectedFiles = Array.from(files);
     setError(null);
+    setOcrNeedsReview(false);
+    setOcrNeedsReviewReason(null);
+    setOcrCached(false);
     setOcrWarning(null);
     setOcrRawText(null);
 
@@ -530,6 +565,7 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             }
           });
 
+          const needsRev = computeNeedsReview(result);
           const mapped = mapExtractedItems(result.extracted_items, result.confidence);
           const finalItems = mapped.length > 0 ? mapped : [{ id: 'item-1', product_id: products[0]?.id || '', sold_quantity: 10, dosage_form: 'حبوب' }];
 
@@ -545,7 +581,11 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                 invoiceDate: result.invoice_date || item.invoiceDate,
                 imageUrl: result.image_url,
                 items: finalItems,
-                confidence: Math.round((result.confidence || 0.7) * 100)
+                confidence: Math.round((result.confidence || 0.7) * 100),
+                ocrEngine: result.ocr_engine,
+                needsReview: needsRev,
+                needsReviewReason: result.needs_review_reason,
+                cached: Boolean(result.cached)
               };
             }
             return item;
@@ -564,6 +604,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
             if (result.ocr_engine) setOcrEngineUsed(result.ocr_engine);
             if (result.ocr_warning) setOcrWarning(result.ocr_warning);
             if (result.raw_text) setOcrRawText(result.raw_text);
+            setOcrNeedsReview(needsRev);
+            setOcrNeedsReviewReason(result.needs_review_reason || null);
+            setOcrCached(Boolean(result.cached));
             setItems(finalItems);
             if (result.offline_mode) {
               setOfflineAttached(true);
@@ -598,6 +641,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
               pharmacy_name: b.pharmacyName,
               pharmacy_area: b.pharmacyArea || '',
               confidence: b.confidence ? b.confidence / 100 : 0.8,
+              ocr_engine: b.ocrEngine,
+              needs_review: b.needsReview,
+              needs_review_reason: b.needsReviewReason,
               items: (b.items || []).map((it, idx) => {
                 const prod = products.find(p => p.id === it.product_id);
                 const price = it.custom_price !== undefined ? it.custom_price : Number(prod?.base_price || 5000);
@@ -674,7 +720,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
           invoiceDate,
           items,
           notes,
-          imageUrl
+          imageUrl,
+          needsReview: ocrNeedsReview,
+          needsReviewReason: ocrNeedsReviewReason || undefined
         };
       }
       return item;
@@ -690,6 +738,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
       pharmacy_name: b.pharmacyName,
       pharmacy_area: b.pharmacyArea || '',
       confidence: b.confidence ? b.confidence / 100 : 0.8,
+      ocr_engine: b.ocrEngine,
+      needs_review: b.needsReview,
+      needs_review_reason: b.needsReviewReason,
       items: (b.items || []).map((it, idx) => {
         const calc = getItemCalc(it);
         const prod = products.find(p => p.id === it.product_id);
@@ -1135,19 +1186,27 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                     : provider === 'openrouter'
                       ? 'OpenRouter Free Vision AI'
                       : 'Google Gemini Vision AI';
+                  const breaker = getClientOcrCircuitBreakerStatus(geminiKeyInput);
                   return (
-                    <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 700 }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Sparkles size={15} style={{ color: '#059669', flexShrink: 0 }} />
-                        القراءة الذكية عبر {providerTitle} مفعّلة على هاتفك
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowOcrSettings(v => !v)}
-                        style={{ background: 'none', border: 'none', color: '#047857', fontWeight: 800, cursor: 'pointer', fontSize: '0.74rem', textDecoration: 'underline', padding: 0 }}
-                      >
-                        تعديل / تبديل المزوّد
-                      </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 10, padding: '0.55rem 0.75rem', fontSize: '0.78rem', color: '#065f46', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 700 }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Sparkles size={15} style={{ color: '#059669', flexShrink: 0 }} />
+                          القراءة الذكية عبر {providerTitle} مفعّلة على هاتفك
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowOcrSettings(v => !v)}
+                          style={{ background: 'none', border: 'none', color: '#047857', fontWeight: 800, cursor: 'pointer', fontSize: '0.74rem', textDecoration: 'underline', padding: 0 }}
+                        >
+                          تعديل / تبديل المزوّد
+                        </button>
+                      </div>
+                      {breaker.open && (
+                        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 9, padding: '0.45rem 0.75rem', fontSize: '0.74rem', color: '#92400e', fontWeight: 700 }}>
+                          ⏸️ قاطع الدائرة مفعّل ({Math.max(1, Math.ceil(breaker.remainingMs / 60000))} دقيقة متبقية بعد خطأ {breaker.statusCode || '403/429'}) — يتم التحويل تلقائياً للمحرك المحلي الاحتياطي، أو أدخل مفتاحاً جديداً.
+                        </div>
+                      )}
                     </div>
                   );
                 }
@@ -1449,19 +1508,48 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
               {uploadedFile && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                   {ocrDone ? (
-                    <div className="alert-success" style={{ margin: 0, padding: '0.75rem 1rem' }}>
-                      <CheckCircle2 size={22} style={{ color: 'var(--success)', flexShrink: 0 }} />
-                      <div>
-                        <div style={{ fontWeight: 800, color: '#065f46' }}>
-                          {ocrEngineUsed === 'tesseract-browser'
-                            ? `تمت القراءة بالمحرك المحلي (${ocrConfidence}%) — راجع البنود`
-                            : `تمت قراءة البيانات بنجاح (${ocrConfidence}%)`}
-                        </div>
-                        <div style={{ fontSize: '0.8rem', color: '#047857', marginTop: 2 }}>
-                          {ocrSummary || 'تم تعبئة بيانات الصيدلية والأصناف تلقائياً في النموذج أدناه.'}
+                    ocrNeedsReview ? (
+                      <div style={{ margin: 0, padding: '0.8rem 1rem', background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, display: 'flex', alignItems: 'flex-start', gap: '0.65rem' }}>
+                        <AlertTriangle size={22} style={{ color: '#d97706', flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 800, color: '#92400e', display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                            <span>
+                              ⚠️ تحتاج مراجعة — {ocrEngineUsed === 'tesseract-browser'
+                                ? `تمت القراءة بالمحرك المحلي (${ocrConfidence}%)`
+                                : `دقة القراءة (${ocrConfidence}%)`}
+                            </span>
+                            <span className="badge" style={{ background: '#f59e0b', color: '#ffffff', fontSize: '0.7rem', padding: '2px 7px' }}>
+                              تحتاج مراجعة
+                            </span>
+                            {ocrCached && (
+                              <span className="badge" style={{ background: '#e0f2fe', color: '#0369a1', fontSize: '0.7rem', padding: '2px 7px' }}>
+                                ⚡ Cache
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#78350f', marginTop: 3, lineHeight: 1.45 }}>
+                            {ocrNeedsReviewReason || ocrSummary || 'الدقة أقل مع الفواتير العربية بالمحرك الاحتياطي — راجع أسماء الأدوية والكميات والأسعار قبل الحفظ.'}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="alert-success" style={{ margin: 0, padding: '0.75rem 1rem' }}>
+                        <CheckCircle2 size={22} style={{ color: 'var(--success)', flexShrink: 0 }} />
+                        <div>
+                          <div style={{ fontWeight: 800, color: '#065f46', display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap' }}>
+                            <span>تمت قراءة البيانات بنجاح ({ocrConfidence}%)</span>
+                            {ocrCached && (
+                              <span className="badge" style={{ background: '#e0f2fe', color: '#0369a1', fontSize: '0.7rem', padding: '2px 7px' }}>
+                                ⚡ Cache
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#047857', marginTop: 2 }}>
+                            {ocrSummary || 'تم تعبئة بيانات الصيدلية والأصناف تلقائياً في النموذج أدناه.'}
+                          </div>
+                        </div>
+                      </div>
+                    )
                   ) : offlineAttached ? (
                     <div className="alert-info" style={{ margin: 0, padding: '0.75rem 1rem' }}>
                       <CheckCircle2 size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
@@ -1544,6 +1632,9 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
                         setPreviewUrl(null);
                         setOcrDone(false);
                         setOfflineAttached(false);
+                        setOcrNeedsReview(false);
+                        setOcrNeedsReviewReason(null);
+                        setOcrCached(false);
                         setOcrSummary(null);
                         setOcrWarning(null);
                         setOcrRawText(null);
@@ -1566,16 +1657,27 @@ export const AddInvoicePage: React.FC<AddInvoicePageProps> = ({
 
           {/* ── Right Column: Invoice Form & Items ───────────────────────────── */}
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
               <h5 style={{ fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Calculator size={20} style={{ color: 'var(--success)' }} />
                 تفاصيل الفاتورة والبنود
               </h5>
-              {ocrDone && (
-                <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
-                  <Check size={13} /> تمت القراءة آلياً
-                </span>
-              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {ocrCached && (
+                  <span className="badge" style={{ background: '#e0f2fe', color: '#0369a1', fontSize: '0.73rem' }}>
+                    ⚡ من الذاكرة المؤقتة
+                  </span>
+                )}
+                {ocrDone && ocrNeedsReview ? (
+                  <span className="badge" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #f59e0b', fontSize: '0.75rem', fontWeight: 800 }}>
+                    <AlertTriangle size={13} /> تحتاج مراجعة يدوية
+                  </span>
+                ) : ocrDone ? (
+                  <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
+                    <Check size={13} /> تمت القراءة آلياً
+                  </span>
+                ) : null}
+              </div>
             </div>
 
             {/* Basic Info */}

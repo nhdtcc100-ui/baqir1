@@ -164,15 +164,203 @@ const INVOICE_EXTRACTION_PROMPT = `
 }
 `;
 
-export async function extractInvoiceWithGemini(imagePath: string, customApiKey?: string): Promise<GeminiInvoiceResult | null> {
+export interface GeminiDetailedOutcome {
+  result: GeminiInvoiceResult | null;
+  statusCode?: number;
+  errorMessage?: string;
+  shouldTripCircuit?: boolean;
+  usedModel?: string;
+}
+
+function classifyGeminiFailure(err: any): { statusCode?: number; shouldTripCircuit: boolean; message: string } {
+  const raw = String(err?.message || err || '');
+  const statusMatch = raw.match(/\[(\d{3})\s+[^\]]+\]/) || raw.match(/\b(400|401|403|404|429|500|502|503)\b/);
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : (typeof err?.status === 'number' ? err.status : undefined);
+  const low = raw.toLowerCase();
+  const isQuotaOrBilling =
+    statusCode === 403 ||
+    statusCode === 429 ||
+    low.includes('free tier is not available') ||
+    low.includes('resource_exhausted') ||
+    low.includes('permission_denied') ||
+    low.includes('quota');
+  return {
+    statusCode,
+    shouldTripCircuit: isQuotaOrBilling,
+    message: raw.slice(0, 300)
+  };
+}
+
+const GROQ_VISION_MODELS = ['qwen/qwen3.8-27b'];
+const OPENROUTER_VISION_MODELS = [
+  'google/gemma-4-31b-it:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'openrouter/free'
+];
+
+function detectServerAiProvider(apiKey: string): 'groq' | 'openrouter' | 'gemini' {
+  const k = (apiKey || '').trim();
+  if (k.startsWith('gsk_')) return 'groq';
+  if (k.startsWith('sk-or-')) return 'openrouter';
+  return 'gemini';
+}
+
+function normalizeParsedOcrInvoice(
+  responseText: string,
+  usedModel: string,
+  baseConfidence = 0.96
+): GeminiDetailedOutcome {
+  const jsonMatch = (responseText || '').match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return {
+      result: null,
+      errorMessage: 'AI Vision did not return valid JSON',
+      shouldTripCircuit: false,
+      usedModel
+    };
+  }
+
+  const parsed = JSON.parse(jsonMatch[0]);
+  const items = (parsed.items || []).map((it: any) => {
+    const prodName = String(it.product_name || '').trim();
+    let detectedForm = String(it.dosage_form || '').trim();
+    if (!['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(detectedForm)) {
+      detectedForm = detectDosageForm(prodName || detectedForm);
+    }
+    return {
+      product_name: prodName,
+      dosage_form: detectedForm,
+      quantity: Math.abs(parseInt(it.quantity) || 0),
+      unit_price: Math.abs(parseFloat(it.unit_price) || 0),
+      bonus_quantity: Math.abs(parseInt(it.bonus_quantity) || 0),
+      line_total: Math.abs(parseFloat(it.line_total) || 0),
+      batch_no: it.batch_no && it.batch_no !== 'null' ? String(it.batch_no) : undefined,
+      exp_date: it.exp_date && it.exp_date !== 'null' ? String(it.exp_date) : undefined,
+    };
+  }).filter((it: any) => it.product_name && it.quantity > 0);
+
+  for (const it of items) {
+    if (it.line_total === 0 && it.quantity > 0 && it.unit_price > 0) {
+      it.line_total = it.quantity * it.unit_price;
+    }
+  }
+
+  const totalAmount = items.reduce((s: number, it: any) => s + it.line_total, 0)
+    || Math.abs(parseFloat(parsed.total_amount) || 0);
+
+  const parsedPhName = String(parsed.pharmacy_name || '').trim();
+  const cleanPh = parsedPhName.replace(/^(صيدلية|صيدليه|مذخر|ص)\b/gi, '').trim();
+  const finalPhName = cleanPh.length >= 2 ? parsedPhName : '';
+  const detectedArea = String(parsed.pharmacy_area || '').trim() || detectAreaFromName(parsedPhName) || detectAreaFromName(responseText);
+
+  return {
+    result: {
+      invoice_number: String(parsed.invoice_number || '').trim(),
+      invoice_date: String(parsed.invoice_date || new Date().toISOString().split('T')[0]),
+      pharmacy_name: finalPhName,
+      pharmacy_area: detectedArea,
+      warehouse_name: String(parsed.warehouse_name || '').trim(),
+      items,
+      total_amount: totalAmount,
+      raw_extracted: responseText,
+      confidence: Number(parsed.confidence || baseConfidence),
+      method: 'gemini_vision'
+    },
+    usedModel
+  };
+}
+
+async function extractWithOpenAiCompatibleServer(
+  provider: 'groq' | 'openrouter',
+  apiKey: string,
+  base64Image: string,
+  mimeType: string
+): Promise<GeminiDetailedOutcome> {
+  if (mimeType === 'application/pdf') {
+    return {
+      result: null,
+      statusCode: 400,
+      errorMessage: `${provider} Vision supports image files only (not PDF)`,
+      shouldTripCircuit: false
+    };
+  }
+  const endpoint = provider === 'groq'
+    ? 'https://api.groq.com/openai/v1/chat/completions'
+    : 'https://openrouter.ai/api/v1/chat/completions';
+  const models = provider === 'groq' ? GROQ_VISION_MODELS : OPENROUTER_VISION_MODELS;
+
+  let lastStatus: number | undefined;
+  let lastError = '';
+  let anyTrip = false;
+
+  for (const model of models) {
+    try {
+      console.log(`🤖 Invoking ${provider.toUpperCase()} Vision with model: ${model}...`);
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey.trim()}`,
+          ...(provider === 'openrouter' ? { 'X-Title': 'PharmaSales CRM' } : {})
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: INVOICE_EXTRACTION_PROMPT },
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Image}` } }
+            ]
+          }]
+        })
+      });
+
+      if (!res.ok) {
+        const errJson: any = await res.json().catch(() => ({}));
+        const rawMsg = errJson?.error?.message || res.statusText || '';
+        lastStatus = res.status;
+        lastError = `${provider} (${res.status}): ${rawMsg}`;
+        if (res.status === 403 || res.status === 429) anyTrip = true;
+        console.warn(`⚠️ ${provider} model ${model} failed (${res.status}): ${rawMsg.slice(0, 90)}`);
+        continue;
+      }
+
+      const data: any = await res.json();
+      const rawText = String(data?.choices?.[0]?.message?.content || '').trim();
+      console.log(`✅ ${provider.toUpperCase()} Vision succeeded using: ${model}`);
+      return normalizeParsedOcrInvoice(rawText, `${provider}:${model}`, 0.93);
+    } catch (err: any) {
+      lastError = String(err?.message || err);
+    }
+  }
+
+  return {
+    result: null,
+    statusCode: lastStatus,
+    errorMessage: lastError || `All ${provider} models failed`,
+    shouldTripCircuit: anyTrip
+  };
+}
+
+/**
+ * استدعاء AI Vision (يدعم Groq gsk_ و OpenRouter sk-or- و Google Gemini) مع إرجاع تفاصيل الحالة لدعم قاطع الدائرة والمحاولات
+ */
+export async function extractInvoiceWithGeminiDetailed(
+  imagePath: string,
+  customApiKey?: string
+): Promise<GeminiDetailedOutcome> {
   const apiKey = (customApiKey || '').trim() || ENV.GEMINI_API_KEY;
   if (!apiKey) {
-    console.warn('⚠️  GEMINI_API_KEY not set (no user key or system key) — falling back to Tesseract OCR');
-    return null;
+    return {
+      result: null,
+      statusCode: 400,
+      errorMessage: 'GEMINI_API_KEY not set',
+      shouldTripCircuit: false
+    };
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
     const candidateModels = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.8-flash', 'gemini-2.5-flash'];
 
     const imageBuffer = fs.readFileSync(imagePath);
@@ -186,8 +374,18 @@ export async function extractInvoiceWithGemini(imagePath: string, customApiKey?:
     else if (ext.endsWith('.heif')) mimeType = 'image/heif';
     else if (ext.endsWith('.pdf')) mimeType = 'application/pdf';
 
+    const provider = detectServerAiProvider(apiKey);
+    if (provider === 'groq' || provider === 'openrouter') {
+      return await extractWithOpenAiCompatibleServer(provider, apiKey, base64Image, mimeType);
+    }
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+
     let responseText = '';
     let usedModel = '';
+    let lastStatus: number | undefined;
+    let lastErrorMessage = '';
+    let anyTripCircuit = false;
 
     for (const modelName of candidateModels) {
       try {
@@ -207,75 +405,39 @@ export async function extractInvoiceWithGemini(imagePath: string, customApiKey?:
         console.log(`✅ Gemini Vision succeeded using: ${usedModel}`);
         break;
       } catch (modelErr: any) {
-        console.warn(`⚠️ Model ${modelName} failed (${modelErr.message?.slice(0, 80)}). Trying next candidate...`);
+        const info = classifyGeminiFailure(modelErr);
+        lastStatus = info.statusCode ?? lastStatus;
+        lastErrorMessage = info.message || lastErrorMessage;
+        if (info.shouldTripCircuit) anyTripCircuit = true;
+        console.warn(`⚠️ Model ${modelName} failed (${info.statusCode || 'ERR'}: ${info.message.slice(0, 90)}). Trying next candidate...`);
       }
     }
 
     if (!responseText) {
-      console.error('All Gemini model candidates failed.');
-      return null;
-    }
-
-    // استخراج JSON من الرد (قد يحتوي على ``` أو نص إضافي)
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error('Gemini did not return valid JSON:', responseText.slice(0, 200));
-      return null;
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-
-    // تنظيف وتحقق من البيانات
-    const items = (parsed.items || []).map((it: any) => {
-      const prodName = String(it.product_name || '').trim();
-      let detectedForm = String(it.dosage_form || '').trim();
-      if (!['قطرة', 'كريم', 'مرهم', 'حبوب'].includes(detectedForm)) {
-        detectedForm = detectDosageForm(prodName || detectedForm);
-      }
       return {
-        product_name: prodName,
-        dosage_form: detectedForm,
-        quantity: Math.abs(parseInt(it.quantity) || 0),
-        unit_price: Math.abs(parseFloat(it.unit_price) || 0),
-        bonus_quantity: Math.abs(parseInt(it.bonus_quantity) || 0),
-        line_total: Math.abs(parseFloat(it.line_total) || 0),
-        batch_no: it.batch_no && it.batch_no !== 'null' ? String(it.batch_no) : undefined,
-        exp_date: it.exp_date && it.exp_date !== 'null' ? String(it.exp_date) : undefined,
+        result: null,
+        statusCode: lastStatus,
+        errorMessage: lastErrorMessage || 'All Gemini model candidates failed.',
+        shouldTripCircuit: anyTripCircuit
       };
-    }).filter((it: any) => it.product_name && it.quantity > 0);
-
-    // إذا line_total = 0 احسبها
-    for (const it of items) {
-      if (it.line_total === 0 && it.quantity > 0 && it.unit_price > 0) {
-        it.line_total = it.quantity * it.unit_price;
-      }
     }
 
-    const totalAmount = items.reduce((s: number, it: any) => s + it.line_total, 0)
-      || Math.abs(parseFloat(parsed.total_amount) || 0);
-
-    const parsedPhName = String(parsed.pharmacy_name || '').trim();
-    const cleanPh = parsedPhName.replace(/^(صيدلية|صيدليه|مذخر|ص)\b/gi, '').trim();
-    const finalPhName = cleanPh.length >= 2 ? parsedPhName : '';
-
-    const detectedArea = String(parsed.pharmacy_area || '').trim() || detectAreaFromName(parsedPhName) || detectAreaFromName(responseText);
-
-    return {
-      invoice_number: String(parsed.invoice_number || '').trim(),
-      invoice_date: String(parsed.invoice_date || new Date().toISOString().split('T')[0]),
-      pharmacy_name: finalPhName,
-      pharmacy_area: detectedArea,
-      warehouse_name: String(parsed.warehouse_name || '').trim(),
-      items,
-      total_amount: totalAmount,
-      raw_extracted: responseText,
-      confidence: 0.96,
-      method: 'gemini_vision'
-    };
+    return normalizeParsedOcrInvoice(responseText, usedModel, 0.96);
 
   } catch (err: any) {
-    console.error('Gemini Vision OCR error:', err.message);
-    return null;
+    const info = classifyGeminiFailure(err);
+    console.error('AI Vision OCR error:', info.message);
+    return {
+      result: null,
+      statusCode: info.statusCode,
+      errorMessage: info.message,
+      shouldTripCircuit: info.shouldTripCircuit
+    };
   }
+}
+
+export async function extractInvoiceWithGemini(imagePath: string, customApiKey?: string): Promise<GeminiInvoiceResult | null> {
+  const outcome = await extractInvoiceWithGeminiDetailed(imagePath, customApiKey);
+  return outcome.result;
 }
 
