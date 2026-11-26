@@ -102,10 +102,12 @@ export function App() {
     }
     setLoading(true);
     try {
-      const [phList, prList, invList, kpiData] = await Promise.all([
-        api.getPharmacies(),
-        api.getProducts(),
+      const [invList, prList] = await Promise.all([
         api.getInvoices(),
+        api.getProducts()
+      ]);
+      const [phList, kpiData] = await Promise.all([
+        api.getPharmacies(),
         api.getKPIs()
       ]);
       setPharmacies(phList);

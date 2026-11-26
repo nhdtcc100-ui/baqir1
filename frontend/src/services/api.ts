@@ -36,7 +36,7 @@ const LS_SHARED_GEMINI_KEY = 'pharma_sheet_shared_gemini_key';
 
 export const hasUserDatabase = (u?: User | null): boolean => hasAssignedDatabase(u ?? getCurrentUser());
 
-const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
+const DEFAULT_API_BASE = (import.meta.env?.VITE_API_BASE || 'http://localhost:5000/api/v1').replace(/\/$/, '');
 const DEFAULT_SHEET_ID = DEFAULT_INVOICE_SHEET_ID;
 const DEFAULT_SHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_SHEET_ID}/edit?usp=sharing`;
 const DEFAULT_WEBHOOK_URL = DEFAULT_APPS_SCRIPT_URL;
@@ -1066,25 +1066,43 @@ function mapGvizTableRows(parsed: any): { headers: string[]; rows: any[] } {
 }
 
 async function fetchLiveSheetRowsStatus(): Promise<{ reachable: boolean; rows: any[]; headers?: string[] }> {
-  try {
-    const sheetId = getSavedSheetId();
-    if (!sheetId || !hasAssignedDatabase(getCurrentUser())) {
-      return { reachable: false, rows: [] };
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&_t=${Date.now()}`, { signal: controller.signal })
-      .finally(() => clearTimeout(timer));
-    if (!res.ok) return { reachable: false, rows: [] };
-    const text = await res.text();
-    const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
-    if (!m?.[1]) return { reachable: false, rows: [] };
-    const parsed = JSON.parse(m[1]);
-    const { headers, rows } = mapGvizTableRows(parsed);
-    return { reachable: true, rows, headers };
-  } catch {
+  const sheetId = getSavedSheetId();
+  if (!sheetId || !hasAssignedDatabase(getCurrentUser())) {
     return { reachable: false, rows: [] };
   }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&_t=${Date.now()}`, { signal: controller.signal })
+      .finally(() => clearTimeout(timer));
+    if (res.ok) {
+      const text = await res.text();
+      const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
+      if (m?.[1]) {
+        const parsed = JSON.parse(m[1]);
+        const { headers, rows } = mapGvizTableRows(parsed);
+        return { reachable: true, rows, headers };
+      }
+    }
+  } catch { /* fallback to Apps Script GET below */ }
+
+  try {
+    const webhookUrl = getSavedWebhookUrl();
+    if (webhookUrl && webhookUrl.startsWith('http')) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 7000);
+      const res = await fetch(`${webhookUrl}?action=sheets&spreadsheetId=${encodeURIComponent(sheetId)}&_t=${Date.now()}`, { signal: controller.signal })
+        .finally(() => clearTimeout(timer));
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data && Array.isArray(data.rows)) {
+          return { reachable: true, rows: data.rows, headers: Array.isArray(data.headers) ? data.headers : [] };
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  return { reachable: false, rows: [] };
 }
 
 async function fetchLiveSheetRowsCompact(): Promise<any[]> {
@@ -1144,6 +1162,137 @@ function hydrateLocalInvoicesFromSheetRows(sheetRows: any[]): Invoice[] {
     });
   }
   return built;
+}
+
+export function reconcileLocalInvoicesWithSheet(
+  localInvoices: Invoice[],
+  sheetRows: any[],
+  pendingUploadNums: Set<string> = new Set()
+): { invoices: Invoice[]; changed: boolean } {
+  const hydratedSheetInvoices = sheetRows.length > 0 ? hydrateLocalInvoicesFromSheetRows(sheetRows) : [];
+  const usedLocalIndices = new Set<number>();
+  const reconciled: Invoice[] = [];
+  let changed = false;
+
+  const findLocalMatchIndex = (shInv: Invoice): number => {
+    const shComp = buildFullInvoiceCompositeKey({
+      pharmacy_name: shInv.pharmacy_name,
+      invoice_date: shInv.invoice_date,
+      items: shInv.items
+    });
+    const shNum = String(shInv.invoice_number || '').trim();
+
+    if (shComp) {
+      const exactIdx = localInvoices.findIndex((loc, idx) => {
+        if (usedLocalIndices.has(idx)) return false;
+        const locComp = buildFullInvoiceCompositeKey({
+          pharmacy_name: loc.pharmacy_name,
+          invoice_date: loc.invoice_date,
+          items: loc.items
+        });
+        if (locComp !== shComp) return false;
+        const locNum = String(loc.invoice_number || '').trim();
+        return !shNum || !locNum || shNum === locNum;
+      });
+      if (exactIdx >= 0) return exactIdx;
+    }
+
+    if (shNum) {
+      const sheetSameNumCount = hydratedSheetInvoices.filter(x => String(x.invoice_number || '').trim() === shNum).length;
+      const localSameNumIndices = localInvoices
+        .map((x, idx) => ({ x, idx }))
+        .filter(({ x, idx }) => !usedLocalIndices.has(idx) && String(x.invoice_number || '').trim() === shNum);
+      if (sheetSameNumCount === 1 && localSameNumIndices.length === 1) {
+        return localSameNumIndices[0].idx;
+      }
+    }
+    return -1;
+  };
+
+  for (const shInv of hydratedSheetInvoices) {
+    const matchIdx = findLocalMatchIndex(shInv);
+    if (matchIdx >= 0) {
+      usedLocalIndices.add(matchIdx);
+      const loc = localInvoices[matchIdx];
+      const merged: Invoice = {
+        ...shInv,
+        id: loc.id,
+        pharmacy_id: loc.pharmacy_id || shInv.pharmacy_id,
+        image_url: loc.image_url,
+        notes: loc.notes,
+        created_at: loc.created_at || shInv.created_at,
+        pending_sheet_upload: false
+      };
+      const itemsChanged =
+        (loc.items?.length || 0) !== (merged.items?.length || 0) ||
+        Number(loc.total_sales_amount || 0) !== Number(merged.total_sales_amount || 0) ||
+        Number(loc.total_pieces_count || 0) !== Number(merged.total_pieces_count || 0);
+      if (
+        loc.status !== merged.status ||
+        loc.pending_sheet_upload ||
+        itemsChanged ||
+        String(loc.pharmacy_name || '').trim() !== String(merged.pharmacy_name || '').trim() ||
+        String(loc.invoice_date || '').split('T')[0] !== String(merged.invoice_date || '').split('T')[0]
+      ) {
+        changed = true;
+      }
+      reconciled.push(merged);
+    } else {
+      // فاتورة جديدة قادمة من جهاز آخر أو من كوكل شيت مباشرة
+      changed = true;
+      reconciled.push({ ...shInv, pending_sheet_upload: false });
+    }
+  }
+
+  // الإبقاء على الفواتير المحلية التي لا تزال بانتظار الرفع فقط، وإسقاط الفواتير المحذوفة من الشيت
+  for (let i = 0; i < localInvoices.length; i++) {
+    if (usedLocalIndices.has(i)) continue;
+    const loc = localInvoices[i];
+    const num = String(loc.invoice_number || '').trim();
+    if (loc.pending_sheet_upload || (num && pendingUploadNums.has(num))) {
+      reconciled.push(loc);
+    } else {
+      changed = true;
+    }
+  }
+
+  if (reconciled.length !== localInvoices.length) {
+    changed = true;
+  }
+
+  reconciled.sort((a, b) => {
+    const da = String(b.invoice_date || '').localeCompare(String(a.invoice_date || ''));
+    if (da !== 0) return da;
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  });
+
+  return { invoices: reconciled, changed };
+}
+
+function mergeStoredPharmaciesFromInvoices(invoices: Invoice[]) {
+  if (!hasAssignedDatabase(getCurrentUser()) || invoices.length === 0) return;
+  const existing = getStoredPharmacies();
+  const seen = new Set(existing.map(p => normalizePharmacyName(p.name)));
+  let added = false;
+  for (const inv of invoices) {
+    const phName = String(inv.pharmacy_name || '').trim();
+    const norm = normalizePharmacyName(phName);
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    existing.push({
+      id: inv.pharmacy_id || `ph-sync-${Date.now()}-${existing.length}`,
+      name: phName,
+      city: inv.pharmacy_city || 'بغداد',
+      area: inv.pharmacy_area || detectAreaFromText(phName) || 'مركز المدينة',
+      address: `${inv.pharmacy_city || 'بغداد'}${inv.pharmacy_area ? ' - ' + inv.pharmacy_area : ''}`,
+      phone: '',
+      assigned_rep_name: inv.rep_name || '',
+      total_invoices: 0,
+      total_sales: 0
+    });
+    added = true;
+  }
+  if (added) saveStoredPharmacies(existing);
 }
 
 function checkClientInvoiceDuplicateInSheet(inv: any, sheetRows: any[]): { isDuplicate: boolean; isExactMatch: boolean; statusChangedOnly?: boolean; reason: string } {
@@ -1742,7 +1891,7 @@ export const api = {
     }
   },
 
-  // حذف فواتير أو نسخ محذوفة من الشيت أو تعبئة الشيت عند الدخول الأول (مزامنة اتجاهين فورية)
+  // مزامنة ثنائية الاتجاه عبر الأجهزة: جلب الجديد والمعدّل وحذف المحذوف من كوكل شيت فوراً
   async syncSheetDeletion(): Promise<boolean> {
     if (!hasAssignedDatabase(getCurrentUser())) return false;
     try {
@@ -1757,16 +1906,8 @@ export const api = {
           ? hydrateLocalInvoicesFromSheetRows(sheetRows)
           : (getSavedSheetId() === DEFAULT_SHEET_ID ? [...MOCK_INVOICES] : []);
         saveStoredInvoices(hydrated);
+        mergeStoredPharmaciesFromInvoices(hydrated);
         return true;
-      }
-
-      const logicalGroups = groupSheetRowsLogical(sheetRows);
-      const sheetNums = new Set(sheetRows.map((r: any) => String(r.invoice_number || '').trim()).filter(Boolean));
-      const remainingCompositeCounts = new Map<string, number>();
-      for (const grp of logicalGroups) {
-        if (grp.compositeKey) {
-          remainingCompositeCounts.set(grp.compositeKey, (remainingCompositeCounts.get(grp.compositeKey) || 0) + 1);
-        }
       }
 
       const activeSheetId = getSavedSheetId();
@@ -1778,56 +1919,12 @@ export const api = {
       );
 
       const local = getStoredInvoices();
-      let updatedFlags = false;
-      const filtered = local.reduce<Invoice[]>((acc, inv) => {
-        const num = String(inv.invoice_number || '').trim();
-        if (num && pendingUploadNums.has(num)) {
-          acc.push(inv);
-          return acc;
-        }
+      const { invoices: mergedInvoices, changed } = reconcileLocalInvoicesWithSheet(local, sheetRows, pendingUploadNums);
 
-        const invComp = buildFullInvoiceCompositeKey({
-          pharmacy_name: inv.pharmacy_name,
-          invoice_date: inv.invoice_date,
-          items: inv.items
-        });
-
-        let existsInSheet = false;
-        if (invComp) {
-          const cnt = remainingCompositeCounts.get(invComp) || 0;
-          if (cnt > 0) {
-            remainingCompositeCounts.set(invComp, cnt - 1);
-            existsInSheet = true;
-          } else if (num && sheetNums.has(num) && local.filter(x => String(x.invoice_number || '').trim() === num).length === 1) {
-            existsInSheet = true;
-          }
-        } else {
-          existsInSheet = !num || sheetNums.has(num);
-        }
-
-        if (existsInSheet) {
-          if (inv.pending_sheet_upload) {
-            updatedFlags = true;
-            acc.push({ ...inv, pending_sheet_upload: false });
-          } else {
-            acc.push(inv);
-          }
-          return acc;
-        }
-
-        // الفواتير التي لم يُرصد وصولها بعد إلى كوكل شيت تبقى محمية للرفع عبر زر «رفع غير المرفوعة»
-        if (inv.pending_sheet_upload) {
-          acc.push(inv);
-          return acc;
-        }
-
-        // حُذفت من كوكل شيت بعد مزامنتها سابقاً -> تُحذف مباشرة من المنصة
-        return acc;
-      }, []);
-
-      if (filtered.length !== local.length || updatedFlags) {
-        saveStoredInvoices(filtered);
-        return filtered.length !== local.length;
+      if (changed) {
+        saveStoredInvoices(mergedInvoices);
+        mergeStoredPharmaciesFromInvoices(mergedInvoices);
+        return true;
       }
       return false;
     } catch {
